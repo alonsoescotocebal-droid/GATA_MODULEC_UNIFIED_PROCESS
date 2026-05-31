@@ -2468,17 +2468,22 @@ def brief_generate(tables_dir: Path, brief_dir: Path, report: Report) -> Path:
 
 def build_manifest_and_zip(outputs: List[Path], out_dir: Path, report: Report) -> Tuple[Path, Path, Path]:
     ensure_dir(out_dir)
-    manifest_path = out_dir / "final_manifest_v2.json"
-    sha_path = out_dir / "final_sha256_checkpoints_v2.txt"
-    zip_path = out_dir / "ModuleC_ALL_FINAL_deliverables_v2.zip"
+    output_root = out_dir.parent
+    manifest_path = out_dir / "final_manifest.json"
+    sha_path = out_dir / "final_sha256_checkpoints.txt"
+    zip_path = out_dir / "ModuleC_ALL_FINAL_deliverables.zip"
 
     manifest = []
     for p in outputs:
         if not p.exists():
             report.fail(f"Output missing before manifest: {p}")
+        try:
+            rel_path = p.resolve().relative_to(output_root.resolve()).as_posix()
+        except Exception:
+            rel_path = p.name
         h = hashlib.sha256(p.read_bytes()).hexdigest()
         manifest.append({
-            "name": p.name,
+            "name": rel_path,
             "path": str(p),
             "bytes": p.stat().st_size,
             "modified": dt.datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y-%m-%dT%H:%M:%S"),
@@ -2489,26 +2494,112 @@ def build_manifest_and_zip(outputs: List[Path], out_dir: Path, report: Report) -
 
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for p in outputs:
-            zf.write(p, arcname=p.name)
-        zf.write(manifest_path, arcname=manifest_path.name)
+            try:
+                arcname = p.resolve().relative_to(output_root.resolve()).as_posix()
+            except Exception:
+                arcname = p.name
+            zf.write(p, arcname=arcname)
+        zf.write(manifest_path, arcname=manifest_path.resolve().relative_to(output_root.resolve()).as_posix())
 
     lines = [
-        "STEP9_FINAL_MASTER_PACK checkpoint (v2)",
+        "STEP9_FINAL_MASTER_PACK checkpoint",
         f"timestamp={now_iso()}",
         f"outputs_dir={out_dir}",
     ]
     for p in outputs + [manifest_path, zip_path]:
+        try:
+            rel_name = p.resolve().relative_to(output_root.resolve()).as_posix()
+        except Exception:
+            rel_name = p.name
         h = hashlib.sha256(p.read_bytes()).hexdigest()
-        lines.append(f"OUT|{p.name}|sha256={h}|bytes={p.stat().st_size}")
+        lines.append(f"OUT|{rel_name}|sha256={h}|bytes={p.stat().st_size}")
     sha_path.write_text("\n".join(lines), encoding="utf-8")
     return manifest_path, sha_path, zip_path
 
 
-def run_qa_gate(tables_dir: Path, brief_path: Path, report: Report) -> None:
+def resolve_step7_script(gata_root: Path, report: Report) -> Path:
+    local_repo_script = Path(__file__).resolve().parent / "RUN_QGIS" / "STEP7_MATRIZ_CAUSAL" / "step7_matriz_causal.py"
+    external_root_script = gata_root / "pipeline" / "RUN_QGIS" / "STEP7_MATRIZ_CAUSAL" / "step7_matriz_causal.py"
+
+    for cand in (local_repo_script, external_root_script):
+        if cand.exists():
+            report.log(f"STEP7 producer resolved: {cand}")
+            return cand
+
+    report.fail(
+        "STEP7 producer missing. Candidates checked: "
+        f"{local_repo_script} | {external_root_script}"
+    )
+    return external_root_script
+
+
+def run_step7_causal_extension(gata_root: Path, output_root: Path, report: Report) -> None:
+    step7_script = resolve_step7_script(gata_root, report)
+
+    qa_dir = output_root / "qa"
+    ensure_dir(qa_dir)
+    step7_stdout = qa_dir / "step7_matriz_causal_stdout.txt"
+    step7_stderr = qa_dir / "step7_matriz_causal_stderr.txt"
+
+    cmd = [
+        sys.executable,
+        "-u",
+        str(step7_script),
+        "--gata-root",
+        str(gata_root),
+        "--output-root",
+        str(output_root),
+    ]
+    report.log("RUN STEP7_MATRIZ_CAUSAL_EXTENDED")
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    step7_stdout.write_text(proc.stdout or "", encoding="utf-8")
+    step7_stderr.write_text(proc.stderr or "", encoding="utf-8")
+    if proc.returncode != 0:
+        report.fail(
+            f"STEP7_MATRIZ_CAUSAL failed (exit={proc.returncode}). "
+            f"See {step7_stdout} and {step7_stderr}"
+        )
+    report.log(f"STEP7_MATRIZ_CAUSAL_EXTENDED exit={proc.returncode}")
+
+
+def write_runtime_closure_decision(output_root: Path, decision: str, summary: str, holds: Sequence[str]) -> Path:
+    out_path = output_root / "deliverables_step9" / "runtime_closure_decision.md"
+    ensure_dir(out_path.parent)
+    lines = [
+        "# Runtime Closure Decision",
+        "",
+        f"- timestamp: {now_iso()}",
+        f"- output_root: \"{output_root}\"",
+        f"- qa_gate_decision: **{decision}**",
+        f"- summary: {summary}",
+        "",
+    ]
+    if holds:
+        lines.append("## Active holds")
+        for h in holds:
+            lines.append(f"- {h}")
+    else:
+        lines.append("## Active holds")
+        lines.append("- none")
+    lines.append("")
+    out_path.write_text("\n".join(lines), encoding="utf-8")
+    return out_path
+
+
+def run_qa_gate(tables_dir: Path, brief_path: Path, report: Report) -> Tuple[str, str, List[str]]:
     import qa_gate_v2
-    ok, msg = qa_gate_v2.run_checks(tables_dir, brief_path)
-    if not ok:
-        report.fail(f"QA gate failed: {msg}")
+    output_root = tables_dir.parent
+    decision, summary, holds, _rows = qa_gate_v2.evaluate_output_root(output_root)
+    write_runtime_closure_decision(output_root, decision, summary, holds)
+    if decision == "NO-GO":
+        report.fail(f"QA gate failed: {decision}: {summary}")
+    return decision, summary, holds
 
 
 def main() -> int:
@@ -2649,19 +2740,26 @@ def main() -> int:
         if not scen_rows:
             report.fail("IECH_scenarios_2026_2030.csv has 0 rows")
 
-        brief_path = brief_generate(tables_dir, brief_dir, report)
-        run_qa_gate(tables_dir, brief_path, report)
+        run_step7_causal_extension(Path(args.gata_root), out_dir, report)
+        brief_path = brief_dir / "Brief_Politica_IECH_2030.md"
+        if not brief_path.exists():
+            report.fail(f"Expected brief missing after STEP7_MATRIZ_CAUSAL: {brief_path}")
+        qa_decision, qa_summary, qa_holds = run_qa_gate(tables_dir, brief_path, report)
+        report.log(f"QA gate decision (post-step7): {qa_decision} | {qa_summary}")
+        if qa_holds:
+            report.log("QA holds: " + ", ".join(qa_holds))
 
         outputs = [
-            smoke_csv,
-            pop_csv,
-            rec_csv,
-            iech_hist,
-            iech_mean,
-            scen_csv,
-            scen_mean,
-            brief_path,
-            admin_gpkg,
+            out_dir / "qa" / "inputs_resolved.json",
+            out_dir / "qa" / "run_log.txt",
+            out_dir / "tables" / "IECH_unit_2015_2024.csv",
+            out_dir / "tables" / "IECH_municipio_2015_2024.csv",
+            out_dir / "tables" / "wrb_context_nuts3.csv",
+            out_dir / "tables" / "territorial_context_nuts3.csv",
+            out_dir / "brief" / "Brief_Politica_IECH_2030.md",
+            out_dir / "brief" / "causal_matrix" / "causal_matrix_IECH_NUTS3.csv",
+            out_dir / "maps" / "IECH_ModuleC_master.gpkg",
+            out_dir / "deliverables_step9" / "runtime_closure_decision.md",
         ]
         build_manifest_and_zip(outputs, deliver_dir, report)
         report.log("END v2 PASS")
