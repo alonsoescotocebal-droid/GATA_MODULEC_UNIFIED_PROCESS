@@ -1,0 +1,25 @@
+﻿{
+    "created_at":  "2026-05-29T11:03:54",
+    "decision":  "UNIFIED_PROCESS_OUTSIDE_D_MESTRADO",
+    "source_repo":  "D:\\GitHub\\GATA_ModuleC_pipeline_clean",
+    "source_branch":  "main",
+    "source_sha":  "0ba8c3732eea574c63d9855c1a0cf15158ac23f6",
+    "repo_copy_root":  "D:\\GATA_MODULEC_UNIFIED_PROCESS\\GATA_ModuleC_pipeline_unified_20260529_110352\\01_REPO_COPY",
+    "launcher_in_copy":  "D:\\GATA_MODULEC_UNIFIED_PROCESS\\GATA_ModuleC_pipeline_unified_20260529_110352\\01_REPO_COPY\\pipeline\\moduleC_pipeline_v2.py",
+    "data_root_external_only":  "D:\\Mestrado\\GATA_2025_2026\\Prueba_aislada\\ISO_GATA_20260121_130505\\Complementariedad de analisis\\Module C\\Datos",
+    "unified_root":  "D:\\GATA_MODULEC_UNIFIED_PROCESS\\GATA_ModuleC_pipeline_unified_20260529_110352",
+    "runtime_root":  "D:\\GATA_MODULEC_UNIFIED_PROCESS\\GATA_ModuleC_pipeline_unified_20260529_110352\\03_RUNTIMES",
+    "python_qgis":  "C:\\OSGeo4W64\\bin\\python-qgis-ltr.bat",
+    "qgis_prefix_path":  "C:\\OSGeo4W64\\apps\\qgis-ltr",
+    "forbidden_root_for_new_outputs":  "D:\\Mestrado",
+    "allowed_exception_inside_mestrado":  "D:\\Mestrado\\GATA_2025_2026\\Prueba_aislada\\ISO_GATA_20260121_130505\\Complementariedad de analisis\\Module C\\Datos",
+    "output_policy":  "All new runtimes and outputs must be created under D:\\GATA_MODULEC_UNIFIED_PROCESS, never under D:\\Mestrado.",
+    "forbidden_actions":  [
+                              "Do not create new outputs inside D:\\Mestrado",
+                              "Do not create new runtimes inside D:\\Mestrado",
+                              "Do not copy DataRoot",
+                              "Do not move DataRoot",
+                              "Do not write to canonical 03_outputs",
+                              "Do not initialize Git until the isolated runtime is validated"
+                          ]
+}

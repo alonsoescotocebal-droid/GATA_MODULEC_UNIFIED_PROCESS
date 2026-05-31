@@ -1,0 +1,5 @@
+﻿"InputAlias","ExpectedFile","Relation","Required"
+"master_dataset_catalog","master_dataset_catalog.csv","Data inventory externo","YES"
+"master_inputs_for_pipeline","master_inputs_for_pipeline.csv","Mapa input->etapa","YES"
+"master_path_aliases","master_path_aliases.csv","Resolución de aliases","YES"
+"zip_manifest_items","zip_manifest_items.csv (externo)","Normalización pendiente","CONDITIONAL"

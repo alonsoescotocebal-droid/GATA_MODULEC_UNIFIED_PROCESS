@@ -1,0 +1,84 @@
+﻿# Massive data / outputs
+**/Module C/Datos/**
+**/Incendios_Nueva version/**
+**/03_outputs/**
+**/03_outputs__BACKUP*/**
+**/deliverables_step9/**
+
+# Archives / backups / temp
+**/_archive*/**
+**/*.bak_*
+**/*.legacy.*
+**/temp/**
+**/tmp/**
+**/_cleanup_quarantine/**
+
+# Heavy GIS/data binaries
+*.zip
+*.7z
+*.rar
+*.grib
+*.parquet
+*.tif
+*.tiff
+*.gpkg
+*.nc
+*.qgz
+*.qgs
+
+# Logs/cache
+*.log
+__pycache__/
+*.pyc
+.venv/
+
+# Allow key docs/contracts/scripts
+!README.md
+!PIPELINE_CANON_HANDOFF/**
+!pipeline/**/*.py
+!pipeline/**/*.ps1
+!pipeline/**/*.cmd
+!pipeline/**/*.bat
+!tools/**
+!contracts/**
+!manifests/**/*.csv
+!manifests/**/*.md
+!data_placeholders/**
+!output_placeholders/**
+!validation/**
+
+# Local mount config (unversioned)
+config/local_paths.ps1
+config/local_paths.json
+runtime_outputs/
+outputs/
+03_outputs/
+logs/
+
+# Local machine configuration
+config/local_paths.ps1
+config/local_paths.json
+
+# Runtime outputs and logs
+runtime_outputs/
+outputs/
+03_outputs/
+logs/
+
+# Manual runtime/input material not versioned in clean export
+inputs/manual_runs/
+
+# Codex/editor/cache artifacts
+cache/
+.codex/
+.codex/archive/
+
+# External data directories must never be committed
+Module C/Datos/
+Incendios_Nueva version/
+
+# Common generated artifacts
+*.tmp
+*.bak
+*.backup
+*.log

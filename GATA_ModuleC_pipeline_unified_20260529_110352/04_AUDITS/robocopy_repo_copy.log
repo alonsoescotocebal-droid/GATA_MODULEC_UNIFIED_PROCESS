@@ -1,0 +1,193 @@
+
+-------------------------------------------------------------------------------
+   ROBOCOPY     ::     Herramienta para copia eficaz de archivos         
+-------------------------------------------------------------------------------
+
+  Iniciado : viernes, 29 de mayo de 2026 11:03:53 a. m.
+   Origen : D:\GitHub\GATA_ModuleC_pipeline_clean\
+     Destino : D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110352\01_REPO_COPY\
+
+    Archivos: *.*
+	    
+Arch. ejecutables: *.pyc
+	    *.pyo
+	    *.pyd
+	    *.log
+	    *.tmp
+	    *.bak
+	    *.zip
+	    *.7z
+	    *.rar
+	    
+ Dirs. de ejecutables: .git
+	    __pycache__
+	    .pytest_cache
+	    .mypy_cache
+	    .ruff_cache
+	    .tox
+	    .venv
+	    venv
+	    env
+	    build
+	    dist
+	    node_modules
+	    03_outputs
+	    outputs
+	    output
+	    RUNTIMES_MANUALES
+	    runtimes
+	    runtime
+	    tmp
+	    temp
+	    
+  Opciones: *.* /TEE /S /E /DCOPY:DA /COPY:DAT /NP /R:1 /W:1 
+
+------------------------------------------------------------------------------
+
+	                  10	D:\GitHub\GATA_ModuleC_pipeline_clean\
+	    Nuevo arch		      66	.gitattributes
+	    Nuevo arch		    1255	.gitignore
+	    Nuevo arch		     666	COMMIT_CANDIDATES_CODE_DOCS_TESTS_ONLY.txt
+	    Nuevo arch		     965	GITHUB_EXPORT_DECISION.md
+	    Nuevo arch		   24007	GITHUB_EXPORT_MANIFEST.csv
+	    Nuevo arch		     525	GITHUB_EXPORT_VALIDATION.md
+	    Nuevo arch		       6	GITHUB_EXPORT_VALIDATION_exitcode.txt
+	    Nuevo arch		       0	GITHUB_EXPORT_VALIDATION_stderr.txt
+	    Nuevo arch		     366	GITHUB_EXPORT_VALIDATION_stdout.txt
+	    Nuevo arch		    1362	README.md
+	   Nuevo dir       3	D:\GitHub\GATA_ModuleC_pipeline_clean\config\
+	    Nuevo arch		     397	local_paths.example.ps1
+	    Nuevo arch		     462	local_paths.ps1
+	    Nuevo arch		     614	module_c_canonical_paths.json
+	   Nuevo dir       8	D:\GitHub\GATA_ModuleC_pipeline_clean\contracts\
+	    Nuevo arch		    1406	01_CANONICAL_FOLDER_MAP.md
+	    Nuevo arch		    2780	03_PIPELINE_SEQUENCE_MAP.md
+	    Nuevo arch		     639	04_ENTRYPOINTS_AND_GATES.md
+	    Nuevo arch		     964	08_OUTPUT_CONTRACT.md
+	    Nuevo arch		     433	09_DATA_CATALOG_CONTRACT.md
+	    Nuevo arch		     737	10_QGIS_RUNTIME_ENV_CONTRACT.md
+	    Nuevo arch		     492	11_RUNTIME_NOT_YET_CLOSED.md
+	    Nuevo arch		    1686	12_EXTERNAL_DATA_MOUNT_CONTRACT.md
+	   Nuevo dir       6	D:\GitHub\GATA_ModuleC_pipeline_clean\data_placeholders\
+	    Nuevo arch		     342	expected_data_mounts.csv
+	    Nuevo arch		     407	expected_inputs_contract.csv
+	    Nuevo arch		  139772	master_dataset_catalog.csv
+	    Nuevo arch		    4168	master_inputs_for_pipeline.csv
+	    Nuevo arch		    2050	master_path_aliases.csv
+	    Nuevo arch		     522	README_DATA_NOT_INCLUDED.md
+	   Nuevo dir       0	D:\GitHub\GATA_ModuleC_pipeline_clean\docs\
+	   Nuevo dir       4	D:\GitHub\GATA_ModuleC_pipeline_clean\docs\audits\
+	    Nuevo arch		    3527	PATH_DESYNC_ROOT_CAUSE_AUDIT_44ff1ff_to_0e9ef1d.md
+	    Nuevo arch		    2597	SMOKE_ROUTE_SELECTOR_ROOT_CAUSE_AUDIT.md
+	    Nuevo arch		    1189	spatial_collapse_root_cause_audit.md
+	    Nuevo arch		    1693	spatial_collapse_root_cause_audit.tsv
+	   Nuevo dir       3	D:\GitHub\GATA_ModuleC_pipeline_clean\docs\canon\
+	    Nuevo arch		    1682	SCIENTIFIC_THRESHOLD_DECLARATION_REGISTER.md
+	    Nuevo arch		    1363	SCIENTIFIC_THRESHOLD_DECLARATION_REGISTER.tsv
+	    Nuevo arch		    3382	SCIENTIFIC_THRESHOLD_DECLARATION_REGISTER_MODULE_C.md
+	   Nuevo dir       3	D:\GitHub\GATA_ModuleC_pipeline_clean\docs\historical_manifests\
+	    Nuevo arch		     149	README_NOT_RUNTIME_TRUTH.md
+	    Nuevo arch		   10966	__PIPELINE_MANIFEST.csv
+	    Nuevo arch		  122332	__PIPELINE_TOKEN_SCAN.csv
+	   Nuevo dir       7	D:\GitHub\GATA_ModuleC_pipeline_clean\manifests\
+	    Nuevo arch		     853	B3_2_manifest_refresh_report.md
+	    Nuevo arch		    8432	B3_2_runtime_manifest_fresh.csv
+	    Nuevo arch		   42143	B3_2_runtime_token_scan_fresh.csv
+	    Nuevo arch		     740	B3_4_final_gate_matrix.csv
+	    Nuevo arch		    1383	B3_4_runtime_risk_register.csv
+	    Nuevo arch		    1109	B4_1_final_validation_matrix.csv
+	    Nuevo arch		     872	B4_1_next_phase_decision.md
+	   Nuevo dir       2	D:\GitHub\GATA_ModuleC_pipeline_clean\output_placeholders\
+	    Nuevo arch		     575	expected_output_contract.csv
+	    Nuevo arch		     310	README_OUTPUTS_NOT_INCLUDED.md
+	   Nuevo dir      15	D:\GitHub\GATA_ModuleC_pipeline_clean\pipeline\
+	    Nuevo arch		    1619	bootstrap_moduleC.py
+	    Nuevo arch		    7810	global_audit_status_scan.py
+	    Nuevo arch		  110924	moduleC_pipeline_v2.py
+	    Nuevo arch		   10904	moduleC_preflight.py
+	    Nuevo arch		   12233	path_scope_guard.py
+	    Nuevo arch		   13467	qa_gate_v2.py
+	    Nuevo arch		    1113	qa_path_scope_guard_expected_findings.tsv
+	    Nuevo arch		    4925	qa_smoke_route_selector_map.tsv
+	    Nuevo arch		    8633	RUN_ModuleC_Pipeline_OSGeo4W.cmd
+	    Nuevo arch		    1530	run_pipeline_v2.cmd
+	    Nuevo arch		     367	run_pipeline_v2.ps1
+	    Nuevo arch		    4799	run_preflight_bootstrap.py
+	    Nuevo arch		   26647	scientific_threshold_gate.py
+	    Nuevo arch		   11667	smoke_route_selector.py
+	    Nuevo arch		   21474	validate_modulec_objectives_canon.py
+	   Nuevo dir      10	D:\GitHub\GATA_ModuleC_pipeline_clean\pipeline\RUN_QGIS\
+	    Nuevo arch		   15503	qgis_build_products.py
+	    Nuevo arch		    3893	qgis_refine_pt.py
+	    Nuevo arch		    7841	qgis_step2_rebuild_nuts3_pt.py
+	    Nuevo arch		   10676	qgis_step3_discover_muni_and_export.py
+	    Nuevo arch		   16165	qgis_step5_municipios_caop.py
+	    Nuevo arch		    4422	run_PASO3_STEP3_STEP5_SAFE.ps1
+	    Nuevo arch		    1110	run_qgis_build.ps1
+	    Nuevo arch		     933	run_qgis_step2.ps1
+	    Nuevo arch		    2159	run_qgis_step3.ps1
+	    Nuevo arch		    3022	run_qgis_step5_municipios.ps1
+	   Nuevo dir       3	D:\GitHub\GATA_ModuleC_pipeline_clean\pipeline\RUN_QGIS\STEP7_MATRIZ_CAUSAL\
+	    Nuevo arch		    2032	patch_inputs_resolved_step7.py
+	    Nuevo arch		    2684	run_step7_matriz_causal.ps1
+	    Nuevo arch		   91517	step7_matriz_causal.py
+	   Nuevo dir       1	D:\GitHub\GATA_ModuleC_pipeline_clean\pipeline\RUN_QGIS\STEP8_BRIEF_PACK\
+	    Nuevo arch		    3741	run_step8_brief_pack.ps1
+	   Nuevo dir       2	D:\GitHub\GATA_ModuleC_pipeline_clean\pipeline\RUN_QGIS\STEP9_FINAL_MASTER_PACK\
+	    Nuevo arch		    7347	r6k_refresh_runtime_closure_decision.ps1
+	    Nuevo arch		   16027	run_step9_final_master_pack.ps1
+	   Nuevo dir      16	D:\GitHub\GATA_ModuleC_pipeline_clean\PIPELINE_CANON_HANDOFF\
+	    Nuevo arch		    1327	00_PIPELINE_CANON_README.md
+	    Nuevo arch		    1406	01_CANONICAL_FOLDER_MAP.md
+	    Nuevo arch		    3915	02_ACTIVE_PIPELINE_FILE_REGISTER.csv
+	    Nuevo arch		    2780	03_PIPELINE_SEQUENCE_MAP.md
+	    Nuevo arch		     639	04_ENTRYPOINTS_AND_GATES.md
+	    Nuevo arch		    1170	05_START_FROM_ANY_POINT_GUIDE.md
+	    Nuevo arch		    2122	06_DO_NOT_USE_LEGACY_REGISTER.csv
+	    Nuevo arch		     539	07_DO_NOT_TOUCH_REGISTER.md
+	    Nuevo arch		     964	08_OUTPUT_CONTRACT.md
+	    Nuevo arch		     433	09_DATA_CATALOG_CONTRACT.md
+	    Nuevo arch		     737	10_QGIS_RUNTIME_ENV_CONTRACT.md
+	    Nuevo arch		     492	11_RUNTIME_NOT_YET_CLOSED.md
+	    Nuevo arch		     413	12_NEXT_PHASE_OPTIONS.md
+	    Nuevo arch		    4949	12_OBJECTIVES_CANON_MODULEC_IECH.md
+	    Nuevo arch		     142	HANDOFF_PATH.txt
+	    Nuevo arch		   60436	PIPELINE_CANON_FINAL_CONTAMINATION_SCAN.csv
+	   Nuevo dir      14	D:\GitHub\GATA_ModuleC_pipeline_clean\tests\
+	    Nuevo arch		    2708	test_causal_matrix_blocks_if_smoke_route_blocked.py
+	    Nuevo arch		     648	test_final_bundle_blocks_stale_payload.py
+	    Nuevo arch		     735	test_iech_blocks_population_cancellation.py
+	    Nuevo arch		    1223	test_inputs_resolved_traces_gfas_era5.py
+	    Nuevo arch		     488	test_launcher_blocks_iso_mode.py
+	    Nuevo arch		     498	test_manifest_recursive_audit.py
+	    Nuevo arch		    3839	test_path_scope_guard.py
+	    Nuevo arch		    1929	test_scientific_threshold_gate_contract.py
+	    Nuevo arch		     699	test_smoke_outputs_block_homogeneous_proxy.py
+	    Nuevo arch		     893	test_smoke_route_blocks_parquet_proxy_as_final.py
+	    Nuevo arch		    2068	test_smoke_route_selector_prefers_gfas_era5.py
+	    Nuevo arch		    4563	test_spatial_collapse_contracts.py
+	    Nuevo arch		    1245	test_step7_block_helpers.py
+	    Nuevo arch		    1426	test_warning_inventory_gate.py
+	   Nuevo dir       5	D:\GitHub\GATA_ModuleC_pipeline_clean\tools\
+	    Nuevo arch		    2093	MODULEC_ENVIRONMENT_IMPLEMENTATION.md
+	    Nuevo arch		    1645	setup_profile0_structural_audit.ps1
+	    Nuevo arch		     856	setup_profile2_python_smoke.ps1
+	    Nuevo arch		   12085	setup_profile3_qgis_runtime.ps1
+	    Nuevo arch		    2831	setup_profile_minus1_documental_baseline.ps1
+	   Nuevo dir       2	D:\GitHub\GATA_ModuleC_pipeline_clean\validation\
+	    Nuevo arch		    4461	validate_external_data_mount.ps1
+	    Nuevo arch		    3759	validate_github_export.ps1
+
+------------------------------------------------------------------------------
+
+               Total   Copiado   OmitidoNo coincidencia     ERROR    Extras
+Director.:        21        18         3         0         0         0
+ Archivos:       114       114         0         0         0         0
+    Bytes:   930.3 k   930.3 k         0         0         0         0
+   Tiempo:   0:00:00   0:00:00                       0:00:00   0:00:00
+
+
+Velocidad:           2,175,173 Bytes/s
+Velocidad:             124.464 Megabytes/min
+   Finalizado: viernes, 29 de mayo de 2026 11:03:54 a. m.
+

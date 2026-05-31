@@ -1,0 +1,18 @@
+artifact	metric	value	evidence	decision
+smoke_day_score_nuts3_daily.csv	rows	52	row count	READ
+smoke_day_score_nuts3_daily.csv	unit_id_unique	26	distinct unit_id count	READ
+smoke_day_score_nuts3_daily.csv	date_unique	2	distinct date count	READ
+smoke_day_score_nuts3_daily.csv	year_unique	2	distinct year count	READ
+smoke_day_score_nuts3_daily.csv	all_units_same_score_by_date	1	2017-01-02:1,2022-01-02:1	HOMOGENEOUS
+smoke_day_score_nuts3_daily.csv	all_units_same_score_by_year	1	2017:1,2022:1	HOMOGENEOUS
+smoke_day_score_nuts3_daily.csv	spatial_variation_detected	0	no unit-level variation inside same date	HOMOGENEOUS
+smoke_days_nuts3_annual_2015_2024.csv	rows	260	row count	READ
+smoke_days_nuts3_annual_2015_2024.csv	spatial_homogeneous_flag_derived	1	2015:1,2016:1,2017:1,2018:1,2019:1,2020:1,2021:1,2022:1,2023:1,2024:1	HOMOGENEOUS
+gfas_pm2p5fire_portugal_daily_summary.csv	rows	2	row count	READ
+gfas_pm2p5fire_portugal_daily_summary.csv	is_portugal_global_summary	1	no unit_id column in daily summary	GLOBAL_ONLY
+gfas_pm2p5fire_portugal_daily_summary.csv	has_lat_lon_or_cell_for_zonal_assignment	0	no per-unit lat/lon join key in summary	NO_COORDS
+IECH_unit_2015_2024.csv	rows	260	row count	READ
+IECH_unit_2015_2024.csv	iech_equals_smoke_hours_equiv_all_rows	1	260/260	COLLAPSED
+IECH_unit_2015_2024.csv	expo_person_hours_equals_pop_times_smoke_hours_all_rows	1	260/260	IDENTITY
+IECH_unit_2015_2024.csv	iech_spatial_variation_by_year_detected	0	2015:1,2016:1,2017:1,2018:1,2019:1,2020:1,2021:1,2022:1,2023:1,2024:1	HOMOGENEOUS
+AUDIT	collapse_origin_decision	COLLAPSE_ORIGIN_MULTIPLE	daily_homogeneous + annual_homogeneous + portugal_global_summary + iech_collapse	COLLAPSE_ORIGIN_MULTIPLE

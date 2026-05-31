@@ -1,0 +1,14 @@
+pipeline/RUN_ModuleC_Pipeline_OSGeo4W.cmd
+pipeline/RUN_QGIS/STEP7_MATRIZ_CAUSAL/step7_matriz_causal.py
+pipeline/RUN_QGIS/STEP9_FINAL_MASTER_PACK/run_step9_final_master_pack.ps1
+config/module_c_canonical_paths.json
+docs/audits/PATH_DESYNC_ROOT_CAUSE_AUDIT_44ff1ff_to_0e9ef1d.md
+docs/canon/SCIENTIFIC_THRESHOLD_DECLARATION_REGISTER_MODULE_C.md
+pipeline/path_scope_guard.py
+pipeline/qa_path_scope_guard_expected_findings.tsv
+pipeline/scientific_threshold_gate.py
+tests/test_final_bundle_blocks_stale_payload.py
+tests/test_launcher_blocks_iso_mode.py
+tests/test_manifest_recursive_audit.py
+tests/test_path_scope_guard.py
+tests/test_scientific_threshold_gate_contract.py

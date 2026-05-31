@@ -1,0 +1,8 @@
+﻿"Output","Source","ExpectedState","Required"
+"qa\run_log.txt","Runtime","REGENERATE_BY_RUNTIME","YES"
+"qa\QA_checks.csv","Runtime","REGENERATE_BY_RUNTIME","YES"
+"tables\IECH_unit_2015_2024.csv","Runtime","REGENERATE_OR_VALIDATE","YES"
+"maps\IECH_ModuleC_final.gpkg","Runtime","GENERATE_POST_RUNTIME","CONDITIONAL"
+"deliverables_step9\*","Step9 runtime","GENERATE_POST_RUNTIME","YES_FOR_CLOSURE"
+"final_manifest.json","Step9/runtime","GENERATE_POST_RUNTIME","YES_FOR_CLOSURE"
+"final_sha256_checkpoints.txt","Step9/runtime","GENERATE_POST_RUNTIME","YES_FOR_CLOSURE"

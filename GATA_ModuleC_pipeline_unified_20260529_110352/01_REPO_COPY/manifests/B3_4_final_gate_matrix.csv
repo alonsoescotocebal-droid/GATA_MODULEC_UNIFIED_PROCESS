@@ -1,0 +1,8 @@
+﻿"Check","ExpectedState","ActualState","EvidenceFile","Risk","BlocksRuntimeImplementation","Decision"
+"Patch audit moduleC_pipeline_v2","env bootstrap only","PASS","B3_4_patch_audit_moduleC_pipeline_v2.md","Med","No","OK"
+"py_compile","all PASS","PASS","B3_4_py_compile_validation.csv","High","No","OK"
+"QGIS/Processing regate","PASS","PASS","B3_4_environment_regate.csv","High","No","OK"
+"Wrapper static","PASS","PASS","B3_4_wrapper_static_validation.csv","High","No","OK"
+"OUTPUT_ROOT completeness","PASS","PASS","B3_4_output_root_regate.csv","High","No","OK"
+"inputs_resolved canonical","PASS","PASS","B3_4_inputs_resolved_regate.csv","High","No","OK"
+"ACTIVE_BLOCKER","0","0","B3_4_script_reference_scan.csv","High","No","OK"
