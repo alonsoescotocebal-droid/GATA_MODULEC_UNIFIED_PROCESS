@@ -1,0 +1,60 @@
+﻿# SOURCE: D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\01_REPO_COPY\pipeline\moduleC_pipeline_v2.py
+# TITLE: function _fill_smoke_year_series_relaxed
+# LINES: 959-1014
+
+00959: 
+00960: 
+00961: def _fill_smoke_year_series_relaxed(anchors: Dict[int, float], method_prefix: str) -> Tuple[Dict[int, float], Dict[int, str]]:
+00962:     years = sorted(int(y) for y in anchors.keys())
+00963:     values: Dict[int, float] = {}
+00964:     methods: Dict[int, str] = {}
+00965:     if not years:
+00966:         return values, methods
+00967: 
+00968:     if len(years) == 1:
+00969:         y0 = years[0]
+00970:         v0 = max(float(anchors[y0]), 0.0)
+00971:         for y in YEARS_HIST:
+00972:             values[y] = v0
+00973:             methods[y] = f"{method_prefix}_direct_year" if y == y0 else f"{method_prefix}_flat_single_anchor"
+00974:         return values, methods
+00975: 
+00976:     for y in YEARS_HIST:
+00977:         if y in anchors:
+00978:             values[y] = max(float(anchors[y]), 0.0)
+00979:             methods[y] = f"{method_prefix}_direct_year"
+00980:             continue
+00981:         if y < years[0]:
+00982:             y0, y1 = years[0], years[1]
+00983:             method = f"{method_prefix}_extrapolated_from_anchors"
+00984:         elif y > years[-1]:
+00985:             y0, y1 = years[-2], years[-1]
+00986:             method = f"{method_prefix}_extrapolated_from_anchors"
+00987:         else:
+00988:             y0, y1 = years[0], years[-1]
+00989:             for i in range(len(years) - 1):
+00990:                 a, b = years[i], years[i + 1]
+00991:                 if a <= y <= b:
+00992:                     y0, y1 = a, b
+00993:                     break
+00994:             method = f"{method_prefix}_interpolated_from_anchors"
+00995:         v0 = float(anchors[y0])
+00996:         v1 = float(anchors[y1])
+00997:         frac = 0.0 if y1 == y0 else (float(y - y0) / float(y1 - y0))
+00998:         values[y] = max(v0 + (v1 - v0) * frac, 0.0)
+00999:         methods[y] = method
+01000:     return values, methods
+01001: 
+01002: 
+01003: def _derive_unit_anchor_scores_from_xyz(admin_layer, daily_rows: List[Dict[str, object]], report: Report) -> Dict[str, Dict[int, float]]:
+01004:     from qgis.core import (  # type: ignore
+01005:         QgsCoordinateReferenceSystem,
+01006:         QgsCoordinateTransform,
+01007:         QgsGeometry,
+01008:         QgsPointXY,
+01009:         QgsProject,
+01010:     )
+01011: 
+01012:     features = []
+01013:     for ft in admin_layer.getFeatures():
+01014:         uid = str(ft["NUTS_ID"]) if ft["NUTS_ID"] is not None else ""

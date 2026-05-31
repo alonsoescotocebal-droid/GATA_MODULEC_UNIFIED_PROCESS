@@ -1,0 +1,68 @@
+﻿01003: def _derive_unit_anchor_scores_from_xyz(admin_layer, daily_rows: List[Dict[str, object]], report: Report) -> Dict[str, Dict[int, float]]:
+01004:     from qgis.core import (  # type: ignore
+01005:         QgsCoordinateReferenceSystem,
+01006:         QgsCoordinateTransform,
+01007:         QgsGeometry,
+01008:         QgsPointXY,
+01009:         QgsProject,
+01010:     )
+01011: 
+01012:     features = []
+01013:     for ft in admin_layer.getFeatures():
+01014:         uid = str(ft["NUTS_ID"]) if ft["NUTS_ID"] is not None else ""
+01015:         if not uid:
+01016:             continue
+01017:         geom = ft.geometry()
+01018:         if geom is None or geom.isEmpty():
+01019:             continue
+01020:         features.append((uid, geom, geom.boundingBox()))
+01021:     if not features:
+01022:         return {}
+01023: 
+01024:     src_crs = QgsCoordinateReferenceSystem("EPSG:4326")
+01025:     dst_crs = admin_layer.crs()
+01026:     transform = QgsCoordinateTransform(src_crs, dst_crs, QgsProject.instance())
+01027: 
+01028:     anchors_by_unit: Dict[str, Dict[int, float]] = {}
+01029:     for d in daily_rows:
+01030:         y = safe_float(d.get("year"))
+01031:         xyz_path_raw = str(d.get("xyz_path") or "").strip()
+01032:         if y is None or not xyz_path_raw:
+01033:             continue
+01034:         xyz_path = Path(xyz_path_raw)
+01035:         if not xyz_path.exists():
+01036:             continue
+01037:         year = int(y)
+01038:         stats = _parse_xyz_stats(xyz_path)
+01039:         per_unit_max: Dict[str, float] = {}
+01040: 
+01041:         for x, yv, vv in stats.get("triples", []):
+01042:             if vv is None:
+01043:                 continue
+01044:             try:
+01045:                 pt = transform.transform(QgsPointXY(float(x), float(yv)))
+01046:             except Exception:
+01047:                 continue
+01048:             pt_geom = QgsGeometry.fromPointXY(pt)
+01049:             for uid, geom, bbox in features:
+01050:                 try:
+01051:                     if not bbox.contains(pt):
+01052:                         continue
+01053:                     if not (geom.contains(pt_geom) or geom.intersects(pt_geom)):
+01054:                         continue
+01055:                 except Exception:
+01056:                     continue
+01057:                 prev = per_unit_max.get(uid)
+01058:                 if prev is None or vv > prev:
+01059:                     per_unit_max[uid] = vv
+01060:                 break
+01061: 
+01062:         for uid, mx in per_unit_max.items():
+01063:             anchors_by_unit.setdefault(uid, {})[year] = max(float(mx) * 1.0e11, 0.0)
+01064: 
+01065:     if anchors_by_unit:
+01066:         sampled_units = len(anchors_by_unit)
+01067:         report.log(f"GFAS XYZ unit anchor extraction complete: units_with_anchor={sampled_units}")
+01068:     return anchors_by_unit
+01069: 
+01070: 

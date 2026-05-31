@@ -1,0 +1,6 @@
+﻿"evidence"
+"SHA verified before patch dry-run."
+"No code was modified by this script."
+"Patch targets remain moduleC_pipeline_v2.py first; scientific_threshold_gate.py should not be relaxed."
+"Dry-run requirements file generated."
+"Patch plan generated but not applied."

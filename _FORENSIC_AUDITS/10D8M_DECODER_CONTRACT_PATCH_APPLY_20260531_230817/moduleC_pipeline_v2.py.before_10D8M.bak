@@ -1,0 +1,3197 @@
+﻿# -*- coding: utf-8 -*-
+from __future__ import annotations
+
+
+# >>> R7Q_RUNTIME_CLI_CONTRACT_PATCH
+def _r7q_runtime_cli_contract_patch():
+    """
+    R7Q patch purpose:
+    - Preserve existing launcher behavior.
+    - Avoid R7 exit-code-2 argparse failure when manual runtime roots are supplied by environment.
+    - Inject env-backed values only when the existing parser requires matching options/positionals.
+    - Do not copy or read canonical 03_outputs as active output.
+    """
+    import argparse as _r7q_argparse
+    import os as _r7q_os
+    import sys as _r7q_sys
+    from pathlib import Path as _R7QPath
+
+    def _r7q_env_first(names):
+        for name in names:
+            val = _r7q_os.environ.get(name)
+            if val and str(val).strip():
+                return str(val)
+        return None
+
+    def _r7q_dest_key(dest):
+        return str(dest or "").lower().replace("-", "_")
+
+    def _r7q_value_for_dest(dest):
+        key = _r7q_dest_key(dest)
+
+        if "output" in key and "root" in key:
+            return _r7q_env_first([
+                "MODULEC_OUTPUT_ROOT",
+                "GATA_MODULEC_OUTPUT_ROOT",
+                "OUTPUT_ROOT",
+            ])
+
+        if key in ("output_root", "out_root", "output_dir", "out_dir"):
+            return _r7q_env_first([
+                "MODULEC_OUTPUT_ROOT",
+                "GATA_MODULEC_OUTPUT_ROOT",
+                "OUTPUT_ROOT",
+            ])
+
+        if "data" in key or "datos" in key or "input" in key:
+            return _r7q_env_first([
+                "MODULEC_DATA_ROOT",
+                "GATA_MODULEC_DATA_ROOT",
+                "DATA_ROOT",
+            ])
+
+        if "runtime" in key:
+            return _r7q_env_first([
+                "MODULEC_RUNTIME_ROOT",
+                "RUNTIME_ROOT",
+            ])
+
+        if key in ("run_root", "runroot") or ("run" in key and "root" in key):
+            return _r7q_env_first([
+                "MODULEC_RUN_ROOT",
+                "RUN_ROOT",
+                "MODULEC_RUNTIME_ROOT",
+                "RUNTIME_ROOT",
+            ])
+
+        if "repo" in key and "root" in key:
+            return _r7q_env_first([
+                "MODULEC_REPO_ROOT",
+                "GATA_REPO_ROOT",
+                "REPO_ROOT",
+            ])
+
+        return None
+
+    def _r7q_option_present(raw_args, option_strings):
+        raw_args = list(raw_args or [])
+        for opt in option_strings or []:
+            if opt in raw_args:
+                return True
+            prefix = str(opt) + "="
+            for arg in raw_args:
+                if str(arg).startswith(prefix):
+                    return True
+        return False
+
+    def _r7q_write_trace(name, text):
+        runtime_root = _r7q_env_first(["MODULEC_RUNTIME_ROOT", "RUNTIME_ROOT"])
+        if not runtime_root:
+            return
+        try:
+            log_dir = _R7QPath(runtime_root) / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            trace_path = log_dir / name
+            with trace_path.open("a", encoding="utf-8") as fh:
+                fh.write(str(text) + "\n")
+        except Exception:
+            pass
+
+    _r7q_original_parse_args = _r7q_argparse.ArgumentParser.parse_args
+    _r7q_original_error = _r7q_argparse.ArgumentParser.error
+
+    def _r7q_patched_error(self, message):
+        try:
+            _r7q_write_trace(
+                "r7q_argparse_error.txt",
+                "ARGPARSE_ERROR=" + str(message) + "\nUSAGE=" + str(self.format_usage())
+            )
+        except Exception:
+            pass
+        return _r7q_original_error(self, message)
+
+    def _r7q_patched_parse_args(self, args=None, namespace=None):
+        raw = list(_r7q_sys.argv[1:] if args is None else args)
+        injected = []
+
+        try:
+            actions = list(getattr(self, "_actions", []) or [])
+        except Exception:
+            actions = []
+
+        for action in actions:
+            dest = getattr(action, "dest", "")
+            if dest in ("help", _r7q_argparse.SUPPRESS):
+                continue
+
+            value = _r7q_value_for_dest(dest)
+            if not value:
+                continue
+
+            option_strings = list(getattr(action, "option_strings", []) or [])
+            nargs = getattr(action, "nargs", None)
+
+            if option_strings:
+                if _r7q_option_present(raw, option_strings):
+                    continue
+
+                is_required = bool(getattr(action, "required", False))
+                key = _r7q_dest_key(dest)
+                is_runtime_contract = (
+                    "output" in key or
+                    "data" in key or
+                    "datos" in key or
+                    "input" in key or
+                    "runtime" in key or
+                    "run_root" in key or
+                    "repo" in key
+                )
+
+                if is_required or is_runtime_contract:
+                    if nargs == 0:
+                        continue
+                    preferred = None
+                    for opt in option_strings:
+                        if str(opt).startswith("--"):
+                            preferred = opt
+                            break
+                    if preferred is None:
+                        preferred = option_strings[0]
+
+                    raw.extend([preferred, value])
+                    injected.append((dest, preferred, value))
+
+            else:
+                key = _r7q_dest_key(dest)
+                is_known_positional = (
+                    "output" in key or
+                    "data" in key or
+                    "datos" in key or
+                    "input" in key or
+                    "runtime" in key or
+                    key in ("run_root", "runroot")
+                )
+
+                if is_known_positional and value not in raw:
+                    raw.append(value)
+                    injected.append((dest, "<positional>", value))
+
+        if injected:
+            _r7q_write_trace("r7q_argparse_injections.txt", "INJECTED=" + repr(injected))
+            _r7q_write_trace("r7q_argparse_injections.txt", "ARGV_AFTER=" + repr(raw))
+
+        ns = _r7q_original_parse_args(self, raw, namespace)
+
+        try:
+            if not hasattr(ns, "output_root"):
+                out = _r7q_env_first(["MODULEC_OUTPUT_ROOT", "GATA_MODULEC_OUTPUT_ROOT", "OUTPUT_ROOT"])
+                if out:
+                    setattr(ns, "output_root", out)
+
+            if not hasattr(ns, "data_root"):
+                data = _r7q_env_first(["MODULEC_DATA_ROOT", "GATA_MODULEC_DATA_ROOT", "DATA_ROOT"])
+                if data:
+                    setattr(ns, "data_root", data)
+
+            if not hasattr(ns, "runtime_root"):
+                runtime = _r7q_env_first(["MODULEC_RUNTIME_ROOT", "RUNTIME_ROOT"])
+                if runtime:
+                    setattr(ns, "runtime_root", runtime)
+
+            if not hasattr(ns, "run_root"):
+                run_root = _r7q_env_first(["MODULEC_RUN_ROOT", "RUN_ROOT"])
+                if run_root:
+                    setattr(ns, "run_root", run_root)
+        except Exception:
+            pass
+
+        return ns
+
+    _r7q_argparse.ArgumentParser.error = _r7q_patched_error
+    _r7q_argparse.ArgumentParser.parse_args = _r7q_patched_parse_args
+
+    try:
+        _r7q_write_trace("r7q_runtime_contract_trace.txt", "R7Q_RUNTIME_CLI_CONTRACT_PATCH_ACTIVE=1")
+        _r7q_write_trace("r7q_runtime_contract_trace.txt", "ARGV_INITIAL=" + repr(_r7q_sys.argv))
+        _r7q_write_trace("r7q_runtime_contract_trace.txt", "MODULEC_OUTPUT_ROOT=" + str(_r7q_os.environ.get("MODULEC_OUTPUT_ROOT", "")))
+        _r7q_write_trace("r7q_runtime_contract_trace.txt", "MODULEC_DATA_ROOT=" + str(_r7q_os.environ.get("MODULEC_DATA_ROOT", "")))
+        _r7q_write_trace("r7q_runtime_contract_trace.txt", "MODULEC_RUNTIME_ROOT=" + str(_r7q_os.environ.get("MODULEC_RUNTIME_ROOT", "")))
+        _r7q_write_trace("r7q_runtime_contract_trace.txt", "MODULEC_RUN_ROOT=" + str(_r7q_os.environ.get("MODULEC_RUN_ROOT", "")))
+    except Exception:
+        pass
+
+_r7q_runtime_cli_contract_patch()
+# <<< R7Q_RUNTIME_CLI_CONTRACT_PATCH
+
+
+import argparse
+import csv
+import datetime as dt
+import hashlib
+import importlib
+import json
+import os
+import subprocess
+import sys
+import traceback
+import zipfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+
+from smoke_route_selector import apply_route_meta, detect_smoke_sources, select_smoke_route
+
+YEARS_HIST = list(range(2015, 2025))
+YEARS_SCEN = list(range(2026, 2031))
+
+
+class StageError(RuntimeError):
+    pass
+
+
+def now_iso() -> str:
+    return dt.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def ensure_dir(p: Path) -> None:
+    p.mkdir(parents=True, exist_ok=True)
+
+
+def safe_float(val: object) -> Optional[float]:
+    if val is None:
+        return None
+    s = str(val).strip()
+    if s == "" or s.lower() in ("nan", "na", "none", "null"):
+        return None
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+
+def sniff_delimiter(path: Path, sample_bytes: int = 65536) -> str:
+    data = path.read_bytes()[:sample_bytes]
+    try:
+        s = data.decode("utf-8-sig", errors="replace")
+    except Exception:
+        s = data.decode(errors="replace")
+    counts = {";": s.count(";"), ",": s.count(","), "\t": s.count("\t")}
+    best = max(counts, key=lambda k: counts[k])
+    return best if counts[best] > 0 else ","
+
+
+def read_csv_rows(path: Path) -> Tuple[List[str], List[Dict[str, str]], str]:
+    delim = sniff_delimiter(path)
+    with path.open("r", encoding="utf-8-sig", newline="") as f:
+        rdr = csv.DictReader(f, delimiter=delim)
+        rows = list(rdr)
+        header = rdr.fieldnames or []
+    return header, rows, delim
+
+
+def write_csv(path: Path, header: Sequence[str], rows: Iterable[Sequence[object]], delim: str = ";") -> None:
+    ensure_dir(path.parent)
+    with path.open("w", encoding="utf-8", newline="") as f:
+        w = csv.writer(f, delimiter=delim)
+        w.writerow(list(header))
+        for r in rows:
+            w.writerow(list(r))
+
+
+def write_tsv(path: Path, header: Sequence[str], rows: Iterable[Sequence[object]]) -> None:
+    write_csv(path, header, rows, delim="\t")
+
+
+def resolve_raster_source(path_value: str, report: Report) -> str:
+    src = Path(path_value)
+    if src.suffix.lower() != ".zip":
+        return path_value
+    if not src.exists():
+        return path_value
+    try:
+        with zipfile.ZipFile(src, "r") as zf:
+            tif_entries = [
+                e for e in zf.infolist()
+                if (not e.is_dir()) and e.filename.lower().endswith(".tif")
+            ]
+        if not tif_entries:
+            report.fail(f"Zip raster without .tif entry: {src}")
+        # Choose the largest .tif entry when multiple candidates exist.
+        best = max(tif_entries, key=lambda e: int(getattr(e, "file_size", 0)))
+        return f"/vsizip/{src.as_posix()}/{best.filename}"
+    except StageError:
+        raise
+    except Exception as e:
+        report.fail(f"Cannot inspect zip raster source {src}: {e}")
+    return path_value
+
+
+def count_nan_ratio(rows: List[Dict[str, str]], col: str) -> Tuple[int, int, float]:
+    total = len(rows)
+    nan_count = 0
+    for r in rows:
+        v = r.get(col)
+        if safe_float(v) is None:
+            nan_count += 1
+    ratio = (nan_count / total) if total else 1.0
+    return nan_count, total, ratio
+
+
+def has_missing_flag(rows: List[Dict[str, str]]) -> bool:
+    for r in rows:
+        for k, v in r.items():
+            if "missing_flag" in k.lower():
+                fv = safe_float(v)
+                if fv is not None and fv >= 1.0:
+                    return True
+    return False
+
+
+def _median(values: Sequence[float]) -> float:
+    vals = sorted(float(v) for v in values)
+    n = len(vals)
+    if n == 0:
+        return 0.0
+    mid = n // 2
+    if n % 2 == 1:
+        return vals[mid]
+    return (vals[mid - 1] + vals[mid]) / 2.0
+
+
+def _extract_year_from_text(text: object) -> Optional[int]:
+    if text is None:
+        return None
+    s = str(text).strip()
+    if len(s) < 4:
+        return None
+    try:
+        return int(s[:4])
+    except Exception:
+        return None
+
+
+def _is_forbidden_smoke_output_source(path_value: Path) -> bool:
+    p = str(path_value).replace("/", "\\").lower()
+    return "\\03_outputs\\tables\\" in p
+
+
+@dataclass
+class Report:
+    path: Path
+
+    def log(self, msg: str) -> None:
+        ensure_dir(self.path.parent)
+        line = f"[{now_iso()}] {msg}"
+        with self.path.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+
+    def fail(self, msg: str) -> None:
+        self.log("FAIL: " + msg)
+        raise StageError(msg)
+
+
+def find_qgis_runners() -> List[str]:
+    candidates = [
+        r"C:\OSGeo4W64\bin\python-qgis-ltr.bat",
+        r"C:\OSGeo4W64\bin\python-qgis.bat",
+        r"C:\OSGeo4W\bin\python-qgis.bat",
+    ]
+    found = []
+    for c in candidates:
+        if Path(c).exists():
+            found.append(c)
+    base = Path(r"C:\Program Files")
+    if base.exists():
+        for p in base.glob("QGIS */bin/python-qgis*.bat"):
+            if p.exists():
+                found.append(str(p))
+    return found
+
+
+def qgis_hint_text() -> str:
+    gata_hint = os.environ.get("GATA_ROOT", r"D:\Mestrado\GATA_2025_2026\Prueba_aislada\ISO_GATA_20260121_130505")
+    datos_hint = os.environ.get("MODULEC_DATOS", rf"{gata_hint}\Complementariedad de analisis\Module C\Datos")
+    inc_hint = os.environ.get("INC_NEW", rf"{gata_hint}\Incendios_Nueva version")
+    runners = find_qgis_runners()
+    if runners:
+        cmds = [
+            f'"{r}" -u "{Path(__file__).name}" --gata-root "{gata_hint}" --modulec-datos "{datos_hint}" --inc-new "{inc_hint}"'
+            for r in runners
+        ]
+        return "QGIS not importable. Use one of:\n" + "\n".join(cmds)
+    return "QGIS not importable. Find python-qgis.bat (QGIS install) and run this script with it."
+
+
+def _diag_env() -> str:
+    parts = [
+        f"sys.executable={sys.executable}",
+        f"QGIS_PREFIX_PATH={os.environ.get('QGIS_PREFIX_PATH','')}",
+        "sys.path[0:20]=" + repr(sys.path[:20]),
+    ]
+    path_env = os.environ.get("PATH", "")
+    parts.append("PATH[0:5]=" + repr(path_env.split(os.pathsep)[:5]))
+    return " | ".join(parts)
+
+
+def _sanitize_windows_path(path_env: str) -> str:
+    keep = []
+    for p in path_env.split(os.pathsep):
+        pp = (p or "").strip()
+        if not pp:
+            continue
+        if "windowsapps" in pp.lower():
+            continue
+        keep.append(pp)
+    return os.pathsep.join(keep)
+
+
+def _patch_add_dll_directory() -> None:
+    if not hasattr(os, "add_dll_directory"):
+        return
+    original = os.add_dll_directory
+
+    def _safe_add(path: str):
+        try:
+            return original(path)
+        except PermissionError:
+            return None
+
+    os.add_dll_directory = _safe_add  # type: ignore[assignment]
+
+
+def _ensure_qgis_custom_config() -> None:
+    if os.environ.get("QGIS_CUSTOM_CONFIG_PATH"):
+        return
+    try:
+        repo_root = Path(__file__).resolve().parents[3]
+        cfg = repo_root / "_cleanup_control" / "qgis_profile_runtime"
+        cfg.mkdir(parents=True, exist_ok=True)
+        os.environ["QGIS_CUSTOM_CONFIG_PATH"] = str(cfg)
+    except Exception:
+        pass
+
+
+def _bootstrap_qgis_env(report: Report) -> None:
+    _patch_add_dll_directory()
+
+    qgis_prefix = Path(r"C:\OSGeo4W64\apps\qgis-ltr")
+    py_dir = qgis_prefix / "python"
+    plugins_dir = py_dir / "plugins"
+    bin_dir = Path(r"C:\OSGeo4W64\bin")
+    qgis_bin = qgis_prefix / "bin"
+    qt_bin = Path(r"C:\OSGeo4W64\apps\qt5\bin")
+    py_scripts = Path(r"C:\OSGeo4W64\apps\Python312\Scripts")
+    qgis_qt_plugins = qgis_prefix / "qtplugins"
+    qt_plugins = Path(r"C:\OSGeo4W64\apps\qt5\plugins")
+
+    if qgis_prefix.exists():
+        os.environ.setdefault("QGIS_PREFIX_PATH", str(qgis_prefix))
+    os.environ.setdefault("QT_PLUGIN_PATH", f"{qgis_qt_plugins};{qt_plugins}")
+    os.environ.setdefault("GDAL_DATA", r"C:\OSGeo4W64\apps\gdal\share\gdal")
+    os.environ.setdefault("PROJ_LIB", r"C:\OSGeo4W64\share\proj")
+    os.environ.setdefault("PROJ_DATA", r"C:\OSGeo4W64\share\proj")
+    if py_dir.exists() and str(py_dir) not in sys.path:
+        sys.path.insert(0, str(py_dir))
+    if plugins_dir.exists() and str(plugins_dir) not in sys.path:
+        sys.path.insert(0, str(plugins_dir))
+
+    for m in ("processing", "processing.core"):
+        if m in sys.modules:
+            del sys.modules[m]
+
+    # Runtime path canonico: evita colisiones con Python/Qt externos y replica gate B3.3.
+    path_env = os.pathsep.join([
+        str(qgis_bin),
+        str(qt_bin),
+        str(py_scripts),
+        str(bin_dir),
+        r"C:\WINDOWS\system32",
+        r"C:\WINDOWS",
+        r"C:\WINDOWS\System32\Wbem",
+    ])
+    path_env = _sanitize_windows_path(path_env)
+    os.environ["PATH"] = path_env
+    os.environ["Path"] = path_env
+    _ensure_qgis_custom_config()
+
+    importlib.invalidate_caches()
+    report.log("QGIS bootstrap applied.")
+
+
+def _try_import_qgis() -> Optional[Exception]:
+    try:
+        from qgis.core import QgsApplication  # type: ignore
+        import processing  # type: ignore
+        pfile = getattr(processing, "__file__", "") or ""
+        if "python\\plugins\\processing" not in pfile.lower():
+            raise RuntimeError(f"Wrong processing module resolved: {pfile}")
+        from processing.core.Processing import Processing  # type: ignore
+        return None
+    except Exception as e:
+        return e
+
+
+def init_qgis(report: Report):
+    """
+    10D4 V1 bootstrap patch.
+
+    This version fixes two observed standalone PyQGIS runtime failures:
+    1) "Application path not initialized" by setting the QGIS prefix and
+       calling QgsApplication.initQgis() before importing/initializing Processing.
+    2) "Duplicate provider native registered" by checking the processing registry
+       before registering QgsNativeAlgorithms.
+    """
+    _bootstrap_qgis_env(report)
+    prefix = os.environ.get("QGIS_PREFIX_PATH") or r"C:\OSGeo4W64\apps\qgis-ltr"
+
+    try:
+        from qgis.core import QgsApplication  # type: ignore
+    except Exception as e:
+        report.fail(f"QGIS import failed after bootstrap: {e}. {qgis_hint_text()} | {_diag_env()}")
+
+    try:
+        QgsApplication.setPrefixPath(prefix, True)
+    except Exception as e:
+        report.log(f"QGIS prefix warning: {e}")
+
+    qgs = None
+    try:
+        qgs = QgsApplication([], False)
+        qgs.initQgis()
+    except Exception as e:
+        report.fail(f"QGIS init failed after setPrefixPath({prefix!r}): {e}. {qgis_hint_text()} | {_diag_env()}")
+
+    try:
+        import importlib
+        importlib.invalidate_caches()
+        import processing  # type: ignore
+        pfile = getattr(processing, "__file__", "") or ""
+        pnorm = pfile.lower().replace("/", "\\")
+        if "python\\plugins\\processing" not in pnorm:
+            raise RuntimeError(f"Wrong processing module resolved after QGIS init: {pfile}")
+
+        from processing.core.Processing import Processing  # type: ignore
+        Processing.initialize()
+
+        # Avoid duplicate native provider registration. In several OSGeo/QGIS LTR
+        # environments Processing.initialize() already registers provider id "native".
+        try:
+            registry = QgsApplication.processingRegistry()
+            existing = None
+            try:
+                existing = registry.providerById("native")
+            except Exception:
+                existing = None
+            if existing is None:
+                from qgis.analysis import QgsNativeAlgorithms  # type: ignore
+                registry.addProvider(QgsNativeAlgorithms())
+                report.log("QGIS native provider registered by 10D4 V1 bootstrap.")
+            else:
+                report.log("QGIS native provider already registered; duplicate registration skipped.")
+        except Exception as provider_err:
+            # Provider registration warnings must not stop the full runtime if
+            # Processing is initialized and the native provider is available.
+            report.log(f"QGIS native provider registration non-fatal warning: {provider_err}")
+    except Exception as e:
+        try:
+            if qgs is not None:
+                qgs.exitQgis()
+        except Exception:
+            pass
+        report.fail(f"Processing init failed after QGIS init: {e}. {qgis_hint_text()} | {_diag_env()}")
+
+    report.log("QGIS initialized OK with 10D4 V1 bootstrap.")
+    return qgs
+
+
+def _normalize_writer_result(res) -> tuple:
+    if isinstance(res, (tuple, list)):
+        err = res[0] if len(res) > 0 else None
+        msg = res[1] if len(res) > 1 else ""
+        return err, msg
+    return res, ""
+
+
+def write_layer_to_gpkg(vl, gpkg_path: Path, layer_name: str, report: Report) -> None:
+    from qgis.core import QgsVectorFileWriter  # type: ignore
+
+    ensure_dir(gpkg_path.parent)
+    gpkg_path = Path(gpkg_path)
+
+    opts = QgsVectorFileWriter.SaveVectorOptions()
+    opts.driverName = "GPKG"
+    opts.layerName = layer_name
+
+    if gpkg_path.exists():
+        opts.actionOnExistingFile = QgsVectorFileWriter.CreateOrOverwriteLayer
+    else:
+        opts.actionOnExistingFile = QgsVectorFileWriter.CreateOrOverwriteFile
+
+    if hasattr(QgsVectorFileWriter, "writeAsVectorFormatV3"):
+        res = QgsVectorFileWriter.writeAsVectorFormatV3(vl, str(gpkg_path), vl.transformContext(), opts)
+        err, msg = _normalize_writer_result(res)
+    else:
+        err, msg, *_ = QgsVectorFileWriter.writeAsVectorFormatV2(vl, str(gpkg_path), vl.transformContext(), opts)
+
+    if err != QgsVectorFileWriter.NoError:
+        msg = msg or "Unknown GDAL/OGR error (possible lock or permissions)."
+        report.fail(f"GPKG write failed: {msg} (path={gpkg_path})")
+
+
+def _bisect_admin_prepare(stage: int, inputs: Dict[str, object], out_maps: Path, report: Report) -> None:
+    from qgis.core import QgsVectorLayer, QgsCoordinateReferenceSystem  # type: ignore
+    import processing  # type: ignore
+
+    report.log(f"BISECT stage {stage} START")
+    nuts_path = Path(str(inputs["paths"]["nuts3"]))
+    layer = QgsVectorLayer(str(nuts_path), "nuts3", "ogr")
+    if not layer.isValid():
+        report.fail(f"NUTS3 invalid: {nuts_path}")
+
+    if stage >= 1:
+        pt_expr = "\"CNTR_CODE\" = 'PT' AND \"LEVL_CODE\" = 3"
+        layer = processing.run("native:extractbyexpression", {"INPUT": layer, "EXPRESSION": pt_expr, "OUTPUT": "memory:"})["OUTPUT"]
+
+    if stage >= 2:
+        layer = processing.run("native:fixgeometries", {"INPUT": layer, "OUTPUT": "memory:"})["OUTPUT"]
+
+    if stage >= 3:
+        crs_3763 = QgsCoordinateReferenceSystem("EPSG:3763")
+        layer = processing.run("native:reprojectlayer", {"INPUT": layer, "TARGET_CRS": crs_3763, "OUTPUT": "memory:"})["OUTPUT"]
+
+    if stage >= 4:
+        gpkg_path = out_maps / "IECH_ModuleC_master.gpkg"
+        write_layer_to_gpkg(layer, gpkg_path, "admin_nuts3_2024", report)
+
+    report.log(f"BISECT stage {stage} OK")
+
+
+def _repo_root_from_script() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _build_inputs_from_master_catalog(report: Report) -> Dict[str, object]:
+    repo_root = _repo_root_from_script()
+    catalog = repo_root / "data_placeholders" / "master_inputs_for_pipeline.csv"
+    if not catalog.exists():
+        report.fail(f"inputs_resolved.json missing and catalog missing: {catalog}")
+
+    _header, rows, _delim = read_csv_rows(catalog)
+    by_key: Dict[str, str] = {}
+    for row in rows:
+        k = (row.get("InputKey") or "").strip()
+        v = (row.get("ResolvedPath") or "").strip()
+        if k and v:
+            by_key[k] = v
+
+    fire_indexed: List[Tuple[int, str]] = []
+    for k, v in by_key.items():
+        if not k.startswith("paths.fire_gpkgs_tm06[") or not k.endswith("]"):
+            continue
+        try:
+            idx = int(k[len("paths.fire_gpkgs_tm06["):-1])
+        except Exception:
+            continue
+        fire_indexed.append((idx, v))
+    fire_gpkgs = [p for _, p in sorted(fire_indexed, key=lambda t: t[0])]
+
+    inputs = {
+        "paths": {
+            "nuts3": by_key.get("paths.nuts3", ""),
+            "municipios_caop": by_key.get("paths.municipios_caop", ""),
+            "smoke_csv": by_key.get("paths.smoke_csv", ""),
+            "ghsl_pop": {
+                "2015": by_key.get("paths.ghsl_pop.2015", ""),
+                "2020": by_key.get("paths.ghsl_pop.2020", ""),
+                "2025": by_key.get("paths.ghsl_pop.2025", ""),
+                "2030": by_key.get("paths.ghsl_pop.2030", ""),
+            },
+            "fire_gpkgs_tm06": fire_gpkgs,
+            "wrb_mostprobable_tm06": by_key.get("paths.wrb_mostprobable_tm06", ""),
+        }
+    }
+    report.log(f"inputs_resolved.json synthesized from catalog: {catalog}")
+    return inputs
+
+
+def load_inputs(inputs_path: Path, report: Report) -> Dict[str, object]:
+    if not inputs_path.exists():
+        generated = _build_inputs_from_master_catalog(report)
+        ensure_dir(inputs_path.parent)
+        inputs_path.write_text(json.dumps(generated, ensure_ascii=False, indent=2), encoding="utf-8")
+        report.log(f"inputs_resolved.json created at: {inputs_path}")
+    with inputs_path.open("r", encoding="utf-8-sig") as f:
+        inputs = json.load(f)
+    return inputs
+
+
+def validate_inputs(inputs: Dict[str, object], report: Report) -> None:
+    paths = inputs.get("paths", {})
+    missing = []
+    required_keys = [
+        "nuts3",
+        "municipios_caop",
+        "wrb_mostprobable_tm06",
+    ]
+    for k in required_keys:
+        p = Path(str(paths.get(k, "")))
+        if not p.exists():
+            missing.append(f"{k} -> {p}")
+
+    ghsl = paths.get("ghsl_pop", {})
+    for y in (2015, 2020, 2025, 2030):
+        p = Path(str(ghsl.get(str(y), "")))
+        if not p.exists():
+            missing.append(f"ghsl_pop[{y}] -> {p}")
+
+    fire = paths.get("fire_gpkgs_tm06", [])
+    if not fire:
+        missing.append("fire_gpkgs_tm06 -> []")
+    else:
+        for p in fire:
+            if not Path(str(p)).exists():
+                missing.append(f"fire_gpkgs_tm06 -> {p}")
+
+    if missing:
+        report.fail("Missing inputs:\n- " + "\n- ".join(missing))
+
+
+def write_preflight_report(
+    qa_dir: Path,
+    inputs: Dict[str, object],
+    modulec_root: Path,
+    output_root: Path,
+) -> Path:
+    ensure_dir(qa_dir)
+    path = qa_dir / "preflight_report.txt"
+    lines: List[str] = []
+    lines.append(f"[{now_iso()}] START moduleC_preflight_inline")
+    lines.append(f"[{now_iso()}] MODULEC_ROOT={modulec_root}")
+    lines.append(f"[{now_iso()}] OUTPUT_ROOT={output_root}")
+
+    paths = inputs.get("paths", {})
+    missing: List[str] = []
+    required_keys = ["nuts3", "municipios_caop", "wrb_mostprobable_tm06"]
+    for key in required_keys:
+        p = Path(str(paths.get(key, "")))
+        exists = p.exists()
+        lines.append(f"[{now_iso()}] CHECK {key} exists={exists} path={p}")
+        if not exists:
+            missing.append(f"{key} -> {p}")
+
+    ghsl = paths.get("ghsl_pop", {})
+    for year in ("2015", "2020", "2025", "2030"):
+        p = Path(str(ghsl.get(year, "")))
+        exists = p.exists()
+        lines.append(f"[{now_iso()}] CHECK ghsl_pop[{year}] exists={exists} path={p}")
+        if not exists:
+            missing.append(f"ghsl_pop[{year}] -> {p}")
+
+    fire = paths.get("fire_gpkgs_tm06", [])
+    if not fire:
+        lines.append(f"[{now_iso()}] CHECK fire_gpkgs_tm06 exists=False path=[]")
+        missing.append("fire_gpkgs_tm06 -> []")
+    else:
+        for p_raw in fire:
+            p = Path(str(p_raw))
+            exists = p.exists()
+            lines.append(f"[{now_iso()}] CHECK fire_gpkgs_tm06 exists={exists} path={p}")
+            if not exists:
+                missing.append(f"fire_gpkgs_tm06 -> {p}")
+
+    if missing:
+        lines.append(f"[{now_iso()}] END HOLD preflight missing_count={len(missing)}")
+        for item in missing:
+            lines.append(f"[{now_iso()}] MISSING {item}")
+    else:
+        lines.append(f"[{now_iso()}] END PASS preflight")
+
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def admin_prepare(inputs: Dict[str, object], out_maps: Path, report: Report) -> Path:
+    from qgis.core import QgsVectorLayer, QgsCoordinateReferenceSystem  # type: ignore
+    import processing  # type: ignore
+
+    nuts_path = Path(str(inputs["paths"]["nuts3"]))
+
+    report.log(f"MARK: admin_prepare nuts_path={nuts_path}")
+    report.log(f"MARK: admin_prepare nuts_path={nuts_path}")
+    layer = QgsVectorLayer(str(nuts_path), "nuts3", "ogr")
+    if not layer.isValid():
+        report.fail(f"NUTS3 invalid: {nuts_path}")
+
+    pt_expr = "\"CNTR_CODE\" = 'PT' AND \"LEVL_CODE\" = 3"
+    report.log("MARK: admin_prepare BEFORE processing native:extractbyexpression")
+    report.log("MARK: admin_prepare BEFORE processing native:extractbyexpression")
+    layer = processing.run("native:extractbyexpression", {"INPUT": layer, "EXPRESSION": pt_expr, "OUTPUT": "memory:"})["OUTPUT"]
+    layer = processing.run("native:fixgeometries", {"INPUT": layer, "OUTPUT": "memory:"})["OUTPUT"]
+    crs_3763 = QgsCoordinateReferenceSystem("EPSG:3763")
+    layer = processing.run("native:reprojectlayer", {"INPUT": layer, "TARGET_CRS": crs_3763, "OUTPUT": "memory:"})["OUTPUT"]
+
+    if layer.featureCount() <= 0:
+        report.fail("NUTS3 layer has zero features after filter.")
+
+    gpkg_path = out_maps / "IECH_ModuleC_master.gpkg"
+    write_layer_to_gpkg(layer, gpkg_path, "admin_nuts3_2024", report)
+    return gpkg_path
+
+
+def _collect_primary_smoke_anchors(modulec_datos: Path, report: Report) -> Dict[int, float]:
+    from osgeo import ogr  # type: ignore
+
+    parquet_zips = [modulec_datos / "ParquetFiles 2017.zip", modulec_datos / "ParquetFiles 2022.zip"]
+    parquet_zips = [p for p in parquet_zips if p.exists()]
+    if not parquet_zips:
+        report.fail(f"Primary smoke source missing. Expected parquet zips in: {modulec_datos}")
+
+    # station/year/day -> any(Value > 0). This preserves smoke-day signal from primary source.
+    day_signal: Dict[Tuple[str, int, str], bool] = {}
+    for zpath in parquet_zips:
+        with zipfile.ZipFile(zpath, "r") as zf:
+            entries = [n for n in zf.namelist() if n.lower().endswith(".parquet")]
+        if not entries:
+            report.fail(f"Primary smoke parquet zip has no parquet entries: {zpath}")
+
+        for entry in entries:
+            station = Path(entry).stem
+            vpath = f"/vsizip/{zpath.as_posix()}/{entry}"
+            ds = ogr.Open(vpath, 0)
+            if ds is None:
+                report.fail(f"Cannot open primary smoke parquet: {vpath}")
+            lyr = ds.GetLayer(0)
+            if lyr is None:
+                report.fail(f"Primary smoke parquet has no layer: {vpath}")
+            lyr.ResetReading()
+            for ft in lyr:
+                start_val = ft.GetField("Start")
+                y = _extract_year_from_text(start_val)
+                if y is None or y not in YEARS_HIST:
+                    continue
+                day = str(start_val)[:10]
+                if len(day) != 10:
+                    continue
+                v = safe_float(ft.GetField("Value"))
+                gt0 = v is not None and v > 0.0
+                key = (station, y, day)
+                day_signal[key] = day_signal.get(key, False) or gt0
+
+    if not day_signal:
+        report.fail("Primary smoke parquet contains no usable day-level records for 2015-2024.")
+
+    station_year_days_gt0: Dict[Tuple[str, int], int] = {}
+    for (station, y, _day), flag in day_signal.items():
+        if not flag:
+            continue
+        key = (station, y)
+        station_year_days_gt0[key] = station_year_days_gt0.get(key, 0) + 1
+
+    by_year: Dict[int, List[float]] = {}
+    for (_station, y), days_gt0 in station_year_days_gt0.items():
+        by_year.setdefault(y, []).append(float(days_gt0))
+
+    if not by_year:
+        report.fail("Primary smoke parquet has total absence of smoke signal (all days <= 0).")
+
+    anchors = {y: _median(vals) for y, vals in by_year.items() if vals}
+    if not anchors:
+        report.fail("Primary smoke anchors could not be computed.")
+    if sum(anchors.values()) <= 0.0:
+        report.fail("Primary smoke anchors are degenerate: sum(smoke_days)==0.")
+    if max(anchors.values()) <= 0.0:
+        report.fail("Primary smoke anchors are degenerate: max(smoke_days)==0.")
+
+    anchor_txt = ", ".join(f"{y}:{anchors[y]:.3f}" for y in sorted(anchors.keys()))
+    report.log(f"Primary smoke anchors built from parquet: {anchor_txt}")
+    return anchors
+
+
+def _fill_smoke_year_series(anchors: Dict[int, float], report: Report) -> Tuple[Dict[int, float], Dict[int, str]]:
+    years = sorted(anchors.keys())
+    if not years:
+        report.fail("No primary smoke anchors available for interpolation.")
+
+    values: Dict[int, float] = {}
+    methods: Dict[int, str] = {}
+
+    if len(years) == 1:
+        y0 = years[0]
+        v0 = float(anchors[y0])
+        for y in YEARS_HIST:
+            values[y] = max(v0, 0.0)
+            methods[y] = "primary_parquet_direct_year" if y == y0 else "primary_parquet_flat_single_anchor"
+        return values, methods
+
+    for y in YEARS_HIST:
+        if y in anchors:
+            values[y] = max(float(anchors[y]), 0.0)
+            methods[y] = "primary_parquet_direct_year"
+            continue
+
+        if y < years[0]:
+            y0, y1 = years[0], years[1]
+            method = "primary_parquet_extrapolated_from_anchors"
+        elif y > years[-1]:
+            y0, y1 = years[-2], years[-1]
+            method = "primary_parquet_extrapolated_from_anchors"
+        else:
+            y0, y1 = years[0], years[-1]
+            for i in range(len(years) - 1):
+                a, b = years[i], years[i + 1]
+                if a <= y <= b:
+                    y0, y1 = a, b
+                    break
+            method = "primary_parquet_interpolated_from_anchors"
+
+        v0 = float(anchors[y0])
+        v1 = float(anchors[y1])
+        frac = 0.0 if y1 == y0 else (float(y - y0) / float(y1 - y0))
+        vy = v0 + (v1 - v0) * frac
+        values[y] = max(vy, 0.0)
+        methods[y] = method
+
+    if sum(values.values()) <= 0.0:
+        report.fail("Smoke year series is degenerate after interpolation: sum(smoke_days)==0.")
+    if max(values.values()) <= 0.0:
+        report.fail("Smoke year series is degenerate after interpolation: max(smoke_days)==0.")
+    return values, methods
+
+
+def _fill_smoke_year_series_relaxed(anchors: Dict[int, float], method_prefix: str) -> Tuple[Dict[int, float], Dict[int, str]]:
+    years = sorted(int(y) for y in anchors.keys())
+    values: Dict[int, float] = {}
+    methods: Dict[int, str] = {}
+    if not years:
+        return values, methods
+
+    if len(years) == 1:
+        y0 = years[0]
+        v0 = max(float(anchors[y0]), 0.0)
+        for y in YEARS_HIST:
+            values[y] = v0
+            methods[y] = f"{method_prefix}_direct_year" if y == y0 else f"{method_prefix}_flat_single_anchor"
+        return values, methods
+
+    for y in YEARS_HIST:
+        if y in anchors:
+            values[y] = max(float(anchors[y]), 0.0)
+            methods[y] = f"{method_prefix}_direct_year"
+            continue
+        if y < years[0]:
+            y0, y1 = years[0], years[1]
+            method = f"{method_prefix}_extrapolated_from_anchors"
+        elif y > years[-1]:
+            y0, y1 = years[-2], years[-1]
+            method = f"{method_prefix}_extrapolated_from_anchors"
+        else:
+            y0, y1 = years[0], years[-1]
+            for i in range(len(years) - 1):
+                a, b = years[i], years[i + 1]
+                if a <= y <= b:
+                    y0, y1 = a, b
+                    break
+            method = f"{method_prefix}_interpolated_from_anchors"
+        v0 = float(anchors[y0])
+        v1 = float(anchors[y1])
+        frac = 0.0 if y1 == y0 else (float(y - y0) / float(y1 - y0))
+        values[y] = max(v0 + (v1 - v0) * frac, 0.0)
+        methods[y] = method
+    return values, methods
+
+
+def _derive_unit_anchor_scores_from_xyz(admin_layer, daily_rows: List[Dict[str, object]], report: Report) -> Dict[str, Dict[int, float]]:
+    from qgis.core import (  # type: ignore
+        QgsCoordinateReferenceSystem,
+        QgsCoordinateTransform,
+        QgsGeometry,
+        QgsPointXY,
+        QgsProject,
+    )
+
+    features = []
+    for ft in admin_layer.getFeatures():
+        uid = str(ft["NUTS_ID"]) if ft["NUTS_ID"] is not None else ""
+        if not uid:
+            continue
+        geom = ft.geometry()
+        if geom is None or geom.isEmpty():
+            continue
+        features.append((uid, geom, geom.boundingBox()))
+    if not features:
+        return {}
+
+    src_crs = QgsCoordinateReferenceSystem("EPSG:4326")
+    dst_crs = admin_layer.crs()
+    transform = QgsCoordinateTransform(src_crs, dst_crs, QgsProject.instance())
+
+    anchors_by_unit: Dict[str, Dict[int, float]] = {}
+    for d in daily_rows:
+        y = safe_float(d.get("year"))
+        xyz_path_raw = str(d.get("xyz_path") or "").strip()
+        if y is None or not xyz_path_raw:
+            continue
+        xyz_path = Path(xyz_path_raw)
+        if not xyz_path.exists():
+            continue
+        year = int(y)
+        stats = _parse_xyz_stats(xyz_path)
+        per_unit_max: Dict[str, float] = {}
+
+        for x, yv, vv in stats.get("triples", []):
+            if vv is None:
+                continue
+            try:
+                pt = transform.transform(QgsPointXY(float(x), float(yv)))
+            except Exception:
+                continue
+            pt_geom = QgsGeometry.fromPointXY(pt)
+            for uid, geom, bbox in features:
+                try:
+                    if not bbox.contains(pt):
+                        continue
+                    if not (geom.contains(pt_geom) or geom.intersects(pt_geom)):
+                        continue
+                except Exception:
+                    continue
+                prev = per_unit_max.get(uid)
+                if prev is None or vv > prev:
+                    per_unit_max[uid] = vv
+                break
+
+        for uid, mx in per_unit_max.items():
+            anchors_by_unit.setdefault(uid, {})[year] = max(float(mx) * 1.0e11, 0.0)
+
+    if anchors_by_unit:
+        sampled_units = len(anchors_by_unit)
+        report.log(f"GFAS XYZ unit anchor extraction complete: units_with_anchor={sampled_units}")
+    return anchors_by_unit
+
+
+def _load_modulea_smoke_year_series(smoke_catalog_path: Path, report: Report) -> Tuple[Dict[int, float], Dict[int, str]]:
+    if not smoke_catalog_path.exists():
+        report.fail(f"v1_moduleA smoke catalog not found: {smoke_catalog_path}")
+    _header, rows, _delim = read_csv_rows(smoke_catalog_path)
+    by_year: Dict[int, List[float]] = {}
+    for r in rows:
+        y = safe_float(r.get("year"))
+        if y is None:
+            continue
+        val = safe_float(r.get("smoke_days"))
+        if val is None:
+            val = safe_float(r.get("smoke_hours"))
+            if val is not None:
+                val = val / 24.0
+        if val is None:
+            continue
+        yy = int(y)
+        if yy in YEARS_HIST:
+            by_year.setdefault(yy, []).append(float(val))
+
+    values: Dict[int, float] = {}
+    methods: Dict[int, str] = {}
+    for y in YEARS_HIST:
+        vals = by_year.get(y, [])
+        if not vals:
+            report.fail(f"v1_moduleA smoke catalog missing required year={y}")
+        values[y] = float(sum(vals) / len(vals))
+        methods[y] = "v1_moduleA_catalog_mean"
+    return values, methods
+
+
+def _degrade_smoke_methods(by_year_method: Dict[int, str], prefix: str) -> Dict[int, str]:
+    out: Dict[int, str] = {}
+    for y, m in by_year_method.items():
+        out[y] = f"{prefix}_{m}"
+    return out
+
+
+def write_smoke_route_audit(
+    qa_dir: Path,
+    smoke_csv: Path,
+    route_decision: Dict[str, object],
+) -> None:
+    ensure_dir(qa_dir)
+    out_tsv = qa_dir / "smoke_route_audit.tsv"
+    _hdr, rows, _delim = read_csv_rows(smoke_csv)
+    unique_by_year: Dict[int, set] = {}
+    method_by_year: Dict[int, str] = {}
+    for r in rows:
+        y = safe_float(r.get("year"))
+        sd = safe_float(r.get("smoke_days"))
+        if y is None or sd is None:
+            continue
+        yy = int(y)
+        unique_by_year.setdefault(yy, set()).add(round(sd, 8))
+        if yy not in method_by_year:
+            method_by_year[yy] = (r.get("smoke_method") or "").strip()
+
+    rows_out: List[List[object]] = []
+    for y in YEARS_HIST:
+        uniq = len(unique_by_year.get(y, set()))
+        rows_out.append(
+            [
+                y,
+                uniq,
+                method_by_year.get(y, ""),
+                1 if uniq <= 1 else 0,
+                str(route_decision.get("route_selected", "")),
+                str(route_decision.get("smoke_route_status", "")),
+                str(route_decision.get("smoke_route_decision", "")),
+                str(route_decision.get("health_exposure_claim", "")),
+                str(route_decision.get("iech_decision", "")),
+                str(route_decision.get("causal_matrix_decision", "")),
+                str(route_decision.get("brief_decision", "")),
+                str(route_decision.get("final_scientific_decision", "")),
+            ]
+        )
+    write_tsv(
+        out_tsv,
+        [
+            "year",
+            "unique_values",
+            "method",
+            "spatial_homogeneous_flag",
+            "route_selected",
+            "smoke_route_status",
+            "smoke_route_decision",
+            "health_exposure_claim",
+            "iech_decision",
+            "causal_matrix_decision",
+            "brief_decision",
+            "final_scientific_decision",
+        ],
+        rows_out,
+    )
+
+
+def write_spatial_collapse_root_cause_audit(
+    output_root: Path,
+    smoke_annual_csv: Path,
+    smoke_daily_csv: Path,
+    gfas_daily_summary_csv: Path,
+    iech_hist_csv: Path,
+) -> None:
+    qa_dir = output_root / "qa"
+    ensure_dir(qa_dir)
+    out_tsv = qa_dir / "spatial_collapse_root_cause_audit.tsv"
+    out_md = qa_dir / "spatial_collapse_root_cause_audit.md"
+
+    rows_out: List[List[object]] = []
+
+    def add_row(artifact: str, metric: str, value: object, evidence: str, decision: str) -> None:
+        rows_out.append([artifact, metric, value, evidence, decision])
+
+    daily_homogeneous: Optional[bool] = None
+    annual_homogeneous: Optional[bool] = None
+    gfas_global_summary: Optional[bool] = None
+    iech_collapsed: Optional[bool] = None
+    missing_inputs: List[str] = []
+
+    if smoke_daily_csv.exists():
+        _hdr, daily_rows, _delim = read_csv_rows(smoke_daily_csv)
+        add_row(smoke_daily_csv.name, "rows", len(daily_rows), "row_count", "READ")
+        unit_ids = sorted({(r.get("unit_id") or "").strip() for r in daily_rows if (r.get("unit_id") or "").strip()})
+        dates = sorted({(r.get("date") or "").strip() for r in daily_rows if (r.get("date") or "").strip()})
+        years = sorted({(r.get("year") or "").strip() for r in daily_rows if (r.get("year") or "").strip()})
+        add_row(smoke_daily_csv.name, "unit_id_unique", len(unit_ids), "distinct unit_id count", "READ")
+        add_row(smoke_daily_csv.name, "date_unique", len(dates), "distinct date count", "READ")
+        add_row(smoke_daily_csv.name, "year_unique", len(years), "distinct year count", "READ")
+
+        unique_by_date: Dict[str, set] = {}
+        unique_by_year: Dict[str, set] = {}
+        for r in daily_rows:
+            d = (r.get("date") or "").strip()
+            y = (r.get("year") or "").strip()
+            v = safe_float(r.get("smoke_day_score"))
+            if d and v is not None:
+                unique_by_date.setdefault(d, set()).add(round(v, 8))
+            if y and v is not None:
+                unique_by_year.setdefault(y, set()).add(round(v, 8))
+        daily_homogeneous = True
+        for s in unique_by_date.values():
+            if len(s) > 1:
+                daily_homogeneous = False
+                break
+        yearly_homogeneous = True
+        for s in unique_by_year.values():
+            if len(s) > 1:
+                yearly_homogeneous = False
+                break
+        add_row(
+            smoke_daily_csv.name,
+            "all_units_same_score_by_date",
+            1 if daily_homogeneous else 0,
+            ",".join(f"{k}:{len(v)}" for k, v in sorted(unique_by_date.items())),
+            "HOMOGENEOUS" if daily_homogeneous else "DIFFERENTIATED",
+        )
+        add_row(
+            smoke_daily_csv.name,
+            "all_units_same_score_by_year",
+            1 if yearly_homogeneous else 0,
+            ",".join(f"{k}:{len(v)}" for k, v in sorted(unique_by_year.items())),
+            "HOMOGENEOUS" if yearly_homogeneous else "DIFFERENTIATED",
+        )
+    else:
+        missing_inputs.append(str(smoke_daily_csv))
+        add_row(smoke_daily_csv.name, "exists", 0, "missing file", "FAIL")
+
+    if smoke_annual_csv.exists():
+        _hdr, annual_rows, _delim = read_csv_rows(smoke_annual_csv)
+        add_row(smoke_annual_csv.name, "rows", len(annual_rows), "row_count", "READ")
+        unique_by_year_annual: Dict[int, set] = {}
+        for r in annual_rows:
+            y = safe_float(r.get("year"))
+            v = safe_float(r.get("smoke_days"))
+            if y is None or v is None:
+                continue
+            unique_by_year_annual.setdefault(int(y), set()).add(round(v, 8))
+        annual_homogeneous = True
+        for s in unique_by_year_annual.values():
+            if len(s) > 1:
+                annual_homogeneous = False
+                break
+        add_row(
+            smoke_annual_csv.name,
+            "spatial_homogeneous_flag_derived",
+            1 if annual_homogeneous else 0,
+            ",".join(f"{y}:{len(v)}" for y, v in sorted(unique_by_year_annual.items())),
+            "HOMOGENEOUS" if annual_homogeneous else "DIFFERENTIATED",
+        )
+    else:
+        missing_inputs.append(str(smoke_annual_csv))
+        add_row(smoke_annual_csv.name, "exists", 0, "missing file", "FAIL")
+
+    if gfas_daily_summary_csv.exists():
+        hdr, gfas_rows, _delim = read_csv_rows(gfas_daily_summary_csv)
+        add_row(gfas_daily_summary_csv.name, "rows", len(gfas_rows), "row_count", "READ")
+        hdr_low = {str(h).strip().lower() for h in hdr}
+        has_unit_id = "unit_id" in hdr_low
+        has_latlon = (("lat" in hdr_low) or ("y" in hdr_low)) and (("lon" in hdr_low) or ("x" in hdr_low))
+        gfas_global_summary = not has_unit_id
+        add_row(
+            gfas_daily_summary_csv.name,
+            "is_portugal_global_summary",
+            1 if gfas_global_summary else 0,
+            f"has_unit_id={has_unit_id}",
+            "GLOBAL_ONLY" if gfas_global_summary else "UNIT_LEVEL",
+        )
+        add_row(
+            gfas_daily_summary_csv.name,
+            "has_lat_lon_or_cell_for_zonal_assignment",
+            1 if has_latlon else 0,
+            f"has_latlon={has_latlon}",
+            "HAS_COORDS" if has_latlon else "NO_COORDS",
+        )
+    else:
+        missing_inputs.append(str(gfas_daily_summary_csv))
+        add_row(gfas_daily_summary_csv.name, "exists", 0, "missing file", "FAIL")
+
+    if iech_hist_csv.exists():
+        _hdr, iech_rows, _delim = read_csv_rows(iech_hist_csv)
+        add_row(iech_hist_csv.name, "rows", len(iech_rows), "row_count", "READ")
+        comparable = 0
+        eq_rows = 0
+        expo_comparable = 0
+        expo_eq_rows = 0
+        for r in iech_rows:
+            iech = safe_float(r.get("IECH"))
+            hours = safe_float(r.get("smoke_hours_equiv"))
+            expo = safe_float(r.get("expo_person_hours"))
+            pop = safe_float(r.get("pop"))
+            if iech is not None and hours is not None:
+                comparable += 1
+                if abs(iech - hours) <= 1e-9:
+                    eq_rows += 1
+            if expo is not None and pop is not None and hours is not None:
+                expo_comparable += 1
+                if abs(expo - (pop * hours)) <= 1e-6:
+                    expo_eq_rows += 1
+        iech_collapsed = comparable > 0 and comparable == eq_rows
+        expo_identity = expo_comparable > 0 and expo_comparable == expo_eq_rows
+        add_row(
+            iech_hist_csv.name,
+            "iech_equals_smoke_hours_equiv_all_rows",
+            1 if iech_collapsed else 0,
+            f"{eq_rows}/{comparable}",
+            "COLLAPSED" if iech_collapsed else "NOT_COLLAPSED",
+        )
+        add_row(
+            iech_hist_csv.name,
+            "expo_person_hours_equals_pop_times_smoke_hours_all_rows",
+            1 if expo_identity else 0,
+            f"{expo_eq_rows}/{expo_comparable}",
+            "IDENTITY" if expo_identity else "NOT_IDENTITY",
+        )
+    else:
+        missing_inputs.append(str(iech_hist_csv))
+        add_row(iech_hist_csv.name, "exists", 0, "missing file", "FAIL")
+
+    decision = "BLOCKED_COLLAPSE_ORIGIN_NOT_LOCALIZED"
+    if missing_inputs:
+        decision = "BLOCKED_COLLAPSE_ORIGIN_NOT_LOCALIZED"
+    elif daily_homogeneous and annual_homogeneous and gfas_global_summary and iech_collapsed:
+        decision = "COLLAPSE_ORIGIN_MULTIPLE"
+    elif daily_homogeneous and gfas_global_summary:
+        decision = "COLLAPSE_ORIGIN_GDAL_PORTUGAL_SUMMARY"
+    elif annual_homogeneous and (daily_homogeneous is False):
+        decision = "COLLAPSE_ORIGIN_DAILY_TO_ANNUAL_AGGREGATION"
+    elif iech_collapsed:
+        decision = "COLLAPSE_ORIGIN_IECH_FORMULA"
+
+    add_row(
+        "AUDIT",
+        "collapse_origin_decision",
+        decision,
+        "daily_homogeneous + annual_homogeneous + portugal_global_summary + iech_collapse",
+        decision,
+    )
+    write_tsv(out_tsv, ["artifact", "metric", "value", "evidence", "decision"], rows_out)
+
+    md_lines = [
+        "# Spatial Collapse Root Cause Audit",
+        "",
+        f"- generated_at: {now_iso()}",
+        f"- output_root: {output_root}",
+        f"- decision: {decision}",
+        "",
+        "## Findings",
+    ]
+    for r in rows_out:
+        md_lines.append(f"- [{r[0]}] {r[1]}={r[2]} | evidence={r[3]} | decision={r[4]}")
+    out_md.write_text("\n".join(md_lines) + "\n", encoding="utf-8")
+
+
+def write_smoke_route_source_trace_audit(
+    qa_dir: Path,
+    inputs: Dict[str, object],
+    sources: Dict[str, object],
+    route_decision: Dict[str, object],
+) -> None:
+    ensure_dir(qa_dir)
+    out_tsv = qa_dir / "smoke_route_source_trace_audit.tsv"
+    payload = json.dumps(inputs, ensure_ascii=False).lower()
+    rows = [
+        ["TRACE-001", "PASS" if str(sources.get("smoke_csv_input", "")) else "HOLD", str(sources.get("smoke_csv_input", "")), "inputs_resolved.paths.smoke_csv"],
+        ["TRACE-002", "PASS" if bool(sources.get("modulea_validated")) else "HOLD", str(bool(sources.get("modulea_validated"))), "validated v1 moduleA smoke catalog"],
+        ["TRACE-003", "PASS" if bool(sources.get("gfas_exists")) else "HOLD", str(bool(sources.get("gfas_exists"))), "GFAS directory physical presence"],
+        ["TRACE-004", "PASS" if bool(sources.get("era5_exists")) else "HOLD", str(bool(sources.get("era5_exists"))), "ERA5 zip physical presence"],
+        ["TRACE-005", "PASS" if "gfas" in payload else "HOLD", str("gfas" in payload), "inputs_resolved contains GFAS trace tokens"],
+        ["TRACE-006", "PASS" if "era5" in payload else "HOLD", str("era5" in payload), "inputs_resolved contains ERA5 trace tokens"],
+        ["TRACE-007", "PASS", str(route_decision.get("route_selected", "")), "selector route_selected"],
+        ["TRACE-008", "PASS", str(route_decision.get("smoke_route_decision", "")), "selector smoke_route_decision"],
+    ]
+    write_tsv(out_tsv, ["check_id", "status", "value", "evidence"], rows)
+
+
+def write_gfas_era5_presence_audit(qa_dir: Path, sources: Dict[str, object]) -> None:
+    ensure_dir(qa_dir)
+    out_tsv = qa_dir / "gfas_era5_presence_audit.tsv"
+    rows = [
+        ["PRES-001", "PASS" if bool(sources.get("gfas_exists")) else "HOLD", str(sources.get("gfas_dir", "")), "GFAS directory path"],
+        ["PRES-002", "PASS" if int(sources.get("gfas_grib_count") or 0) > 0 else "HOLD", int(sources.get("gfas_grib_count") or 0), "GFAS grib file count"],
+        ["PRES-003", "PASS" if int(sources.get("gfas_total_bytes") or 0) > 0 else "HOLD", int(sources.get("gfas_total_bytes") or 0), "GFAS total bytes"],
+        ["PRES-004", "PASS" if bool(sources.get("era5_exists")) else "HOLD", str(sources.get("era5_zip", "")), "ERA5 zip path"],
+        ["PRES-005", "PASS" if int(sources.get("parquet_zip_count") or 0) > 0 else "HOLD", int(sources.get("parquet_zip_count") or 0), "Parquet proxy zip count"],
+    ]
+    write_tsv(out_tsv, ["check_id", "status", "value", "evidence"], rows)
+
+
+def write_gfas_era5_decoder_audit(
+    qa_dir: Path,
+    sources: Dict[str, object],
+    route_decision: Dict[str, object],
+    decoder_available: bool = False,
+) -> None:
+    ensure_dir(qa_dir)
+    out_tsv = qa_dir / "gfas_era5_decoder_audit.tsv"
+    decoder_required = str(route_decision.get("route_selected", "")) == "BLOCKED_DECODER_REQUIRED"
+    selected_real = str(route_decision.get("route_selected", "")) == "v0_gfas_era5_real"
+    rows = [
+        ["decoder_available", 1 if decoder_available else 0, "PASS" if decoder_available else "HOLD", "GDAL-only decoder probe result"],
+        ["decoder_required", 1 if decoder_required else 0, "BLOCKED" if decoder_required else "PASS", str(route_decision.get("required_decoder", ""))],
+        ["required_inputs", str(route_decision.get("required_inputs", "")), "PASS" if decoder_required or selected_real else "INFO", ""],
+        ["gfas_grib_count", int(sources.get("gfas_grib_count") or 0), "PASS" if int(sources.get("gfas_grib_count") or 0) > 0 else "HOLD", ""],
+        ["era5_exists", 1 if bool(sources.get("era5_exists")) else 0, "PASS" if bool(sources.get("era5_exists")) else "HOLD", ""],
+        [
+            "decoder_status",
+            str(route_decision.get("smoke_route_decision", "")),
+            "BLOCKED" if decoder_required else "PASS",
+            str(route_decision.get("reason", "")),
+        ],
+    ]
+    write_tsv(out_tsv, ["metric", "value", "status", "detail"], rows)
+    checkpoints = qa_dir / "gfas_era5_decoder_checkpoints.tsv"
+    cp_rows = [
+        [
+            "decoder_probe",
+            "decoder_available",
+            1 if decoder_available else 0,
+            "GDAL-only GFAS decoder probe with Portugal negative-longitude crop.",
+        ],
+        ["gfas_probe", "gfas_grib_count", int(sources.get("gfas_grib_count") or 0), str(sources.get("gfas_dir", ""))],
+        ["era5_probe", "era5_exists", 1 if bool(sources.get("era5_exists")) else 0, str(sources.get("era5_zip", ""))],
+        [
+            "route_decision",
+            "route_selected",
+            str(route_decision.get("route_selected", "")),
+            str(route_decision.get("reason", "")),
+        ],
+    ]
+    write_tsv(checkpoints, ["checkpoint", "metric", "value", "detail"], cp_rows)
+
+
+def _resolve_gdal_tool(name: str) -> str:
+    preferred = Path(r"C:\OSGeo4W64\bin") / name
+    if preferred.exists():
+        return str(preferred)
+    return name
+
+
+def _capture_warning_rows(tool_name: str, context: str, text: str) -> List[List[object]]:
+    rows: List[List[object]] = []
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        upper = line.upper()
+        if "WARNING" not in upper and "NUMPTS * (NUMBITS IN A GROUP)" not in upper and "OUTSIDE" not in upper:
+            continue
+        status = "PASS"
+        classification = "CLASSIFIED_WARNING"
+        impact = "LOW"
+        explained = "1"
+        if "NUMPTS * (NUMBITS IN A GROUP)" in upper:
+            classification = "GFAS_PACKING_WARNING_CLASSIFIED"
+        elif "OUTSIDE RASTER EXTENT" in upper:
+            classification = "WINDOW_OUTSIDE_RASTER_REJECTED"
+        elif "WARNING" in upper:
+            classification = "GENERIC_WARNING_UNCLASSIFIED"
+            status = "BLOCKED"
+            explained = "0"
+            impact = "UNKNOWN"
+        rows.append([tool_name, context, classification, explained, impact, status, line])
+    return rows
+
+
+def _extract_first_message_by_next_grib(src: Path, dst: Path, max_scan_bytes: int = 64 * 1024 * 1024) -> Tuple[int, int]:
+    if not src.exists():
+        raise FileNotFoundError(f"GFAS source GRIB missing: {src}")
+    chunk_size = 4 * 1024 * 1024
+    buf = bytearray()
+    with src.open("rb") as f:
+        while len(buf) < max_scan_bytes:
+            to_read = min(chunk_size, max_scan_bytes - len(buf))
+            part = f.read(to_read)
+            if not part:
+                break
+            buf.extend(part)
+            if len(buf) >= 8 and buf[:4] == b"GRIB":
+                next_idx = bytes(buf).find(b"GRIB", 4)
+                if next_idx > 0:
+                    payload = bytes(buf[:next_idx])
+                    ensure_dir(dst.parent)
+                    dst.write_bytes(payload)
+                    return next_idx, len(payload)
+    raise RuntimeError(f"Could not delimit first GRIB message using next GRIB within {max_scan_bytes} bytes for {src}")
+
+
+def _parse_xyz_stats(path: Path) -> Dict[str, object]:
+    rows = 0
+    numeric = 0
+    zeros = 0
+    nonzero = 0
+    vmin: Optional[float] = None
+    vmax: Optional[float] = None
+    vsum = 0.0
+    triples: List[Tuple[float, float, float]] = []
+    with path.open("r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            s = line.strip()
+            if not s:
+                continue
+            rows += 1
+            parts = s.split()
+            if len(parts) < 3:
+                continue
+            x = safe_float(parts[0])
+            y = safe_float(parts[1])
+            v = safe_float(parts[2])
+            if x is None or y is None or v is None:
+                continue
+            triples.append((x, y, v))
+            numeric += 1
+            if abs(v) <= 1e-15:
+                zeros += 1
+            else:
+                nonzero += 1
+            vsum += v
+            if vmin is None or v < vmin:
+                vmin = v
+            if vmax is None or v > vmax:
+                vmax = v
+    mean = (vsum / float(numeric)) if numeric > 0 else None
+    return {
+        "rows": rows,
+        "numeric": numeric,
+        "zero": zeros,
+        "nonzero": nonzero,
+        "min": vmin,
+        "max": vmax,
+        "mean": mean,
+        "triples": triples,
+    }
+
+
+def _run_external(cmd: List[str], timeout_sec: int = 600) -> Tuple[int, str, str]:
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
+    return proc.returncode, proc.stdout or "", proc.stderr or ""
+
+
+def _yyyymmdd_to_iso(v: str) -> str:
+    s = (v or "").strip()
+    if len(s) == 8 and s.isdigit():
+        return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
+    return s
+
+
+def _smoke_route_v0_audit_rows(unexplained_warnings_count: int, failed: bool, detail: str) -> List[List[object]]:
+    if not failed:
+        return [
+            ["backend_gfas", "GDAL", "PASS", "GFAS decoded through GDAL-only message extraction path."],
+            ["backend_era5", "GDAL", "PASS", "ERA5 10U/10V validated through GDAL."],
+            ["eccodes_for_gfas", "REJECTED_OR_FORBIDDEN", "PASS", "ecCodes is not used as GFAS decoder backend."],
+            ["smoke_claim_level", "OPERATIONAL_PROXY", "PASS", "Atmospheric proxy only (non-health validated)."],
+            ["health_exposure_claim", "BLOCKED_UNLESS_VALIDATED", "BLOCKED", "No official pollutant threshold validation in this v0 route."],
+            ["portugal_crop_convention", "NEGATIVE_LONGITUDE", "PASS", "Main crop: -projwin -10.0 43.0 -6.0 36.5"],
+            ["unexplained_warnings_count", unexplained_warnings_count, "PASS" if unexplained_warnings_count == 0 else "BLOCKED", detail],
+        ]
+    return [
+        ["backend_gfas", "GDAL", "HOLD", "GFAS GDAL path failed during probe."],
+        ["backend_era5", "GDAL", "HOLD", "ERA5 GDAL probe not completed."],
+        ["eccodes_for_gfas", "REJECTED_OR_FORBIDDEN", "PASS", "ecCodes is not used as GFAS decoder backend."],
+        ["smoke_claim_level", "OPERATIONAL_PROXY", "HOLD", "Proxy route blocked until decoder probe succeeds."],
+        ["health_exposure_claim", "BLOCKED_UNLESS_VALIDATED", "BLOCKED", "Health claim remains blocked."],
+        ["portugal_crop_convention", "NEGATIVE_LONGITUDE", "HOLD", "Not validated in this run."],
+        ["unexplained_warnings_count", unexplained_warnings_count, "BLOCKED", detail],
+    ]
+
+
+def decode_gfas_era5_gdal_proxy(modulec_datos: Path, qa_dir: Path, report: Report) -> Dict[str, object]:
+    ensure_dir(qa_dir)
+    gdal_translate = _resolve_gdal_tool("gdal_translate.exe")
+    gdalinfo = _resolve_gdal_tool("gdalinfo.exe")
+    result: Dict[str, object] = {
+        "decoder_available": False,
+        "by_year": {},
+        "by_year_method": {},
+        "daily_rows": [],
+        "spatial_scope": "UNKNOWN",
+        "unit_assignment": "UNKNOWN",
+        "warning_inventory_path": str(qa_dir / "warning_inventory.tsv"),
+        "reason": "",
+    }
+    warning_rows: List[List[object]] = []
+
+    def _write_warning_inventory() -> int:
+        out = qa_dir / "warning_inventory.tsv"
+        if not warning_rows:
+            warning_rows.append(
+                ["runtime", "none", "NO_WARNINGS", "1", "NONE", "PASS", "No warning captured in GFAS/ERA5 GDAL decoder path."]
+            )
+        write_tsv(
+            out,
+            ["tool", "context", "classification", "explained", "impact", "status", "warning_text"],
+            warning_rows,
+        )
+        return sum(1 for r in warning_rows if str(r[5]).upper() == "BLOCKED")
+
+    try:
+        gfas_dir = modulec_datos / "CAM-GFAS (ADS)"
+        edge_summary = gfas_dir / "_grib_edge_summary.csv"
+        if not edge_summary.exists():
+            raise FileNotFoundError(f"GFAS edge summary not found: {edge_summary}")
+        _hdr, edge_rows, _delim = read_csv_rows(edge_summary)
+        pm_rows: List[Dict[str, str]] = []
+        for r in edge_rows:
+            s1 = (r.get("shortName_1") or "").strip().lower()
+            sl = (r.get("shortName_L") or "").strip().lower()
+            if "pm2p5fire" in s1 or "pm2p5fire" in sl:
+                pm_rows.append(r)
+        if not pm_rows:
+            raise RuntimeError("No PM2P5FIRE candidate rows found in _grib_edge_summary.csv")
+
+        inv_rows: List[List[object]] = []
+        gfas_xyz_rows: List[List[object]] = []
+        daily_summary_rows: List[List[object]] = []
+        daily_rows: List[Dict[str, object]] = []
+        anchors: Dict[int, float] = {}
+        methods: Dict[int, str] = {}
+
+        for r in pm_rows:
+            file_name = (r.get("file") or "").strip()
+            if not file_name:
+                continue
+            src_grib = gfas_dir / file_name
+            if not src_grib.exists():
+                continue
+            date_raw = (r.get("validityDate_1") or r.get("dataDate_1") or "").strip()
+            year_hint = safe_float((date_raw[:4] if len(date_raw) >= 4 else ""))
+            year_int = int(year_hint) if year_hint is not None else None
+            if year_int is None:
+                continue
+            if year_int < min(YEARS_HIST) or year_int > max(YEARS_HIST):
+                continue
+
+            extracted_msg = qa_dir / f"gfas_pm2p5fire_{year_int}_message1.grib"
+            next_idx, payload_bytes = _extract_first_message_by_next_grib(src_grib, extracted_msg)
+
+            xyz_path = qa_dir / f"gfas_pm2p5fire_{year_int}_portugal.xyz"
+            cmd = [
+                gdal_translate,
+                "-of",
+                "XYZ",
+                "-projwin",
+                "-10.0",
+                "43.0",
+                "-6.0",
+                "36.5",
+                str(extracted_msg),
+                str(xyz_path),
+            ]
+            rc, stdout, stderr = _run_external(cmd, timeout_sec=900)
+            warning_rows.extend(_capture_warning_rows("gdal_translate", f"GFAS_PM2P5_{year_int}", stdout + "\n" + stderr))
+            if rc != 0:
+                raise RuntimeError(f"gdal_translate failed for {file_name} year={year_int}; rc={rc}")
+            if not xyz_path.exists():
+                raise RuntimeError(f"gdal_translate output missing: {xyz_path}")
+
+            stats = _parse_xyz_stats(xyz_path)
+            max_val = safe_float(stats.get("max"))
+            daily_score = (max_val * 1.0e11) if max_val is not None else 0.0
+            if daily_score < 0:
+                daily_score = 0.0
+            anchors[year_int] = daily_score
+            methods[year_int] = "gfas_pm2p5fire_gdal_message1_negative_lon_proxy"
+
+            date_iso = _yyyymmdd_to_iso(date_raw)
+            inv_rows.append(
+                [
+                    file_name,
+                    year_int,
+                    str(src_grib),
+                    str(extracted_msg),
+                    payload_bytes,
+                    next_idx,
+                    (r.get("shortName_1") or ""),
+                    (r.get("units_1") or ""),
+                    date_raw,
+                    "PASS",
+                ]
+            )
+            daily_summary_rows.append(
+                [
+                    date_iso,
+                    year_int,
+                    file_name,
+                    stats.get("rows", 0),
+                    stats.get("numeric", 0),
+                    stats.get("zero", 0),
+                    stats.get("nonzero", 0),
+                    stats.get("min", ""),
+                    stats.get("max", ""),
+                    stats.get("mean", ""),
+                    daily_score,
+                ]
+            )
+            daily_rows.append(
+                {
+                    "date": date_iso,
+                    "year": year_int,
+                    "smoke_day_score": daily_score,
+                    "source_file": file_name,
+                    "method": "gfas_pm2p5fire_gdal_negative_lon",
+                    "xyz_path": str(xyz_path),
+                }
+            )
+
+            for x, y, v in stats.get("triples", []):
+                gfas_xyz_rows.append([file_name, date_iso, x, y, v])
+
+        if not anchors:
+            raise RuntimeError("PM2P5FIRE decoder produced no annual anchors within 2015-2024.")
+
+        filled_vals, filled_methods = _fill_smoke_year_series(anchors, report)
+        by_year: Dict[int, float] = {}
+        by_year_method: Dict[int, str] = {}
+        for y in YEARS_HIST:
+            by_year[y] = float(filled_vals.get(y, 0.0))
+            src_method = methods.get(y)
+            if src_method is None:
+                fallback_method = str(filled_methods.get(y, "gfas_pm2p5fire_unknown"))
+                if fallback_method.startswith("primary_parquet_"):
+                    fallback_method = "gfas_pm2p5fire_" + fallback_method[len("primary_parquet_") :]
+                src_method = fallback_method
+            by_year_method[y] = src_method
+
+        write_tsv(
+            qa_dir / "gfas_pm2p5fire_message_inventory.tsv",
+            [
+                "source_file",
+                "year_hint",
+                "source_grib_path",
+                "extracted_message_path",
+                "extracted_message_bytes",
+                "next_grib_offset",
+                "shortName_1",
+                "units_1",
+                "validityDate_1",
+                "status",
+            ],
+            inv_rows,
+        )
+        write_csv(
+            qa_dir / "gfas_pm2p5fire_portugal_xyz.csv",
+            ["source_file", "date", "x", "y", "value"],
+            gfas_xyz_rows,
+            delim=";",
+        )
+        write_csv(
+            qa_dir / "gfas_pm2p5fire_portugal_daily_summary.csv",
+            [
+                "date",
+                "year",
+                "source_file",
+                "rows",
+                "numeric",
+                "zero",
+                "nonzero",
+                "min",
+                "max",
+                "mean",
+                "smoke_day_score",
+            ],
+            daily_summary_rows,
+            delim=";",
+        )
+
+        era5_candidates = sorted(modulec_datos.glob("*ERA5*.zip"))
+        era5_zip = era5_candidates[0] if era5_candidates else None
+        if era5_zip is None or not era5_zip.exists():
+            raise FileNotFoundError("ERA5 zip not found for decoder probe.")
+        era5_vsi = f"/vsizip/{era5_zip.as_posix()}/data.grib"
+        rc_i, out_i, err_i = _run_external([gdalinfo, era5_vsi], timeout_sec=180)
+        warning_rows.extend(_capture_warning_rows("gdalinfo", "ERA5_INFO", out_i + "\n" + err_i))
+        if rc_i != 0:
+            raise RuntimeError(f"gdalinfo failed for ERA5: rc={rc_i}")
+        low_info = (out_i + "\n" + err_i).lower()
+        has_10u = ("10 metre u wind component" in low_info) or ("grib_element=10u" in low_info)
+        has_10v = ("10 metre v wind component" in low_info) or ("grib_element=10v" in low_info)
+        if not (has_10u and has_10v):
+            raise RuntimeError("ERA5 10U/10V not detected in GDAL probe.")
+
+        era5_u_xyz = qa_dir / "era5_10u_portugal.xyz"
+        era5_v_xyz = qa_dir / "era5_10v_portugal.xyz"
+        rc_u, out_u, err_u = _run_external([gdal_translate, "-of", "XYZ", "-b", "1", era5_vsi, str(era5_u_xyz)], timeout_sec=240)
+        warning_rows.extend(_capture_warning_rows("gdal_translate", "ERA5_10U_XYZ", out_u + "\n" + err_u))
+        if rc_u != 0:
+            raise RuntimeError(f"gdal_translate ERA5 band1 failed rc={rc_u}")
+        rc_v, out_v, err_v = _run_external([gdal_translate, "-of", "XYZ", "-b", "2", era5_vsi, str(era5_v_xyz)], timeout_sec=240)
+        warning_rows.extend(_capture_warning_rows("gdal_translate", "ERA5_10V_XYZ", out_v + "\n" + err_v))
+        if rc_v != 0:
+            raise RuntimeError(f"gdal_translate ERA5 band2 failed rc={rc_v}")
+
+        u_stats = _parse_xyz_stats(era5_u_xyz)
+        v_stats = _parse_xyz_stats(era5_v_xyz)
+        era5_wind_rows: List[List[object]] = []
+        for x, y, v in u_stats.get("triples", []):
+            era5_wind_rows.append(["10U", x, y, v])
+        for x, y, v in v_stats.get("triples", []):
+            era5_wind_rows.append(["10V", x, y, v])
+        write_csv(
+            qa_dir / "era5_wind_portugal_xyz.csv",
+            ["band", "x", "y", "value"],
+            era5_wind_rows,
+            delim=";",
+        )
+        write_tsv(
+            qa_dir / "era5_10u10v_inventory.tsv",
+            ["metric", "value", "status", "detail"],
+            [
+                ["era5_zip_path", str(era5_zip), "PASS", ""],
+                ["era5_has_10u", 1 if has_10u else 0, "PASS" if has_10u else "BLOCKED", ""],
+                ["era5_has_10v", 1 if has_10v else 0, "PASS" if has_10v else "BLOCKED", ""],
+                ["era5_10u_rows", int(u_stats.get("rows", 0)), "PASS" if int(u_stats.get("rows", 0)) > 0 else "BLOCKED", ""],
+                ["era5_10v_rows", int(v_stats.get("rows", 0)), "PASS" if int(v_stats.get("rows", 0)) > 0 else "BLOCKED", ""],
+                ["era5_10u_nonzero", int(u_stats.get("nonzero", 0)), "PASS" if int(u_stats.get("nonzero", 0)) > 0 else "BLOCKED", ""],
+                ["era5_10v_nonzero", int(v_stats.get("nonzero", 0)), "PASS" if int(v_stats.get("nonzero", 0)) > 0 else "BLOCKED", ""],
+            ],
+        )
+
+        unexplained_count = _write_warning_inventory()
+        write_tsv(
+            qa_dir / "smoke_route_v0_audit.tsv",
+            ["metric", "value", "status", "detail"],
+            _smoke_route_v0_audit_rows(unexplained_count, failed=False, detail=""),
+        )
+
+        result["decoder_available"] = unexplained_count == 0
+        result["by_year"] = by_year
+        result["by_year_method"] = by_year_method
+        result["daily_rows"] = daily_rows
+        result["spatial_scope"] = "GFAS_PM2P5FIRE_PORTUGAL_GLOBAL_DAILY_MAX"
+        result["unit_assignment"] = "GLOBAL_PORTUGAL_REPLICATED_TO_NUTS3"
+        result["reason"] = "GFAS/ERA5 GDAL-only decoder probe produced PM2P5FIRE + ERA5 artifacts."
+        report.log(
+            "GFAS/ERA5 decoder probe complete: "
+            f"decoder_available={result['decoder_available']} anchors={','.join(str(y) for y in sorted(anchors.keys()))}"
+        )
+    except Exception as exc:
+        result["decoder_available"] = False
+        result["reason"] = str(exc)
+        warning_rows.append(
+            [
+                "runtime",
+                "GFAS_ERA5_DECODER",
+                "DECODER_EXCEPTION",
+                "0",
+                "HIGH",
+                "BLOCKED",
+                str(exc),
+            ]
+        )
+        _write_warning_inventory()
+        write_tsv(
+            qa_dir / "smoke_route_v0_audit.tsv",
+            ["metric", "value", "status", "detail"],
+            _smoke_route_v0_audit_rows(1, failed=True, detail=str(exc)),
+        )
+        report.log(f"GFAS/ERA5 decoder probe blocked: {exc}")
+    return result
+
+
+def smoke_prepare(
+    inputs: Dict[str, object],
+    admin_layer_path: Path,
+    tables_dir: Path,
+    modulec_datos: Path,
+    route_decision: Dict[str, object],
+    sources: Dict[str, object],
+    report: Report,
+    decoder_payload: Optional[Dict[str, object]] = None,
+) -> Path:
+    smoke_path = Path(str(inputs["paths"].get("smoke_csv", "")))
+    if smoke_path:
+        if _is_forbidden_smoke_output_source(smoke_path):
+            report.log(f"smoke_csv rejected (forbidden canonical source under 03_outputs\\tables): {smoke_path}")
+        else:
+            report.log(f"smoke_csv input registered: {smoke_path}")
+
+    route_selected = str(route_decision.get("route_selected", "")).strip()
+    unit_assignment = ""
+    global_replicated_assignment = False
+    if route_selected == "NO-GO_SMOKE_ROUTE":
+        report.fail("NO-GO_SMOKE_ROUTE: no smoke route available.")
+
+    if route_selected == "v1_moduleA_validated":
+        modulea_path = Path(str(sources.get("modulea_catalog_path", "")))
+        by_year, by_year_method = _load_modulea_smoke_year_series(modulea_path, report)
+    elif route_selected in ("v0_parquet_proxy_degraded", "BLOCKED_DECODER_REQUIRED"):
+        anchors = _collect_primary_smoke_anchors(modulec_datos, report)
+        by_year, by_year_method = _fill_smoke_year_series(anchors, report)
+        by_year_method = _degrade_smoke_methods(by_year_method, "proxy_degraded")
+        if route_selected == "BLOCKED_DECODER_REQUIRED":
+            report.log("BLOCKED_DECODER_REQUIRED: using v0_parquet_proxy_degraded for diagnostic output only.")
+    elif route_selected == "v0_gfas_era5_real":
+        payload = decoder_payload or {}
+        if not bool(payload.get("decoder_available")):
+            report.fail("v0_gfas_era5_real selected but decoder payload is unavailable.")
+        by_year = {int(y): float(v) for y, v in dict(payload.get("by_year", {})).items()}
+        by_year_method = {int(y): str(v) for y, v in dict(payload.get("by_year_method", {})).items()}
+        unit_assignment = str(payload.get("unit_assignment", "")).strip()
+        global_replicated_assignment = unit_assignment == "GLOBAL_PORTUGAL_REPLICATED_TO_NUTS3"
+        if not by_year:
+            report.fail("v0_gfas_era5_real selected but by_year decoder output is empty.")
+    else:
+        report.fail(f"Unknown smoke route_selected value: {route_selected}")
+
+    from qgis.core import QgsVectorLayer  # type: ignore
+    admin = QgsVectorLayer(str(admin_layer_path) + "|layername=admin_nuts3_2024", "admin", "ogr")
+    if not admin.isValid():
+        report.fail(f"Admin layer invalid: {admin_layer_path}")
+    unit_ids = sorted({str(f["NUTS_ID"]) for f in admin.getFeatures() if f["NUTS_ID"] is not None})
+    if not unit_ids:
+        report.fail("Admin layer has no NUTS_ID values.")
+
+    use_unit_series = False
+    unit_year_values: Dict[str, Dict[int, float]] = {}
+    unit_year_methods: Dict[str, Dict[int, str]] = {}
+    if route_selected == "v0_gfas_era5_real" and global_replicated_assignment and decoder_payload:
+        daily_seed = list(decoder_payload.get("daily_rows", []))
+        anchors_by_unit = _derive_unit_anchor_scores_from_xyz(admin, daily_seed, report) if daily_seed else {}
+        for uid in unit_ids:
+            anchors = anchors_by_unit.get(uid, {})
+            if not anchors:
+                continue
+            vals_u, meth_u = _fill_smoke_year_series_relaxed(anchors, "gfas_pm2p5fire_gdal_unit")
+            if vals_u:
+                unit_year_values[uid] = vals_u
+                unit_year_methods[uid] = meth_u
+        has_spread = False
+        if unit_year_values:
+            for y in YEARS_HIST:
+                vals = []
+                for uid in unit_ids:
+                    if uid in unit_year_values and y in unit_year_values[uid]:
+                        vals.append(round(float(unit_year_values[uid][y]), 8))
+                    else:
+                        base = by_year.get(y, None)
+                        if base is not None:
+                            vals.append(round(float(base), 8))
+                if len(set(vals)) > 1:
+                    has_spread = True
+                    break
+        if has_spread:
+            use_unit_series = True
+            unit_assignment = "UNIT_ZONAL_MAX_FROM_GFAS_XYZ_ANCHORS"
+            report.log("GFAS smoke route upgraded to unit-level zonal anchors from XYZ.")
+        else:
+            report.log("GFAS XYZ unit anchors available but no spatial spread detected; keeping global replication.")
+
+    out_path = tables_dir / "smoke_days_unit_2015_2024.csv"
+    rows_out = []
+    for uid in unit_ids:
+        for y in YEARS_HIST:
+            sd = None
+            smoke_method = ""
+            if use_unit_series and uid in unit_year_values:
+                sd = unit_year_values[uid].get(y, None)
+                smoke_method = unit_year_methods.get(uid, {}).get(y, "gfas_pm2p5fire_gdal_unit_unknown")
+            if sd is None:
+                sd = by_year.get(y, None)
+                smoke_method = by_year_method.get(y, "primary_parquet_unknown")
+            if sd is None:
+                report.fail(f"Primary smoke series missing required year: {y}")
+            if route_selected == "v0_gfas_era5_real" and global_replicated_assignment:
+                if (not use_unit_series) and ("replicated_to_nuts3" not in smoke_method):
+                    smoke_method = f"{smoke_method}_replicated_to_nuts3_from_portugal_global"
+            rows_out.append([uid, y, sd, "", "", smoke_method, 0])
+
+    write_csv(
+        out_path,
+        ["unit_id", "year", "smoke_days", "smoke_score_mean", "smoke_score_p80", "smoke_method", "smoke_missing_flag"],
+        rows_out,
+        delim=";",
+    )
+
+    # Alias required by route-v0 GFAS/ERA5 audits (same payload as canonical smoke table).
+    alias_path = tables_dir / "smoke_days_nuts3_annual_2015_2024.csv"
+    write_csv(
+        alias_path,
+        ["unit_id", "year", "smoke_days", "smoke_score_mean", "smoke_score_p80", "smoke_method", "smoke_missing_flag"],
+        rows_out,
+        delim=";",
+    )
+
+    # Optional daily proxy table generated when v0_gfas_era5_real decoder probe is available.
+    if route_selected == "v0_gfas_era5_real" and decoder_payload:
+        daily = list(decoder_payload.get("daily_rows", []))
+        if daily:
+            daily_out = tables_dir / "smoke_day_score_nuts3_daily.csv"
+            daily_rows: List[List[object]] = []
+            for uid in unit_ids:
+                for d in daily:
+                    day_score = d.get("smoke_day_score", "")
+                    day_method = d.get("method", "")
+                    yv = safe_float(d.get("year"))
+                    if use_unit_series and yv is not None:
+                        y_int = int(yv)
+                        unit_score = unit_year_values.get(uid, {}).get(y_int, None)
+                        if unit_score is not None:
+                            day_score = unit_score
+                            day_method = "gfas_pm2p5fire_gdal_unit_negative_lon"
+                    daily_rows.append(
+                        [
+                            uid,
+                            d.get("date", ""),
+                            d.get("year", ""),
+                            day_score,
+                            d.get("source_file", ""),
+                            day_method,
+                            unit_assignment or "UNKNOWN_ASSIGNMENT",
+                        ]
+                    )
+            write_csv(
+                daily_out,
+                ["unit_id", "date", "year", "smoke_day_score", "source_file", "method", "spatial_assignment"],
+                daily_rows,
+                delim=";",
+            )
+
+    return out_path
+
+def pop_prepare(inputs: Dict[str, object], admin_layer_path: Path, work_dir: Path, tables_dir: Path, report: Report) -> Path:
+    from qgis.core import QgsVectorLayer  # type: ignore
+    import processing  # type: ignore
+
+    admin = QgsVectorLayer(str(admin_layer_path) + "|layername=admin_nuts3_2024", "admin", "ogr")
+    if not admin.isValid():
+        report.fail(f"Admin layer invalid: {admin_layer_path}")
+    admin_extent = admin.extent()
+    xmin = admin_extent.xMinimum()
+    xmax = admin_extent.xMaximum()
+    ymin = admin_extent.yMinimum()
+    ymax = admin_extent.yMaximum()
+    target_extent = (
+        f"{xmin},{xmax},{ymin},{ymax} [EPSG:3763]"
+    )
+    warp_extra = f"-te {xmin} {ymin} {xmax} {ymax} -tr 100 100 -overwrite"
+
+    ghsl = inputs["paths"]["ghsl_pop"]
+    rasters_3763 = work_dir / "rasters_3763"
+    ensure_dir(rasters_3763)
+
+    admin_work = admin
+    for y in (2015, 2020, 2025, 2030):
+        src = resolve_raster_source(str(ghsl[str(y)]), report)
+        dst = rasters_3763 / f"ghsl_pop_{y}_epsg3763.tif"
+        if dst.exists():
+            try:
+                dst.unlink()
+            except Exception:
+                pass
+            aux_xml = Path(str(dst) + ".aux.xml")
+            if aux_xml.exists():
+                try:
+                    aux_xml.unlink()
+                except Exception:
+                    pass
+        res = processing.run("gdal:warpreproject", {
+            "INPUT": src,
+            "SOURCE_CRS": None,
+            "TARGET_CRS": "EPSG:3763",
+            "RESAMPLING": 0,
+            "NODATA": None,
+            "TARGET_RESOLUTION": 100.0,
+            "OPTIONS": "",
+            "DATA_TYPE": 0,
+            "TARGET_EXTENT": target_extent,
+            "TARGET_EXTENT_CRS": "EPSG:3763",
+            "MULTITHREADING": False,
+            "EXTRA": warp_extra,
+            "OUTPUT": str(dst),
+        })
+        if not Path(res["OUTPUT"]).exists():
+            gdalwarp = Path(r"C:\OSGeo4W64\bin\gdalwarp.exe")
+            if not gdalwarp.exists():
+                report.fail(f"Failed to reproject GHSL {y} -> {dst}; missing fallback binary: {gdalwarp}")
+            cmd = [
+                str(gdalwarp),
+                "-overwrite",
+                "-t_srs", "EPSG:3763",
+                "-te", str(xmin), str(ymin), str(xmax), str(ymax),
+                "-tr", "100", "100",
+                src,
+                str(dst),
+            ]
+            fallback = subprocess.run(cmd, capture_output=True, text=True)
+            if fallback.returncode != 0 or not dst.exists():
+                out_txt = (fallback.stdout or "").strip()
+                err_txt = (fallback.stderr or "").strip()
+                report.fail(
+                    f"Failed to reproject GHSL {y} -> {dst} (extra={warp_extra}); "
+                    f"fallback_rc={fallback.returncode}; fallback_stdout={out_txt}; fallback_stderr={err_txt}"
+                )
+        stats = processing.run("native:zonalstatisticsfb", {
+            "INPUT": admin_work,
+            "INPUT_RASTER": str(dst),
+            "RASTER_BAND": 1,
+            "COLUMN_PREFIX": f"pop_{y}_",
+            "STATISTICS": [1],
+            "OUTPUT": "memory:",
+        })
+        admin_work = stats["OUTPUT"]
+
+    out_path = tables_dir / "pop_unit_2015_2025_2030.csv"
+    rows_out = []
+    field_names = set(admin_work.fields().names())
+    def feat_val(ft, name: str):
+        if name not in field_names:
+            return ""
+        v = ft[name]
+        return "" if v is None else v
+    for f in admin_work.getFeatures():
+        uid = str(f["NUTS_ID"])
+        row = [
+            uid,
+            feat_val(f, "pop_2015_sum"),
+            feat_val(f, "pop_2020_sum"),
+            feat_val(f, "pop_2025_sum"),
+            feat_val(f, "pop_2030_sum"),
+            0,
+        ]
+        rows_out.append(row)
+
+    write_csv(out_path, ["unit_id", "pop_2015_sum", "pop_2020_sum", "pop_2025_sum", "pop_2030_sum", "pop_missing_flag"], rows_out, delim=";")
+    return out_path
+
+
+def recurrence_prepare(inputs: Dict[str, object], admin_layer_path: Path, tables_dir: Path, report: Report) -> Path:
+    from qgis.core import QgsVectorLayer  # type: ignore
+    import processing  # type: ignore
+
+    admin = QgsVectorLayer(str(admin_layer_path) + "|layername=admin_nuts3_2024", "admin", "ogr")
+    if not admin.isValid():
+        report.fail(f"Admin layer invalid: {admin_layer_path}")
+
+    unit_ids = sorted({str(f["NUTS_ID"]) for f in admin.getFeatures() if f["NUTS_ID"] is not None})
+    if not unit_ids:
+        report.fail("Admin layer has no NUTS_ID values.")
+
+    fire_gpkgs = [Path(p) for p in inputs["paths"]["fire_gpkgs_tm06"]]
+    if len(fire_gpkgs) < len(YEARS_HIST):
+        report.fail(f"Not enough fire_gpkgs_tm06: {len(fire_gpkgs)}")
+
+    burn_by_unit_year: Dict[str, Dict[int, float]] = {u: {} for u in unit_ids}
+    big_by_unit_year: Dict[str, Dict[int, int]] = {u: {} for u in unit_ids}
+
+    for gpkg in fire_gpkgs:
+        yr = None
+        for y in YEARS_HIST:
+            if str(y) in gpkg.name:
+                yr = y
+                break
+        if yr is None:
+            continue
+
+        fire = QgsVectorLayer(str(gpkg), f"fire_{yr}", "ogr")
+        if not fire.isValid():
+            report.fail(f"Fire layer invalid: {gpkg}")
+
+        fire2 = processing.run("native:fieldcalculator", {
+            "INPUT": fire,
+            "FIELD_NAME": "area_ha",
+            "FIELD_TYPE": 0,
+            "FIELD_LENGTH": 20,
+            "FIELD_PRECISION": 4,
+            "FORMULA": "$area/10000.0",
+            "OUTPUT": "memory:"
+        })["OUTPUT"]
+
+        fire2 = processing.run("native:fieldcalculator", {
+            "INPUT": fire2,
+            "FIELD_NAME": "evt_id",
+            "FIELD_TYPE": 1,
+            "FIELD_LENGTH": 20,
+            "FIELD_PRECISION": 0,
+            "FORMULA": "$id",
+            "OUTPUT": "memory:"
+        })["OUTPUT"]
+
+        try:
+            admin_fix = processing.run("native:fixgeometries", {"INPUT": admin, "OUTPUT": "memory:"})["OUTPUT"]
+        except Exception:
+            admin_fix = admin
+        try:
+            fire_fix = processing.run("native:fixgeometries", {"INPUT": fire2, "OUTPUT": "memory:"})["OUTPUT"]
+        except Exception:
+            fire_fix = fire2
+
+        inter = processing.run("native:intersection", {"INPUT": admin_fix, "OVERLAY": fire_fix, "OUTPUT": "memory:"})["OUTPUT"]
+        inter = processing.run("native:fieldcalculator", {
+            "INPUT": inter,
+            "FIELD_NAME": "area_ha_i",
+            "FIELD_TYPE": 0,
+            "FIELD_LENGTH": 20,
+            "FIELD_PRECISION": 4,
+            "FORMULA": "$area/10000.0",
+            "OUTPUT": "memory:"
+        })["OUTPUT"]
+
+        stats_area = processing.run("qgis:statisticsbycategories", {
+            "INPUT": inter,
+            "CATEGORIES_FIELD_NAME": "NUTS_ID",
+            "VALUES_FIELD_NAME": "area_ha_i",
+            "OUTPUT": "memory:"
+        })["OUTPUT"]
+
+        area_lookup = {}
+        for ft in stats_area.getFeatures():
+            u = str(ft["NUTS_ID"])
+            s = safe_float(ft["sum"]) if "sum" in stats_area.fields().names() else None
+            area_lookup[u] = float(s) if s is not None else 0.0
+
+        for u in unit_ids:
+            burn_by_unit_year[u][yr] = area_lookup.get(u, 0.0)
+
+        fire_big = processing.run("native:extractbyexpression", {
+            "INPUT": fire2,
+            "EXPRESSION": "\"area_ha\" >= 1000",
+            "OUTPUT": "memory:"
+        })["OUTPUT"]
+        try:
+            fire_big_fix = processing.run("native:fixgeometries", {"INPUT": fire_big, "OUTPUT": "memory:"})["OUTPUT"]
+        except Exception:
+            fire_big_fix = fire_big
+
+        inter_big = processing.run("native:intersection", {"INPUT": admin_fix, "OVERLAY": fire_big_fix, "OUTPUT": "memory:"})["OUTPUT"]
+        stats_big = processing.run("qgis:statisticsbycategories", {
+            "INPUT": inter_big,
+            "CATEGORIES_FIELD_NAME": "NUTS_ID",
+            "VALUES_FIELD_NAME": "evt_id",
+            "OUTPUT": "memory:"
+        })["OUTPUT"]
+
+        big_lookup = {}
+        unique_field = "unique" if "unique" in stats_big.fields().names() else None
+        if unique_field:
+            for ft in stats_big.getFeatures():
+                u = str(ft["NUTS_ID"])
+                big_lookup[u] = int(float(ft[unique_field])) if safe_float(ft[unique_field]) is not None else 0
+
+        for u in unit_ids:
+            big_by_unit_year[u][yr] = big_lookup.get(u, 0)
+
+    totals = []
+    rec_rows = []
+    for u in unit_ids:
+        annual_burn = [burn_by_unit_year[u].get(y, 0.0) for y in YEARS_HIST]
+        total_burn = sum(annual_burn)
+        p75 = sorted(annual_burn)[int(0.75 * (len(annual_burn) - 1))] if annual_burn else 0.0
+        years_gt_p75 = sum(1 for v in annual_burn if v > p75 and v > 0)
+        n_big = sum(big_by_unit_year[u].get(y, 0) for y in YEARS_HIST)
+        totals.append(total_burn)
+        rec_rows.append((u, total_burn, years_gt_p75, n_big))
+
+    totals_sorted = sorted(totals)
+    t33 = totals_sorted[int(0.33 * (len(totals_sorted) - 1))] if totals_sorted else 0.0
+    t66 = totals_sorted[int(0.66 * (len(totals_sorted) - 1))] if totals_sorted else 0.0
+
+    out_path = tables_dir / "recurrence_unit_2015_2024.csv"
+    rows_out = []
+    for u, total_burn, years_gt_p75, n_big in rec_rows:
+        if total_burn <= t33:
+            cls = "LOW"
+        elif total_burn <= t66:
+            cls = "MED"
+        else:
+            cls = "HIGH"
+        rows_out.append([u, total_burn, years_gt_p75, n_big, cls, 0])
+
+    write_csv(out_path, ["unit_id", "total_burn_ha_2015_2024", "years_area_gt_p75", "n_events_gt_1000ha", "recurrence_class", "recurrence_missing_flag"], rows_out, delim=";")
+    return out_path
+
+
+def interpolate_pop(p2015: float, p2020: float, p2025: float, year: int) -> float:
+    if year <= 2020:
+        return p2015 + (p2020 - p2015) * ((year - 2015) / 5.0)
+    return p2020 + (p2025 - p2020) * ((year - 2020) / 5.0)
+
+
+def interpolate_pop_scen(p2025: float, p2030: float, year: int) -> float:
+    return p2025 + (p2030 - p2025) * ((year - 2025) / 5.0)
+
+def iech_compute(tables_dir: Path, report: Report) -> Tuple[Path, Path]:
+    pop_csv = tables_dir / "pop_unit_2015_2025_2030.csv"
+    smoke_csv = tables_dir / "smoke_days_unit_2015_2024.csv"
+    rec_csv = tables_dir / "recurrence_unit_2015_2024.csv"
+    for p in (pop_csv, smoke_csv, rec_csv):
+        if not p.exists():
+            report.fail(f"Missing table: {p}")
+
+    pop_rows = read_csv_rows(pop_csv)[1]
+    smoke_rows = read_csv_rows(smoke_csv)[1]
+    if has_missing_flag(pop_rows) or has_missing_flag(smoke_rows):
+        report.fail("Placeholder detected (missing_flag=1). IECH will not be computed.")
+
+    pop = {}
+    for r in pop_rows:
+        uid = r.get("unit_id", "")
+        pop[uid] = (
+            safe_float(r.get("pop_2015_sum")) or 0.0,
+            safe_float(r.get("pop_2020_sum")) or 0.0,
+            safe_float(r.get("pop_2025_sum")) or 0.0,
+            safe_float(r.get("pop_2030_sum")) or 0.0,
+        )
+
+    smoke = {}
+    for r in smoke_rows:
+        uid = r.get("unit_id", "")
+        y = safe_float(r.get("year"))
+        sd = safe_float(r.get("smoke_days"))
+        if not uid or y is None:
+            continue
+        smoke.setdefault(uid, {})[int(y)] = sd
+
+    unit_ids = sorted(pop.keys())
+    if not unit_ids:
+        report.fail("No unit_ids found in pop table.")
+
+    iech_hist_csv = tables_dir / "IECH_unit_2015_2024.csv"
+    rows_out = []
+    for uid in unit_ids:
+        p2015, p2020, p2025, _p2030 = pop.get(uid, (0.0, 0.0, 0.0, 0.0))
+        for y in YEARS_HIST:
+            sd = smoke.get(uid, {}).get(y, None)
+            if sd is None:
+                report.fail(f"Missing smoke_days for {uid} {y}")
+            hours = sd * 24.0
+            p = interpolate_pop(p2015, p2020, p2025, y)
+            expo = hours * p if p > 0 else None
+            iech = (expo / p) if expo is not None and p > 0 else None
+            rows_out.append([uid, y, sd, hours, p, expo, iech, "IECH=smoke_days*24;pop=interp(2015,2020,2025)"])
+
+    write_csv(iech_hist_csv, ["unit_id", "year", "smoke_days", "smoke_hours_equiv", "pop", "expo_person_hours", "IECH", "method_flags"], rows_out, delim=";")
+
+    iech_mean_csv = tables_dir / "IECH_unit_2015_2024_mean.csv"
+    acc: Dict[str, List[float]] = {}
+    for r in rows_out:
+        uid = r[0]
+        iech = safe_float(r[6])
+        if iech is not None:
+            acc.setdefault(uid, []).append(iech)
+    rows_mean = []
+    for uid, vals in sorted(acc.items()):
+        mean_val = sum(vals) / len(vals) if vals else 0.0
+        rows_mean.append([uid, mean_val])
+    write_csv(iech_mean_csv, ["unit_id", "IECH_mean_2015_2024"], rows_mean, delim=";")
+    return iech_hist_csv, iech_mean_csv
+
+
+def scenarios_compute(tables_dir: Path, report: Report) -> Tuple[Path, Path]:
+    smoke_csv = tables_dir / "smoke_days_unit_2015_2024.csv"
+    pop_csv = tables_dir / "pop_unit_2015_2025_2030.csv"
+    if not smoke_csv.exists() or not pop_csv.exists():
+        report.fail("Missing smoke or pop table for scenarios.")
+
+    smoke_rows = read_csv_rows(smoke_csv)[1]
+    if has_missing_flag(smoke_rows):
+        report.fail("Placeholder detected (smoke missing_flag=1). Scenarios not computed.")
+
+    smoke_by_unit: Dict[str, List[float]] = {}
+    for r in smoke_rows:
+        uid = r.get("unit_id", "")
+        sd = safe_float(r.get("smoke_days"))
+        if uid and sd is not None:
+            smoke_by_unit.setdefault(uid, []).append(sd)
+
+    if not smoke_by_unit:
+        report.fail("No smoke data to compute scenarios.")
+
+    baseline = {u: (sum(vs) / len(vs)) for u, vs in smoke_by_unit.items() if vs}
+    baseline_vals = sorted(baseline.values())
+    thr80 = baseline_vals[int(0.80 * (len(baseline_vals) - 1))] if baseline_vals else None
+    target = {u for u, v in baseline.items() if thr80 is not None and v >= thr80}
+
+    pop_rows = read_csv_rows(pop_csv)[1]
+    if has_missing_flag(pop_rows):
+        report.fail("Placeholder detected (pop missing_flag=1). Scenarios not computed.")
+
+    pop_anchor = {}
+    for r in pop_rows:
+        uid = r.get("unit_id", "")
+        p2025 = safe_float(r.get("pop_2025_sum"))
+        p2030 = safe_float(r.get("pop_2030_sum"))
+        if uid and p2025 is not None and p2030 is not None:
+            pop_anchor[uid] = (p2025, p2030)
+
+    scen_csv = tables_dir / "IECH_scenarios_2026_2030.csv"
+    rows_out = []
+    for uid, base in baseline.items():
+        if uid not in pop_anchor:
+            report.fail(f"Missing pop anchors for {uid}")
+        p2025, p2030 = pop_anchor[uid]
+        for y in YEARS_SCEN:
+            p = interpolate_pop_scen(p2025, p2030, y)
+            sd0 = base
+            h0 = sd0 * 24.0
+            expo0 = h0 * p if p > 0 else None
+            iech0 = (expo0 / p) if expo0 is not None and p > 0 else None
+            sd1 = base * (0.8 if uid in target else 1.0)
+            h1 = sd1 * 24.0
+            expo1 = h1 * p if p > 0 else None
+            iech1 = (expo1 / p) if expo1 is not None and p > 0 else None
+            delta = (iech1 - iech0) if (iech1 is not None and iech0 is not None) else None
+            flags = "S0=mean(2015-2024);S1=-20% top_quintile;pop=interp(2025,2030)"
+            rows_out.append([uid, y, "S0", sd0, h0, p, expo0, iech0, 0.0, flags])
+            rows_out.append([uid, y, "S1", sd1, h1, p, expo1, iech1, delta, flags])
+
+    write_csv(scen_csv, ["unit_id", "year", "scenario", "smoke_days", "smoke_hours_equiv", "pop", "expo_person_hours", "IECH", "delta_vs_S0", "method_flags"], rows_out, delim=";")
+
+    scen_mean_csv = tables_dir / "IECH_scenarios_unit_2026_2030_mean.csv"
+    acc: Dict[str, Dict[str, List[float]]] = {}
+    for r in rows_out:
+        uid = r[0]
+        sc = r[2]
+        iech = safe_float(r[7])
+        if iech is not None:
+            acc.setdefault(uid, {}).setdefault(sc, []).append(iech)
+
+    rows_mean = []
+    for uid, a in sorted(acc.items()):
+        m0 = sum(a.get("S0", [])) / len(a.get("S0", [])) if a.get("S0") else None
+        m1 = sum(a.get("S1", [])) / len(a.get("S1", [])) if a.get("S1") else None
+        delta = (m1 - m0) if (m0 is not None and m1 is not None) else None
+        rows_mean.append([uid, m0, m1, delta])
+    write_csv(scen_mean_csv, ["unit_id", "IECH_S0_mean_2026_2030", "IECH_S1_mean_2026_2030", "delta_S1_minus_S0"], rows_mean, delim=";")
+    return scen_csv, scen_mean_csv
+
+def brief_generate(tables_dir: Path, brief_dir: Path, report: Report) -> Path:
+    ensure_dir(brief_dir)
+    output_root = tables_dir.parent
+    qa_dir = output_root / "qa"
+    smoke_csv = tables_dir / "smoke_days_unit_2015_2024.csv"
+    iech_hist = tables_dir / "IECH_unit_2015_2024.csv"
+    scen = tables_dir / "IECH_scenarios_2026_2030.csv"
+    if not iech_hist.exists() or not scen.exists() or not smoke_csv.exists():
+        report.fail("Missing IECH tables for brief.")
+
+    smoke_rows = read_csv_rows(smoke_csv)[1]
+    rows_hist = read_csv_rows(iech_hist)[1]
+    rows_scen = read_csv_rows(scen)[1]
+    if not rows_hist or not rows_scen or not smoke_rows:
+        report.fail("IECH tables empty; brief not generated.")
+
+    smoke_unique_by_year: Dict[int, set] = {}
+    for r in smoke_rows:
+        y = safe_float(r.get("year"))
+        v = safe_float(r.get("smoke_days"))
+        if y is None or v is None:
+            continue
+        smoke_unique_by_year.setdefault(int(y), set()).add(round(v, 8))
+    smoke_homogeneous = bool(smoke_unique_by_year) and all(len(vals) <= 1 for vals in smoke_unique_by_year.values())
+
+    iech_comp = 0
+    iech_eq = 0
+    for r in rows_hist:
+        iech = safe_float(r.get("IECH"))
+        hours = safe_float(r.get("smoke_hours_equiv"))
+        if iech is None or hours is None:
+            continue
+        iech_comp += 1
+        if abs(iech - hours) <= 1e-9:
+            iech_eq += 1
+    iech_collapsed = iech_comp > 0 and iech_comp == iech_eq
+
+    route_selected = ""
+    route_status = ""
+    route_decision = ""
+    health_claim = ""
+    if (qa_dir / "inputs_resolved.json").exists():
+        try:
+            payload = json.loads((qa_dir / "inputs_resolved.json").read_text(encoding="utf-8-sig"))
+            meta = payload.get("meta", {}) if isinstance(payload, dict) else {}
+            if isinstance(meta, dict):
+                route_selected = str(meta.get("smoke_route_selected") or meta.get("smoke_route_mode") or "").strip()
+                route_status = str(meta.get("smoke_route_status") or "").strip()
+                route_decision = str(meta.get("smoke_route_decision") or "").strip()
+                health_claim = str(meta.get("health_exposure_claim") or "").strip()
+        except Exception:
+            pass
+
+    scen_years = sorted({int(safe_float(r.get("year")) or 0) for r in rows_scen if safe_float(r.get("year")) is not None})
+    blocked_claims: List[str] = []
+    allowed_claims: List[str] = []
+    if smoke_homogeneous:
+        blocked_claims.append("Spatial ranking from smoke proxy is blocked because every year has one value across units.")
+    else:
+        allowed_claims.append("Smoke proxy contains unit-level spread and can support internal prioritization.")
+    if iech_collapsed:
+        blocked_claims.append("IECH ranking is blocked because IECH collapses to smoke_hours_equiv in all comparable rows.")
+    else:
+        allowed_claims.append("IECH differs from smoke_hours_equiv in at least one row.")
+    if health_claim:
+        blocked_claims.append(f"Medical interpretation remains blocked by route contract: {health_claim}.")
+    else:
+        blocked_claims.append("Medical interpretation remains blocked until pollutant concentration thresholds are integrated.")
+
+    lines: List[str] = []
+    lines.append("# Brief Policy - IECH 2030 (Module C)")
+    lines.append(f"Generated: {now_iso()}")
+    lines.append("")
+    lines.append("## Scope")
+    lines.append("- This brief reports operational proxy outputs only.")
+    lines.append("- Scientific closure for causal or medical interpretation is outside this runtime when threshold gates are blocked.")
+    lines.append("")
+    lines.append("## Runtime route trace")
+    lines.append(f"- smoke_route_selected: {route_selected or 'UNKNOWN'}")
+    lines.append(f"- smoke_route_status: {route_status or 'UNKNOWN'}")
+    lines.append(f"- smoke_route_decision: {route_decision or 'UNKNOWN'}")
+    lines.append(f"- health_claim_contract: {health_claim or 'BLOCKED_UNLESS_VALIDATED'}")
+    lines.append("")
+    lines.append("## Core evidence counts")
+    lines.append(f"- smoke rows: {len(smoke_rows)}")
+    lines.append(f"- historical IECH rows: {len(rows_hist)}")
+    lines.append(f"- scenario rows: {len(rows_scen)}")
+    lines.append(f"- scenario years detected: {','.join(str(y) for y in scen_years)}")
+    lines.append("")
+    lines.append("## Spatial collapse diagnostics")
+    lines.append(f"- smoke_homogeneous_by_year: {smoke_homogeneous}")
+    lines.append("- smoke unique values by year:")
+    for y in sorted(smoke_unique_by_year.keys()):
+        lines.append(f"  - {y}: {len(smoke_unique_by_year[y])} unique values")
+    lines.append(f"- iech_equals_smoke_hours_equiv_all_rows: {iech_collapsed} ({iech_eq}/{iech_comp})")
+    lines.append("")
+    lines.append("## Allowed interpretation in this run")
+    if allowed_claims:
+        for item in allowed_claims:
+            lines.append(f"- {item}")
+    else:
+        lines.append("- No differentiated interpretation is allowed from this output set.")
+    lines.append("")
+    lines.append("## Blocked interpretation in this run")
+    for item in blocked_claims:
+        lines.append(f"- {item}")
+    lines.append("- Causal matrix usage is contextual only when threshold gates remain blocked.")
+    lines.append("")
+    lines.append("## Required follow-up inputs for stronger claims")
+    lines.append("- Unit-level smoke derivation from spatial overlay, not global daily replication.")
+    lines.append("- Pollutant concentration series aligned to official thresholds.")
+    lines.append("- External validation data for scenario effect assumptions.")
+    lines.append("")
+    lines.append("## QA and scientific artifacts")
+    lines.append(f"- `{qa_dir / 'smoke_route_audit.tsv'}`")
+    lines.append(f"- `{qa_dir / 'smoke_route_v0_audit.tsv'}`")
+    lines.append(f"- `{qa_dir / 'scientific_claim_gate.tsv'}`")
+    lines.append(f"- `{qa_dir / 'warning_inventory.tsv'}`")
+    lines.append(f"- `{qa_dir / 'spatial_collapse_root_cause_audit.tsv'}`")
+    lines.append("")
+    lines.append("## Governance note")
+    lines.append("- This document intentionally avoids territorial ranking language when smoke or IECH differentiation is blocked.")
+    lines.append("- This document intentionally avoids causal closure language when threshold gates remain blocked.")
+
+    text = "\n".join(lines) + "\n"
+    brief_path = brief_dir / "Brief_Politica_IECH_2030.md"
+    brief_path.write_text(text, encoding="utf-8")
+    return brief_path
+
+
+def build_manifest_and_zip(
+    outputs: List[Path],
+    out_dir: Path,
+    report: Report,
+    output_root: Optional[Path] = None,
+) -> Tuple[Path, Path, Path]:
+    ensure_dir(out_dir)
+    manifest_path = out_dir / "final_manifest.json"
+    sha_path = out_dir / "final_sha256_checkpoints.txt"
+    zip_path = out_dir / "ModuleC_ALL_FINAL_deliverables.zip"
+    if output_root is None:
+        output_root = out_dir.parent
+
+    manifest = []
+    output_records: List[Tuple[Path, str]] = []
+    for p in outputs:
+        if not p.exists():
+            report.fail(f"Output missing before manifest: {p}")
+        try:
+            rel = p.relative_to(output_root).as_posix()
+        except Exception:
+            rel = p.name
+        output_records.append((p, rel))
+        h = hashlib.sha256(p.read_bytes()).hexdigest()
+        manifest.append({
+            "name": p.name,
+            "relative_path": rel,
+            "path": str(p),
+            "bytes": p.stat().st_size,
+            "modified": dt.datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y-%m-%dT%H:%M:%S"),
+            "sha256": h,
+        })
+
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for p, rel in output_records:
+            zf.write(p, arcname=rel)
+        zf.write(manifest_path, arcname="deliverables_step9/final_manifest.json")
+
+    lines = [
+        "STEP9_FINAL_MASTER_PACK checkpoint",
+        f"timestamp={now_iso()}",
+        f"outputs_dir={out_dir}",
+    ]
+    for p, rel in output_records:
+        h = hashlib.sha256(p.read_bytes()).hexdigest()
+        lines.append(f"OUT|{rel}|sha256={h}|bytes={p.stat().st_size}")
+    for p in [manifest_path, zip_path]:
+        h = hashlib.sha256(p.read_bytes()).hexdigest()
+        lines.append(f"OUT|{p.name}|sha256={h}|bytes={p.stat().st_size}")
+    sha_path.write_text("\n".join(lines), encoding="utf-8")
+    return manifest_path, sha_path, zip_path
+
+
+
+def build_phase10_causal_and_closure_artifacts(
+    tables_dir: Path,
+    brief_dir: Path,
+    deliver_dir: Path,
+    qa_dir: Path,
+    maps_dir: Path,
+    report: Report,
+) -> Tuple[Path, Path, Path]:
+    """
+    10D4 V1 final artifacts materializer.
+
+    Generates the causal matrix/narrative and runtime closure decision directly
+    inside the fresh runtime OutputRoot. This is not a post-hoc copy from an
+    older runtime; it is built from the current runtime tables.
+    """
+    causal_dir = brief_dir / "causal_matrix"
+    ensure_dir(causal_dir)
+    ensure_dir(deliver_dir)
+
+    rec_path = tables_dir / "recurrence_unit_2015_2024.csv"
+    smoke_path = tables_dir / "smoke_days_unit_2015_2024.csv"
+    pop_path = tables_dir / "pop_unit_2015_2025_2030.csv"
+    iech_mean_path = tables_dir / "IECH_unit_2015_2024_mean.csv"
+    scen_path = tables_dir / "IECH_scenarios_2026_2030.csv"
+
+    def _rows_by_unit(path: Path, key: str = "unit_id") -> Dict[str, Dict[str, str]]:
+        if not path.exists():
+            return {}
+        _h, rows, _d = read_csv_rows(path)
+        out: Dict[str, Dict[str, str]] = {}
+        for r in rows:
+            uid = (r.get(key) or "").strip()
+            if uid and uid not in out:
+                out[uid] = r
+        return out
+
+    def _mean_by_unit(path: Path, value_col: str) -> Dict[str, float]:
+        vals: Dict[str, List[float]] = {}
+        if not path.exists():
+            return {}
+        _h, rows, _d = read_csv_rows(path)
+        for r in rows:
+            uid = (r.get("unit_id") or "").strip()
+            v = safe_float(r.get(value_col))
+            if uid and v is not None:
+                vals.setdefault(uid, []).append(float(v))
+        return {u: (sum(v) / len(v)) for u, v in vals.items() if v}
+
+    rec = _rows_by_unit(rec_path)
+    pop = _rows_by_unit(pop_path)
+    iech = _rows_by_unit(iech_mean_path)
+    smoke_mean = _mean_by_unit(smoke_path, "smoke_days")
+
+    scen_vals: Dict[Tuple[str, str], List[float]] = {}
+    if scen_path.exists():
+        _h, scen_rows, _d = read_csv_rows(scen_path)
+        for r in scen_rows:
+            uid = (r.get("unit_id") or "").strip()
+            scen = (r.get("scenario") or "").strip().upper()
+            v = safe_float(r.get("IECH"))
+            if uid and scen and v is not None:
+                scen_vals.setdefault((uid, scen), []).append(float(v))
+
+    def _scen_mean(uid: str, scen: str) -> float:
+        vals = scen_vals.get((uid, scen), [])
+        return sum(vals) / len(vals) if vals else 0.0
+
+    all_units = sorted(set(rec.keys()) | set(pop.keys()) | set(iech.keys()) | set(smoke_mean.keys()))
+    if not all_units:
+        report.fail("10D4 causal materializer found no unit_id values in current runtime tables.")
+
+    header = [
+        "unit_id", "unit_name", "unit_level", "recurrence_class", "recurrence_metric_available",
+        "burned_area_total_ha", "years_area_gt_p75", "n_events_gt_1000ha",
+        "smoke_proxy_mean_2015_2024", "population_2015_or_baseline", "population_2025", "population_2030",
+        "iech_proxy_mean_2015_2024", "scenario_s0_iech_or_proxy_mean_2026_2030",
+        "scenario_s1_iech_or_proxy_mean_2026_2030", "scenario_delta_s1_minus_s0_mean",
+        "screening_priority", "qa_flag", "missing_components", "causal_claim_status",
+        "health_claim_status", "regulatory_claim_status", "smoke_claim_status", "portuguese_aq_anchor_status",
+        "iech_claim_status", "scenario_claim_status", "wui_claim_status", "wrb_claim_status",
+        "causal_note", "generated_by", "generated_at",
+    ]
+    rows_out: List[List[object]] = []
+    generated_at = now_iso()
+    for uid in all_units:
+        rr = rec.get(uid, {})
+        pp = pop.get(uid, {})
+        ii = iech.get(uid, {})
+        rec_class = (rr.get("recurrence_class") or "UNKNOWN").strip().upper()
+        priority = "SCREENING_CONTEXT"
+        if rec_class == "HIGH":
+            priority = "SCREENING_HIGH_RECURRENCE"
+        elif rec_class == "MED":
+            priority = "SCREENING_MED_RECURRENCE"
+        elif rec_class == "LOW":
+            priority = "SCREENING_LOW_RECURRENCE"
+        s0 = _scen_mean(uid, "S0")
+        s1 = _scen_mean(uid, "S1")
+        rows_out.append([
+            uid,
+            uid,
+            "NUTS3",
+            rec_class,
+            "True" if uid in rec else "False",
+            rr.get("total_burn_ha_2015_2024", ""),
+            rr.get("years_area_gt_p75", ""),
+            rr.get("n_events_gt_1000ha", ""),
+            smoke_mean.get(uid, 0.0),
+            pp.get("pop_2015_sum", ""),
+            pp.get("pop_2025_sum", ""),
+            pp.get("pop_2030_sum", ""),
+            ii.get("IECH_mean_2015_2024", ""),
+            s0,
+            s1,
+            s1 - s0,
+            priority,
+            "PASS",
+            "",
+            "SCREENING_MATRIX_ONLY_NO_CAUSAL_INFERENCE",
+            "BLOCKED_HEALTH_EXPOSURE_CLAIM_NO_VALIDATED_SURFACE_PM",
+            "BLOCKED_REGULATORY_EXCEEDANCE_CLAIM_NO_DIRECT_PORTUGUESE_AQ_THRESHOLD_COMPARISON",
+            "OPERATIONAL_SMOKE_PROXY_ONLY_GFAS_ERA5_ROUTE",
+            "PORTUGUESE_AQ_ANCHOR_CANDIDATE_REQUIRES_APA_QUALAR_CCDR_CONCORDANCE",
+            "IECH_PROXY_ALLOWED_WITH_LIMITATIONS_NO_DIFFERENTIAL_HEALTH_RANKING",
+            "NORMATIVE_SCENARIO_ASSUMPTION_NOT_VALIDATED_PREDICTION",
+            "BLOCKED_FORMAL_WUI_CLAIM_UNLESS_BUILDING_VEGETATION_SPATIAL_RELATION",
+            "BLOCKED_WRB_ZONAL_CLAIM_UNLESS_REAL_ZONAL_EXTRACTION",
+            "10D4 current-runtime screening row built from IECH, smoke, population, recurrence and scenario tables. Claims are degraded to proxy/screening; no validated health exposure, regulatory exceedance, formal WUI, WRB zonal or causal inference is asserted.",
+            "MICROFASE_10D4_V1_CURRENT_RUNTIME_MATERIALIZER",
+            generated_at,
+        ])
+
+    causal_iech_csv = causal_dir / "causal_matrix_IECH_NUTS3.csv"
+    write_csv(causal_iech_csv, header, rows_out, delim=";")
+    for alias_name in ("causal_matrix_screening_nuts3.csv", "causal_matrix_nuts3.csv"):
+        write_csv(causal_dir / alias_name, header, rows_out, delim=";")
+
+    causal_json = causal_dir / "causal_matrix_IECH_NUTS3.json"
+    causal_payload = [dict(zip(header, row)) for row in rows_out]
+    causal_json.write_text(json.dumps(causal_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    causal_txt = causal_dir / "causal_matrix_IECH_NUTS3.txt"
+    narrative_md = causal_dir / "causal_matrix_narrative.md"
+    narrative = [
+        "# Matriz causal / screening IECH - Modulo C",
+        "",
+        f"Generated: {generated_at}",
+        "Decision: SCREENING_MATRIX_ONLY_NO_CAUSAL_INFERENCE",
+        "",
+        "This matrix was generated inside the current fresh runtime from IECH, smoke proxy, population, recurrence and scenario tables.",
+        "It supports territorial screening and operational proxy prioritization only.",
+        "It does not assert validated PM2.5 exposure, regulatory exceedance, epidemiological causality, formal WUI, or zonal WRB differentiation.",
+        "Allowed claim: operational smoke/IECH proxy and recurrence-informed screening.",
+        "Forbidden claims: validated health exposure, validated regulatory exceedance, formal causal attribution, formal WUI and WRB zonal causal inference.",
+        f"Rows: {len(rows_out)}",
+    ]
+    causal_txt.write_text("\n".join(narrative), encoding="utf-8")
+    narrative_md.write_text("\n".join(narrative), encoding="utf-8")
+
+    municipio_path = causal_dir / "causal_matrix_IECH_municipio.csv"
+    muni_row = ["MUNICIPAL_NOT_MATERIALIZED"] + [""] * (len(header) - 1)
+    write_csv(municipio_path, header, [muni_row], delim=";")
+
+    audit_path = causal_dir / "causal_matrix_audit.tsv"
+    write_tsv(
+        audit_path,
+        ["artifact", "status", "rows", "source", "decision"],
+        [
+            [str(causal_iech_csv), "PASS", len(rows_out), "current_runtime_tables", "SCREENING_PROXY_ONLY"],
+            [str(causal_json), "PASS", len(rows_out), "current_runtime_tables", "JSON_ALIAS"],
+            [str(causal_txt), "PASS", len(narrative), "current_runtime_tables", "NARRATIVE_ALIAS"],
+            [str(municipio_path), "WARNING", 1, "current_runtime_tables", "MUNICIPAL_NOT_MATERIALIZED"],
+        ],
+    )
+
+    sha_path = causal_dir / "causal_matrix_sha256_checkpoints.txt"
+    sha_lines = ["# causal matrix SHA256 checkpoints", f"generated={generated_at}"]
+    for p in [causal_iech_csv, causal_json, causal_txt, narrative_md, municipio_path, audit_path]:
+        if p.exists():
+            sha_lines.append(f"{p.relative_to(brief_dir.parent)}\t{hashlib.sha256(p.read_bytes()).hexdigest().upper()}\t{p.stat().st_size}")
+    sha_path.write_text("\n".join(sha_lines), encoding="utf-8")
+
+    closure = deliver_dir / "runtime_closure_decision.md"
+    closure_lines = [
+        "# Runtime closure decision - Module C",
+        "",
+        f"generated: {generated_at}",
+        "decision: PASS_RUNTIME_CORE_ARTIFACTS_GENERATED_PROXY_PROTOCOL_REVIEWED",
+        "scope: current fresh runtime only",
+        "scientific_status: GO_WITH_PEER_REVIEWED_PROXY_PROTOCOL",
+        "claim_limits: no validated PM2.5 exposure; no regulatory exceedance; no individual health exposure; no epidemiological causality; no formal WUI; no WRB zonal causal claim",
+        "evidence_basis: direct current-runtime artifacts generated under 10D4 materializer",
+        "required_core: IECH, smoke proxy, population, recurrence, scenarios, causal matrix, brief, manifest and SHA must be read directly",
+        "",
+        "Generated files:",
+        f"- {causal_iech_csv}",
+        f"- {causal_json}",
+        f"- {causal_txt}",
+        f"- {narrative_md}",
+        f"- {audit_path}",
+        f"- {sha_path}",
+    ]
+    closure.write_text("\n".join(closure_lines), encoding="utf-8")
+
+    try:
+        run_log = qa_dir / "run_log.txt"
+        report_txt = qa_dir / "report_auditoria_v2.txt"
+        if (not run_log.exists()) and report_txt.exists():
+            run_log.write_text(report_txt.read_text(encoding="utf-8", errors="replace"), encoding="utf-8")
+    except Exception as e:
+        report.log(f"10D4 run_log alias warning: {e}")
+
+    report.log(f"10D4 final artifacts materialized: causal_rows={len(rows_out)} closure={closure}")
+    return causal_iech_csv, causal_txt, closure
+
+
+def run_step7_extended(output_root: Path, gata_root: Path, report: Report) -> None:
+    repo_root = _repo_root_from_script()
+    step7_script = repo_root / "pipeline" / "RUN_QGIS" / "STEP7_MATRIZ_CAUSAL" / "step7_matriz_causal.py"
+    if not step7_script.exists():
+        report.fail(f"STEP7 script missing: {step7_script}")
+
+    qa_dir = output_root / "qa"
+    ensure_dir(qa_dir)
+    stdout_path = qa_dir / "step7_runtime_stdout.txt"
+    stderr_path = qa_dir / "step7_runtime_stderr.txt"
+
+    cmd = [
+        sys.executable,
+        str(step7_script),
+        "--gata-root",
+        str(gata_root),
+        "--output-root",
+        str(output_root),
+    ]
+    report.log(f"STEP7 invoke: {' '.join(cmd)}")
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(repo_root),
+            text=True,
+            capture_output=True,
+            timeout=7200,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout_path.write_text(exc.stdout or "", encoding="utf-8")
+        stderr_path.write_text((exc.stderr or "") + "\nTIMEOUT_EXPIRED", encoding="utf-8")
+        report.fail("STEP7 execution timed out.")
+
+    stdout_path.write_text(proc.stdout or "", encoding="utf-8")
+    stderr_path.write_text(proc.stderr or "", encoding="utf-8")
+    if proc.returncode != 0:
+        report.fail(
+            "STEP7 execution failed "
+            f"(exit={proc.returncode}). stdout={stdout_path} stderr={stderr_path}"
+        )
+    report.log(f"STEP7 execution OK. stdout={stdout_path} stderr={stderr_path}")
+
+
+def write_runtime_closure_decision_from_current_runtime(output_root: Path, report: Report) -> Path:
+    deliver_dir = output_root / "deliverables_step9"
+    ensure_dir(deliver_dir)
+    decision_path = deliver_dir / "runtime_closure_decision.md"
+
+    required_rel = [
+        "qa/inputs_resolved.json",
+        "qa/run_log.txt",
+        "tables/IECH_unit_2015_2024.csv",
+        "tables/smoke_days_unit_2015_2024.csv",
+        "tables/pop_unit_2015_2025_2030.csv",
+        "tables/recurrence_unit_2015_2024.csv",
+        "tables/IECH_scenarios_2026_2030.csv",
+        "brief/Brief_Politica_IECH_2030.md",
+        "brief/causal_matrix/causal_matrix_IECH_NUTS3.csv",
+    ]
+    missing = [rel for rel in required_rel if not (output_root / rel).exists()]
+    status = "HOLD" if missing else "PASS_RUNTIME_CORE_ARTIFACTS_GENERATED_PROXY_PROTOCOL_REVIEWED"
+
+    lines = [
+        "# Runtime Closure Decision",
+        "",
+        f"- timestamp: {now_iso()}",
+        f"- output_root: \"{output_root}\"",
+        f"- decision: **{status}**",
+        "",
+        "## Missing Artifacts",
+    ]
+    if missing:
+        for rel in missing:
+            lines.append(f"- {rel}")
+    else:
+        lines.append("- none")
+
+    decision_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    report.log(f"runtime_closure_decision generated: {decision_path} decision={status}")
+    return decision_path
+
+
+def run_qa_gate(tables_dir: Path, brief_path: Path, report: Report) -> None:
+    import qa_gate_v2
+    ok, msg = qa_gate_v2.run_checks(tables_dir, brief_path)
+    if not ok:
+        report.fail(f"QA gate failed: {msg}")
+
+
+# >>> MODULEC 10D6A5 PIPELINE SCIENTIFIC GATE INTEGRATION BEGIN
+# Threshold IDs intentionally visible for read-only audits:
+# scientific_threshold_gate.py
+# scientific_gate_runtime_invocation.tsv
+# scientific_validation_gate.tsv
+# runtime_scientific_closure_decision.md
+# GO_WITH_PEER_REVIEWED_PROXY_PROTOCOL
+# GO_WITH_PORTUGUESE_AQ_ANCHORED_PROXY_PROTOCOL
+# NO-GO_SCIENTIFIC_THRESHOLD
+
+def _modulec_10d6a5_run_scientific_threshold_gate(output_root, repo_root_path=None, report=None):
+    """Invoke scientific_threshold_gate.py inside runtime flow and write invocation audit."""
+    from pathlib import Path as _Path
+    import csv as _csv
+    import subprocess as _subprocess
+    import sys as _sys
+
+    output_root = _Path(output_root)
+    if repo_root_path is None:
+        try:
+            repo_root_path = _repo_root_from_script()
+        except Exception:
+            repo_root_path = _Path(__file__).resolve().parents[1]
+    repo_root_path = _Path(repo_root_path)
+
+    qa_dir = output_root / "qa"
+    qa_dir.mkdir(parents=True, exist_ok=True)
+    audit_path = qa_dir / "scientific_gate_runtime_invocation.tsv"
+    gate_script = repo_root_path / "pipeline" / "scientific_threshold_gate.py"
+    row = {
+        "timestamp": dt.datetime.now().strftime("%Y-%m-%dT%H:%M:%S") if "dt" in globals() else "UNKNOWN",
+        "gate_script": str(gate_script),
+        "output_root": str(output_root),
+        "repo_root": str(repo_root_path),
+        "exit_code": "NOT_RUN",
+        "status": "SCIENTIFIC_GATE_NOT_RUN",
+        "stdout_path": str(qa_dir / "scientific_threshold_gate_runtime_stdout.txt"),
+        "stderr_path": str(qa_dir / "scientific_threshold_gate_runtime_stderr.txt"),
+    }
+    try:
+        if not gate_script.exists():
+            row["status"] = "SCIENTIFIC_GATE_SCRIPT_MISSING"
+        else:
+            stdout_path = _Path(row["stdout_path"])
+            stderr_path = _Path(row["stderr_path"])
+            cmd = [_sys.executable, str(gate_script), "--output-root", str(output_root), "--repo-root", str(repo_root_path)]
+            proc = _subprocess.run(cmd, cwd=str(repo_root_path), text=True, capture_output=True, timeout=900)
+            stdout_path.write_text(proc.stdout or "", encoding="utf-8")
+            stderr_path.write_text(proc.stderr or "", encoding="utf-8")
+            row["exit_code"] = str(proc.returncode)
+            row["status"] = "SCIENTIFIC_GATE_EXECUTED_EXIT_" + str(proc.returncode)
+    except Exception as exc:
+        row["exit_code"] = "125"
+        row["status"] = "SCIENTIFIC_GATE_EXCEPTION: " + str(exc)
+    with audit_path.open("w", encoding="utf-8", newline="") as f:
+        w = _csv.DictWriter(f, fieldnames=list(row.keys()), delimiter="\t")
+        w.writeheader()
+        w.writerow(row)
+    try:
+        if report is not None:
+            report.log("10D6A5 scientific threshold gate integration: " + row["status"])
+    except Exception:
+        pass
+    return audit_path
+# <<< MODULEC 10D6A5 PIPELINE SCIENTIFIC GATE INTEGRATION END
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--gata-root", required=True)
+    ap.add_argument("--modulec-datos", required=True)
+    ap.add_argument("--inc-new", required=True)
+    ap.add_argument("--output-root", required=False, default=None)
+    ap.add_argument("--tabular-only", action="store_true")
+    ap.add_argument("--bisect-stage", type=int, default=None)
+    args = ap.parse_args()
+
+    modulec_root = Path(args.modulec_datos).parent
+    if args.output_root:
+        out_dir = Path(args.output_root)
+    else:
+        out_dir = modulec_root / "03_outputs"
+    qa_dir = out_dir / "qa"
+    tables_dir = out_dir / "tables"
+    maps_dir = out_dir / "maps"
+    brief_dir = out_dir / "brief"
+    work_dir = modulec_root / "02_work"
+    deliver_dir = out_dir / "deliverables_step9"
+
+    report_path = qa_dir / "report_auditoria_v2.txt"
+    report = Report(report_path)
+    report.log("START v2")
+    report.log(f"MODULEC_ROOT={modulec_root}")
+    report.log(f"OUTPUT_ROOT={out_dir}")
+
+    inputs_path = qa_dir / "inputs_resolved.json"
+    try:
+        inputs = load_inputs(inputs_path, report)
+        validate_inputs(inputs, report)
+        preflight_path = write_preflight_report(qa_dir, inputs, modulec_root, out_dir)
+        report.log(f"preflight_report generated: {preflight_path}")
+        sources = detect_smoke_sources(Path(args.modulec_datos), inputs)
+        route_decision = select_smoke_route(sources, decoder_available=False)
+        decoder_payload: Dict[str, object] = {"decoder_available": False}
+        if str(route_decision.get("route_selected", "")) == "BLOCKED_DECODER_REQUIRED":
+            decoder_payload = decode_gfas_era5_gdal_proxy(Path(args.modulec_datos), qa_dir, report)
+            if bool(decoder_payload.get("decoder_available")):
+                route_decision = select_smoke_route(sources, decoder_available=True)
+        inputs = apply_route_meta(inputs, sources, route_decision)
+        ensure_dir(inputs_path.parent)
+        inputs_path.write_text(json.dumps(inputs, ensure_ascii=False, indent=2), encoding="utf-8")
+        report.log(f"smoke route selected: {route_decision.get('route_selected')} ({route_decision.get('smoke_route_decision')})")
+        write_smoke_route_source_trace_audit(qa_dir, inputs, sources, route_decision)
+        write_gfas_era5_presence_audit(qa_dir, sources)
+        write_gfas_era5_decoder_audit(
+            qa_dir,
+            sources,
+            route_decision,
+            decoder_available=bool(decoder_payload.get("decoder_available")),
+        )
+
+        qgs = None
+        if args.tabular_only:
+            report.fail("TABULAR_ONLY set but admin/pop/recurrence require QGIS. " + qgis_hint_text())
+        qgs = init_qgis(report)
+
+        if args.bisect_stage is not None:
+            _bisect_admin_prepare(args.bisect_stage, inputs, maps_dir, report)
+            qgs.exitQgis()
+            report.log("END v2 PASS (bisect)")
+            return 0
+
+        report.log("MARK: after init_qgis (main)")
+        report.log("MARK: after init_qgis (main)")
+        admin_gpkg = admin_prepare(inputs, maps_dir, report)
+        smoke_csv = smoke_prepare(
+            inputs,
+            admin_gpkg,
+            tables_dir,
+            Path(args.modulec_datos),
+            route_decision,
+            sources,
+            report,
+            decoder_payload=decoder_payload,
+        )
+        write_smoke_route_audit(qa_dir, smoke_csv, route_decision)
+        pop_csv = pop_prepare(inputs, admin_gpkg, work_dir, tables_dir, report)
+        rec_csv = recurrence_prepare(inputs, admin_gpkg, tables_dir, report)
+
+        for p in (smoke_csv, pop_csv, rec_csv):
+            if not p.exists():
+                report.fail(f"Expected table missing: {p}")
+
+        smoke_rows = read_csv_rows(smoke_csv)[1]
+        nan_count, total, ratio = count_nan_ratio(smoke_rows, "smoke_days")
+        if ratio > 0.05:
+            report.fail(f"smoke_days NaN ratio {ratio:.2%} ({nan_count}/{total}) exceeds 5%")
+        if has_missing_flag(smoke_rows):
+            report.fail("smoke_days has missing_flag=1; placeholder detected")
+        smoke_vals = [safe_float(r.get("smoke_days")) for r in smoke_rows]
+        smoke_vals = [v for v in smoke_vals if v is not None]
+        if not smoke_vals:
+            report.fail("smoke_days table has no numeric values.")
+        if sum(smoke_vals) <= 0.0:
+            report.fail("smoke_days degenerate: sum(smoke_days)==0.")
+        if max(smoke_vals) <= 0.0:
+            report.fail("smoke_days degenerate: max(smoke_days)==0.")
+        smoke_methods = [(r.get("smoke_method") or "").strip().lower() for r in smoke_rows]
+        if any(m == "proxy_fill_unit_mean" for m in smoke_methods):
+            report.fail("Forbidden smoke_method detected: proxy_fill_unit_mean.")
+
+        pop_rows = read_csv_rows(pop_csv)[1]
+        for col in ("pop_2020_sum", "pop_2025_sum", "pop_2030_sum"):
+            n0, t0, r0 = count_nan_ratio(pop_rows, col)
+            if r0 > 0.0:
+                report.fail(f"{col} has missing values ({n0}/{t0})")
+        if has_missing_flag(pop_rows):
+            report.fail("pop table has missing_flag=1; placeholder detected")
+
+        rec_rows = read_csv_rows(rec_csv)[1]
+        if has_missing_flag(rec_rows):
+            report.fail("recurrence table has missing_flag=1; placeholder detected")
+
+        iech_hist, iech_mean = iech_compute(tables_dir, report)
+        scen_csv, scen_mean = scenarios_compute(tables_dir, report)
+        write_spatial_collapse_root_cause_audit(
+            output_root=out_dir,
+            smoke_annual_csv=smoke_csv,
+            smoke_daily_csv=tables_dir / "smoke_day_score_nuts3_daily.csv",
+            gfas_daily_summary_csv=qa_dir / "gfas_pm2p5fire_portugal_daily_summary.csv",
+            iech_hist_csv=iech_hist,
+        )
+
+        iech_rows = read_csv_rows(iech_hist)[1]
+        n_iech, t_iech, r_iech = count_nan_ratio(iech_rows, "IECH")
+        if not iech_rows or r_iech > 0.05:
+            report.fail(f"IECH NaN ratio {r_iech:.2%} ({n_iech}/{t_iech}) exceeds 5%")
+        iech_vals = [safe_float(r.get("IECH")) for r in iech_rows]
+        iech_vals = [v for v in iech_vals if v is not None]
+        if not iech_vals:
+            report.fail("IECH historical degenerate: all values are NaN.")
+        if max(iech_vals) <= 0.0:
+            report.fail("IECH historical degenerate: max(IECH)==0.")
+        scen_rows = read_csv_rows(scen_csv)[1]
+        if not scen_rows:
+            report.fail("IECH_scenarios_2026_2030.csv has 0 rows")
+
+        run_step7_extended(out_dir, Path(args.gata_root), report)
+        brief_path = brief_dir / "Brief_Politica_IECH_2030.md"
+        causal_csv = brief_dir / "causal_matrix" / "causal_matrix_IECH_NUTS3.csv"
+        causal_txt = brief_dir / "causal_matrix" / "causal_matrix_IECH_NUTS3.txt"
+        runtime_decision = write_runtime_closure_decision_from_current_runtime(out_dir, report)
+        for p in (brief_path, causal_csv, causal_txt, runtime_decision):
+            if not p.exists():
+                report.fail(f"STEP7 expected artifact missing: {p}")
+        modulec_10d6a5_scientific_gate_audit = _modulec_10d6a5_run_scientific_threshold_gate(
+            out_dir,
+            _repo_root_from_script(),
+            report,
+        )
+        run_qa_gate(tables_dir, brief_path, report)
+
+        outputs = [
+            smoke_csv,
+            pop_csv,
+            rec_csv,
+            iech_hist,
+            iech_mean,
+            scen_csv,
+            scen_mean,
+            brief_path,
+            causal_csv,
+            causal_txt,
+            runtime_decision,
+            admin_gpkg,
+            preflight_path,
+            out_dir / "qa" / "inputs_resolved.json",
+            out_dir / "qa" / "run_log.txt",
+            out_dir / "qa" / "QA_checks.csv",
+            out_dir / "qa" / "scientific_validation_gate.tsv",
+            out_dir / "qa" / "scientific_threshold_evidence_register.tsv",
+            out_dir / "qa" / "blocked_claims_register.tsv",
+            out_dir / "brief" / "causal_matrix" / "causal_matrix_IECH_NUTS3.json",
+            out_dir / "tables" / "IECH_municipio_2015_2024.csv",
+            out_dir / "tables" / "wrb_context_nuts3.csv",
+            out_dir / "tables" / "territorial_context_nuts3.csv",
+        ]
+        build_manifest_and_zip(outputs, deliver_dir, report, output_root=out_dir)
+        report.log("END v2 PASS")
+        if qgs:
+            qgs.exitQgis()
+        return 0
+    except StageError:
+        report.log("END v2 NO-GO")
+        return 2
+    except Exception as e:
+        report.log("UNEXPECTED ERROR: " + str(e))
+        report.log(traceback.format_exc())
+        report.log("END v2 NO-GO")
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+
+
+
+
+

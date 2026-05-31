@@ -1,0 +1,84 @@
+﻿00838:     return gpkg_path
+00839: 
+00840: 
+00841: def _collect_primary_smoke_anchors(modulec_datos: Path, report: Report) -> Dict[int, float]:
+00842:     from osgeo import ogr  # type: ignore
+00843: 
+00844:     parquet_zips = [modulec_datos / "ParquetFiles 2017.zip", modulec_datos / "ParquetFiles 2022.zip"]
+00845:     parquet_zips = [p for p in parquet_zips if p.exists()]
+00846:     if not parquet_zips:
+00847:         report.fail(f"Primary smoke source missing. Expected parquet zips in: {modulec_datos}")
+00848: 
+00849:     # station/year/day -> any(Value > 0). This preserves smoke-day signal from primary source.
+00850:     day_signal: Dict[Tuple[str, int, str], bool] = {}
+00851:     for zpath in parquet_zips:
+00852:         with zipfile.ZipFile(zpath, "r") as zf:
+00853:             entries = [n for n in zf.namelist() if n.lower().endswith(".parquet")]
+00854:         if not entries:
+00855:             report.fail(f"Primary smoke parquet zip has no parquet entries: {zpath}")
+00856: 
+00857:         for entry in entries:
+00858:             station = Path(entry).stem
+00859:             vpath = f"/vsizip/{zpath.as_posix()}/{entry}"
+00860:             ds = ogr.Open(vpath, 0)
+00861:             if ds is None:
+00862:                 report.fail(f"Cannot open primary smoke parquet: {vpath}")
+00863:             lyr = ds.GetLayer(0)
+00864:             if lyr is None:
+00865:                 report.fail(f"Primary smoke parquet has no layer: {vpath}")
+00866:             lyr.ResetReading()
+00867:             for ft in lyr:
+00868:                 start_val = ft.GetField("Start")
+00869:                 y = _extract_year_from_text(start_val)
+00870:                 if y is None or y not in YEARS_HIST:
+00871:                     continue
+00872:                 day = str(start_val)[:10]
+00873:                 if len(day) != 10:
+00874:                     continue
+00875:                 v = safe_float(ft.GetField("Value"))
+00876:                 gt0 = v is not None and v > 0.0
+00877:                 key = (station, y, day)
+00878:                 day_signal[key] = day_signal.get(key, False) or gt0
+00879: 
+00880:     if not day_signal:
+00881:         report.fail("Primary smoke parquet contains no usable day-level records for 2015-2024.")
+00882: 
+00883:     station_year_days_gt0: Dict[Tuple[str, int], int] = {}
+00884:     for (station, y, _day), flag in day_signal.items():
+00885:         if not flag:
+00886:             continue
+00887:         key = (station, y)
+00888:         station_year_days_gt0[key] = station_year_days_gt0.get(key, 0) + 1
+00889: 
+00890:     by_year: Dict[int, List[float]] = {}
+00891:     for (_station, y), days_gt0 in station_year_days_gt0.items():
+00892:         by_year.setdefault(y, []).append(float(days_gt0))
+00893: 
+00894:     if not by_year:
+00895:         report.fail("Primary smoke parquet has total absence of smoke signal (all days <= 0).")
+00896: 
+00897:     anchors = {y: _median(vals) for y, vals in by_year.items() if vals}
+00898:     if not anchors:
+00899:         report.fail("Primary smoke anchors could not be computed.")
+00900:     if sum(anchors.values()) <= 0.0:
+00901:         report.fail("Primary smoke anchors are degenerate: sum(smoke_days)==0.")
+00902:     if max(anchors.values()) <= 0.0:
+00903:         report.fail("Primary smoke anchors are degenerate: max(smoke_days)==0.")
+00904: 
+00905:     anchor_txt = ", ".join(f"{y}:{anchors[y]:.3f}" for y in sorted(anchors.keys()))
+00906:     report.log(f"Primary smoke anchors built from parquet: {anchor_txt}")
+00907:     return anchors
+00908: 
+00909: 
+00910: def _fill_smoke_year_series(anchors: Dict[int, float], report: Report) -> Tuple[Dict[int, float], Dict[int, str]]:
+00911:     years = sorted(anchors.keys())
+00912:     if not years:
+00913:         report.fail("No primary smoke anchors available for interpolation.")
+00914: 
+00915:     values: Dict[int, float] = {}
+00916:     methods: Dict[int, str] = {}
+00917: 
+00918:     if len(years) == 1:
+00919:         y0 = years[0]
+00920:         v0 = float(anchors[y0])
+00921:         for y in YEARS_HIST:

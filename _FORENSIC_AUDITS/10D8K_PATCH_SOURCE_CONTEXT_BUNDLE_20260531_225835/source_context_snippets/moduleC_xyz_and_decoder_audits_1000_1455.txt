@@ -1,0 +1,460 @@
+﻿# SOURCE: D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\01_REPO_COPY\pipeline\moduleC_pipeline_v2.py
+# TITLE: moduleC_xyz_and_decoder_audits_1000_1455
+# LINES: 1000-1455
+
+01000:     return values, methods
+01001: 
+01002: 
+01003: def _derive_unit_anchor_scores_from_xyz(admin_layer, daily_rows: List[Dict[str, object]], report: Report) -> Dict[str, Dict[int, float]]:
+01004:     from qgis.core import (  # type: ignore
+01005:         QgsCoordinateReferenceSystem,
+01006:         QgsCoordinateTransform,
+01007:         QgsGeometry,
+01008:         QgsPointXY,
+01009:         QgsProject,
+01010:     )
+01011: 
+01012:     features = []
+01013:     for ft in admin_layer.getFeatures():
+01014:         uid = str(ft["NUTS_ID"]) if ft["NUTS_ID"] is not None else ""
+01015:         if not uid:
+01016:             continue
+01017:         geom = ft.geometry()
+01018:         if geom is None or geom.isEmpty():
+01019:             continue
+01020:         features.append((uid, geom, geom.boundingBox()))
+01021:     if not features:
+01022:         return {}
+01023: 
+01024:     src_crs = QgsCoordinateReferenceSystem("EPSG:4326")
+01025:     dst_crs = admin_layer.crs()
+01026:     transform = QgsCoordinateTransform(src_crs, dst_crs, QgsProject.instance())
+01027: 
+01028:     anchors_by_unit: Dict[str, Dict[int, float]] = {}
+01029:     for d in daily_rows:
+01030:         y = safe_float(d.get("year"))
+01031:         xyz_path_raw = str(d.get("xyz_path") or "").strip()
+01032:         if y is None or not xyz_path_raw:
+01033:             continue
+01034:         xyz_path = Path(xyz_path_raw)
+01035:         if not xyz_path.exists():
+01036:             continue
+01037:         year = int(y)
+01038:         stats = _parse_xyz_stats(xyz_path)
+01039:         per_unit_max: Dict[str, float] = {}
+01040: 
+01041:         for x, yv, vv in stats.get("triples", []):
+01042:             if vv is None:
+01043:                 continue
+01044:             try:
+01045:                 pt = transform.transform(QgsPointXY(float(x), float(yv)))
+01046:             except Exception:
+01047:                 continue
+01048:             pt_geom = QgsGeometry.fromPointXY(pt)
+01049:             for uid, geom, bbox in features:
+01050:                 try:
+01051:                     if not bbox.contains(pt):
+01052:                         continue
+01053:                     if not (geom.contains(pt_geom) or geom.intersects(pt_geom)):
+01054:                         continue
+01055:                 except Exception:
+01056:                     continue
+01057:                 prev = per_unit_max.get(uid)
+01058:                 if prev is None or vv > prev:
+01059:                     per_unit_max[uid] = vv
+01060:                 break
+01061: 
+01062:         for uid, mx in per_unit_max.items():
+01063:             anchors_by_unit.setdefault(uid, {})[year] = max(float(mx) * 1.0e11, 0.0)
+01064: 
+01065:     if anchors_by_unit:
+01066:         sampled_units = len(anchors_by_unit)
+01067:         report.log(f"GFAS XYZ unit anchor extraction complete: units_with_anchor={sampled_units}")
+01068:     return anchors_by_unit
+01069: 
+01070: 
+01071: def _load_modulea_smoke_year_series(smoke_catalog_path: Path, report: Report) -> Tuple[Dict[int, float], Dict[int, str]]:
+01072:     if not smoke_catalog_path.exists():
+01073:         report.fail(f"v1_moduleA smoke catalog not found: {smoke_catalog_path}")
+01074:     _header, rows, _delim = read_csv_rows(smoke_catalog_path)
+01075:     by_year: Dict[int, List[float]] = {}
+01076:     for r in rows:
+01077:         y = safe_float(r.get("year"))
+01078:         if y is None:
+01079:             continue
+01080:         val = safe_float(r.get("smoke_days"))
+01081:         if val is None:
+01082:             val = safe_float(r.get("smoke_hours"))
+01083:             if val is not None:
+01084:                 val = val / 24.0
+01085:         if val is None:
+01086:             continue
+01087:         yy = int(y)
+01088:         if yy in YEARS_HIST:
+01089:             by_year.setdefault(yy, []).append(float(val))
+01090: 
+01091:     values: Dict[int, float] = {}
+01092:     methods: Dict[int, str] = {}
+01093:     for y in YEARS_HIST:
+01094:         vals = by_year.get(y, [])
+01095:         if not vals:
+01096:             report.fail(f"v1_moduleA smoke catalog missing required year={y}")
+01097:         values[y] = float(sum(vals) / len(vals))
+01098:         methods[y] = "v1_moduleA_catalog_mean"
+01099:     return values, methods
+01100: 
+01101: 
+01102: def _degrade_smoke_methods(by_year_method: Dict[int, str], prefix: str) -> Dict[int, str]:
+01103:     out: Dict[int, str] = {}
+01104:     for y, m in by_year_method.items():
+01105:         out[y] = f"{prefix}_{m}"
+01106:     return out
+01107: 
+01108: 
+01109: def write_smoke_route_audit(
+01110:     qa_dir: Path,
+01111:     smoke_csv: Path,
+01112:     route_decision: Dict[str, object],
+01113: ) -> None:
+01114:     ensure_dir(qa_dir)
+01115:     out_tsv = qa_dir / "smoke_route_audit.tsv"
+01116:     _hdr, rows, _delim = read_csv_rows(smoke_csv)
+01117:     unique_by_year: Dict[int, set] = {}
+01118:     method_by_year: Dict[int, str] = {}
+01119:     for r in rows:
+01120:         y = safe_float(r.get("year"))
+01121:         sd = safe_float(r.get("smoke_days"))
+01122:         if y is None or sd is None:
+01123:             continue
+01124:         yy = int(y)
+01125:         unique_by_year.setdefault(yy, set()).add(round(sd, 8))
+01126:         if yy not in method_by_year:
+01127:             method_by_year[yy] = (r.get("smoke_method") or "").strip()
+01128: 
+01129:     rows_out: List[List[object]] = []
+01130:     for y in YEARS_HIST:
+01131:         uniq = len(unique_by_year.get(y, set()))
+01132:         rows_out.append(
+01133:             [
+01134:                 y,
+01135:                 uniq,
+01136:                 method_by_year.get(y, ""),
+01137:                 1 if uniq <= 1 else 0,
+01138:                 str(route_decision.get("route_selected", "")),
+01139:                 str(route_decision.get("smoke_route_status", "")),
+01140:                 str(route_decision.get("smoke_route_decision", "")),
+01141:                 str(route_decision.get("health_exposure_claim", "")),
+01142:                 str(route_decision.get("iech_decision", "")),
+01143:                 str(route_decision.get("causal_matrix_decision", "")),
+01144:                 str(route_decision.get("brief_decision", "")),
+01145:                 str(route_decision.get("final_scientific_decision", "")),
+01146:             ]
+01147:         )
+01148:     write_tsv(
+01149:         out_tsv,
+01150:         [
+01151:             "year",
+01152:             "unique_values",
+01153:             "method",
+01154:             "spatial_homogeneous_flag",
+01155:             "route_selected",
+01156:             "smoke_route_status",
+01157:             "smoke_route_decision",
+01158:             "health_exposure_claim",
+01159:             "iech_decision",
+01160:             "causal_matrix_decision",
+01161:             "brief_decision",
+01162:             "final_scientific_decision",
+01163:         ],
+01164:         rows_out,
+01165:     )
+01166: 
+01167: 
+01168: def write_spatial_collapse_root_cause_audit(
+01169:     output_root: Path,
+01170:     smoke_annual_csv: Path,
+01171:     smoke_daily_csv: Path,
+01172:     gfas_daily_summary_csv: Path,
+01173:     iech_hist_csv: Path,
+01174: ) -> None:
+01175:     qa_dir = output_root / "qa"
+01176:     ensure_dir(qa_dir)
+01177:     out_tsv = qa_dir / "spatial_collapse_root_cause_audit.tsv"
+01178:     out_md = qa_dir / "spatial_collapse_root_cause_audit.md"
+01179: 
+01180:     rows_out: List[List[object]] = []
+01181: 
+01182:     def add_row(artifact: str, metric: str, value: object, evidence: str, decision: str) -> None:
+01183:         rows_out.append([artifact, metric, value, evidence, decision])
+01184: 
+01185:     daily_homogeneous: Optional[bool] = None
+01186:     annual_homogeneous: Optional[bool] = None
+01187:     gfas_global_summary: Optional[bool] = None
+01188:     iech_collapsed: Optional[bool] = None
+01189:     missing_inputs: List[str] = []
+01190: 
+01191:     if smoke_daily_csv.exists():
+01192:         _hdr, daily_rows, _delim = read_csv_rows(smoke_daily_csv)
+01193:         add_row(smoke_daily_csv.name, "rows", len(daily_rows), "row_count", "READ")
+01194:         unit_ids = sorted({(r.get("unit_id") or "").strip() for r in daily_rows if (r.get("unit_id") or "").strip()})
+01195:         dates = sorted({(r.get("date") or "").strip() for r in daily_rows if (r.get("date") or "").strip()})
+01196:         years = sorted({(r.get("year") or "").strip() for r in daily_rows if (r.get("year") or "").strip()})
+01197:         add_row(smoke_daily_csv.name, "unit_id_unique", len(unit_ids), "distinct unit_id count", "READ")
+01198:         add_row(smoke_daily_csv.name, "date_unique", len(dates), "distinct date count", "READ")
+01199:         add_row(smoke_daily_csv.name, "year_unique", len(years), "distinct year count", "READ")
+01200: 
+01201:         unique_by_date: Dict[str, set] = {}
+01202:         unique_by_year: Dict[str, set] = {}
+01203:         for r in daily_rows:
+01204:             d = (r.get("date") or "").strip()
+01205:             y = (r.get("year") or "").strip()
+01206:             v = safe_float(r.get("smoke_day_score"))
+01207:             if d and v is not None:
+01208:                 unique_by_date.setdefault(d, set()).add(round(v, 8))
+01209:             if y and v is not None:
+01210:                 unique_by_year.setdefault(y, set()).add(round(v, 8))
+01211:         daily_homogeneous = True
+01212:         for s in unique_by_date.values():
+01213:             if len(s) > 1:
+01214:                 daily_homogeneous = False
+01215:                 break
+01216:         yearly_homogeneous = True
+01217:         for s in unique_by_year.values():
+01218:             if len(s) > 1:
+01219:                 yearly_homogeneous = False
+01220:                 break
+01221:         add_row(
+01222:             smoke_daily_csv.name,
+01223:             "all_units_same_score_by_date",
+01224:             1 if daily_homogeneous else 0,
+01225:             ",".join(f"{k}:{len(v)}" for k, v in sorted(unique_by_date.items())),
+01226:             "HOMOGENEOUS" if daily_homogeneous else "DIFFERENTIATED",
+01227:         )
+01228:         add_row(
+01229:             smoke_daily_csv.name,
+01230:             "all_units_same_score_by_year",
+01231:             1 if yearly_homogeneous else 0,
+01232:             ",".join(f"{k}:{len(v)}" for k, v in sorted(unique_by_year.items())),
+01233:             "HOMOGENEOUS" if yearly_homogeneous else "DIFFERENTIATED",
+01234:         )
+01235:     else:
+01236:         missing_inputs.append(str(smoke_daily_csv))
+01237:         add_row(smoke_daily_csv.name, "exists", 0, "missing file", "FAIL")
+01238: 
+01239:     if smoke_annual_csv.exists():
+01240:         _hdr, annual_rows, _delim = read_csv_rows(smoke_annual_csv)
+01241:         add_row(smoke_annual_csv.name, "rows", len(annual_rows), "row_count", "READ")
+01242:         unique_by_year_annual: Dict[int, set] = {}
+01243:         for r in annual_rows:
+01244:             y = safe_float(r.get("year"))
+01245:             v = safe_float(r.get("smoke_days"))
+01246:             if y is None or v is None:
+01247:                 continue
+01248:             unique_by_year_annual.setdefault(int(y), set()).add(round(v, 8))
+01249:         annual_homogeneous = True
+01250:         for s in unique_by_year_annual.values():
+01251:             if len(s) > 1:
+01252:                 annual_homogeneous = False
+01253:                 break
+01254:         add_row(
+01255:             smoke_annual_csv.name,
+01256:             "spatial_homogeneous_flag_derived",
+01257:             1 if annual_homogeneous else 0,
+01258:             ",".join(f"{y}:{len(v)}" for y, v in sorted(unique_by_year_annual.items())),
+01259:             "HOMOGENEOUS" if annual_homogeneous else "DIFFERENTIATED",
+01260:         )
+01261:     else:
+01262:         missing_inputs.append(str(smoke_annual_csv))
+01263:         add_row(smoke_annual_csv.name, "exists", 0, "missing file", "FAIL")
+01264: 
+01265:     if gfas_daily_summary_csv.exists():
+01266:         hdr, gfas_rows, _delim = read_csv_rows(gfas_daily_summary_csv)
+01267:         add_row(gfas_daily_summary_csv.name, "rows", len(gfas_rows), "row_count", "READ")
+01268:         hdr_low = {str(h).strip().lower() for h in hdr}
+01269:         has_unit_id = "unit_id" in hdr_low
+01270:         has_latlon = (("lat" in hdr_low) or ("y" in hdr_low)) and (("lon" in hdr_low) or ("x" in hdr_low))
+01271:         gfas_global_summary = not has_unit_id
+01272:         add_row(
+01273:             gfas_daily_summary_csv.name,
+01274:             "is_portugal_global_summary",
+01275:             1 if gfas_global_summary else 0,
+01276:             f"has_unit_id={has_unit_id}",
+01277:             "GLOBAL_ONLY" if gfas_global_summary else "UNIT_LEVEL",
+01278:         )
+01279:         add_row(
+01280:             gfas_daily_summary_csv.name,
+01281:             "has_lat_lon_or_cell_for_zonal_assignment",
+01282:             1 if has_latlon else 0,
+01283:             f"has_latlon={has_latlon}",
+01284:             "HAS_COORDS" if has_latlon else "NO_COORDS",
+01285:         )
+01286:     else:
+01287:         missing_inputs.append(str(gfas_daily_summary_csv))
+01288:         add_row(gfas_daily_summary_csv.name, "exists", 0, "missing file", "FAIL")
+01289: 
+01290:     if iech_hist_csv.exists():
+01291:         _hdr, iech_rows, _delim = read_csv_rows(iech_hist_csv)
+01292:         add_row(iech_hist_csv.name, "rows", len(iech_rows), "row_count", "READ")
+01293:         comparable = 0
+01294:         eq_rows = 0
+01295:         expo_comparable = 0
+01296:         expo_eq_rows = 0
+01297:         for r in iech_rows:
+01298:             iech = safe_float(r.get("IECH"))
+01299:             hours = safe_float(r.get("smoke_hours_equiv"))
+01300:             expo = safe_float(r.get("expo_person_hours"))
+01301:             pop = safe_float(r.get("pop"))
+01302:             if iech is not None and hours is not None:
+01303:                 comparable += 1
+01304:                 if abs(iech - hours) <= 1e-9:
+01305:                     eq_rows += 1
+01306:             if expo is not None and pop is not None and hours is not None:
+01307:                 expo_comparable += 1
+01308:                 if abs(expo - (pop * hours)) <= 1e-6:
+01309:                     expo_eq_rows += 1
+01310:         iech_collapsed = comparable > 0 and comparable == eq_rows
+01311:         expo_identity = expo_comparable > 0 and expo_comparable == expo_eq_rows
+01312:         add_row(
+01313:             iech_hist_csv.name,
+01314:             "iech_equals_smoke_hours_equiv_all_rows",
+01315:             1 if iech_collapsed else 0,
+01316:             f"{eq_rows}/{comparable}",
+01317:             "COLLAPSED" if iech_collapsed else "NOT_COLLAPSED",
+01318:         )
+01319:         add_row(
+01320:             iech_hist_csv.name,
+01321:             "expo_person_hours_equals_pop_times_smoke_hours_all_rows",
+01322:             1 if expo_identity else 0,
+01323:             f"{expo_eq_rows}/{expo_comparable}",
+01324:             "IDENTITY" if expo_identity else "NOT_IDENTITY",
+01325:         )
+01326:     else:
+01327:         missing_inputs.append(str(iech_hist_csv))
+01328:         add_row(iech_hist_csv.name, "exists", 0, "missing file", "FAIL")
+01329: 
+01330:     decision = "BLOCKED_COLLAPSE_ORIGIN_NOT_LOCALIZED"
+01331:     if missing_inputs:
+01332:         decision = "BLOCKED_COLLAPSE_ORIGIN_NOT_LOCALIZED"
+01333:     elif daily_homogeneous and annual_homogeneous and gfas_global_summary and iech_collapsed:
+01334:         decision = "COLLAPSE_ORIGIN_MULTIPLE"
+01335:     elif daily_homogeneous and gfas_global_summary:
+01336:         decision = "COLLAPSE_ORIGIN_GDAL_PORTUGAL_SUMMARY"
+01337:     elif annual_homogeneous and (daily_homogeneous is False):
+01338:         decision = "COLLAPSE_ORIGIN_DAILY_TO_ANNUAL_AGGREGATION"
+01339:     elif iech_collapsed:
+01340:         decision = "COLLAPSE_ORIGIN_IECH_FORMULA"
+01341: 
+01342:     add_row(
+01343:         "AUDIT",
+01344:         "collapse_origin_decision",
+01345:         decision,
+01346:         "daily_homogeneous + annual_homogeneous + portugal_global_summary + iech_collapse",
+01347:         decision,
+01348:     )
+01349:     write_tsv(out_tsv, ["artifact", "metric", "value", "evidence", "decision"], rows_out)
+01350: 
+01351:     md_lines = [
+01352:         "# Spatial Collapse Root Cause Audit",
+01353:         "",
+01354:         f"- generated_at: {now_iso()}",
+01355:         f"- output_root: {output_root}",
+01356:         f"- decision: {decision}",
+01357:         "",
+01358:         "## Findings",
+01359:     ]
+01360:     for r in rows_out:
+01361:         md_lines.append(f"- [{r[0]}] {r[1]}={r[2]} | evidence={r[3]} | decision={r[4]}")
+01362:     out_md.write_text("\n".join(md_lines) + "\n", encoding="utf-8")
+01363: 
+01364: 
+01365: def write_smoke_route_source_trace_audit(
+01366:     qa_dir: Path,
+01367:     inputs: Dict[str, object],
+01368:     sources: Dict[str, object],
+01369:     route_decision: Dict[str, object],
+01370: ) -> None:
+01371:     ensure_dir(qa_dir)
+01372:     out_tsv = qa_dir / "smoke_route_source_trace_audit.tsv"
+01373:     payload = json.dumps(inputs, ensure_ascii=False).lower()
+01374:     rows = [
+01375:         ["TRACE-001", "PASS" if str(sources.get("smoke_csv_input", "")) else "HOLD", str(sources.get("smoke_csv_input", "")), "inputs_resolved.paths.smoke_csv"],
+01376:         ["TRACE-002", "PASS" if bool(sources.get("modulea_validated")) else "HOLD", str(bool(sources.get("modulea_validated"))), "validated v1 moduleA smoke catalog"],
+01377:         ["TRACE-003", "PASS" if bool(sources.get("gfas_exists")) else "HOLD", str(bool(sources.get("gfas_exists"))), "GFAS directory physical presence"],
+01378:         ["TRACE-004", "PASS" if bool(sources.get("era5_exists")) else "HOLD", str(bool(sources.get("era5_exists"))), "ERA5 zip physical presence"],
+01379:         ["TRACE-005", "PASS" if "gfas" in payload else "HOLD", str("gfas" in payload), "inputs_resolved contains GFAS trace tokens"],
+01380:         ["TRACE-006", "PASS" if "era5" in payload else "HOLD", str("era5" in payload), "inputs_resolved contains ERA5 trace tokens"],
+01381:         ["TRACE-007", "PASS", str(route_decision.get("route_selected", "")), "selector route_selected"],
+01382:         ["TRACE-008", "PASS", str(route_decision.get("smoke_route_decision", "")), "selector smoke_route_decision"],
+01383:     ]
+01384:     write_tsv(out_tsv, ["check_id", "status", "value", "evidence"], rows)
+01385: 
+01386: 
+01387: def write_gfas_era5_presence_audit(qa_dir: Path, sources: Dict[str, object]) -> None:
+01388:     ensure_dir(qa_dir)
+01389:     out_tsv = qa_dir / "gfas_era5_presence_audit.tsv"
+01390:     rows = [
+01391:         ["PRES-001", "PASS" if bool(sources.get("gfas_exists")) else "HOLD", str(sources.get("gfas_dir", "")), "GFAS directory path"],
+01392:         ["PRES-002", "PASS" if int(sources.get("gfas_grib_count") or 0) > 0 else "HOLD", int(sources.get("gfas_grib_count") or 0), "GFAS grib file count"],
+01393:         ["PRES-003", "PASS" if int(sources.get("gfas_total_bytes") or 0) > 0 else "HOLD", int(sources.get("gfas_total_bytes") or 0), "GFAS total bytes"],
+01394:         ["PRES-004", "PASS" if bool(sources.get("era5_exists")) else "HOLD", str(sources.get("era5_zip", "")), "ERA5 zip path"],
+01395:         ["PRES-005", "PASS" if int(sources.get("parquet_zip_count") or 0) > 0 else "HOLD", int(sources.get("parquet_zip_count") or 0), "Parquet proxy zip count"],
+01396:     ]
+01397:     write_tsv(out_tsv, ["check_id", "status", "value", "evidence"], rows)
+01398: 
+01399: 
+01400: def write_gfas_era5_decoder_audit(
+01401:     qa_dir: Path,
+01402:     sources: Dict[str, object],
+01403:     route_decision: Dict[str, object],
+01404:     decoder_available: bool = False,
+01405: ) -> None:
+01406:     ensure_dir(qa_dir)
+01407:     out_tsv = qa_dir / "gfas_era5_decoder_audit.tsv"
+01408:     decoder_required = str(route_decision.get("route_selected", "")) == "BLOCKED_DECODER_REQUIRED"
+01409:     selected_real = str(route_decision.get("route_selected", "")) == "v0_gfas_era5_real"
+01410:     rows = [
+01411:         ["decoder_available", 1 if decoder_available else 0, "PASS" if decoder_available else "HOLD", "GDAL-only decoder probe result"],
+01412:         ["decoder_required", 1 if decoder_required else 0, "BLOCKED" if decoder_required else "PASS", str(route_decision.get("required_decoder", ""))],
+01413:         ["required_inputs", str(route_decision.get("required_inputs", "")), "PASS" if decoder_required or selected_real else "INFO", ""],
+01414:         ["gfas_grib_count", int(sources.get("gfas_grib_count") or 0), "PASS" if int(sources.get("gfas_grib_count") or 0) > 0 else "HOLD", ""],
+01415:         ["era5_exists", 1 if bool(sources.get("era5_exists")) else 0, "PASS" if bool(sources.get("era5_exists")) else "HOLD", ""],
+01416:         [
+01417:             "decoder_status",
+01418:             str(route_decision.get("smoke_route_decision", "")),
+01419:             "BLOCKED" if decoder_required else "PASS",
+01420:             str(route_decision.get("reason", "")),
+01421:         ],
+01422:     ]
+01423:     write_tsv(out_tsv, ["metric", "value", "status", "detail"], rows)
+01424:     checkpoints = qa_dir / "gfas_era5_decoder_checkpoints.tsv"
+01425:     cp_rows = [
+01426:         [
+01427:             "decoder_probe",
+01428:             "decoder_available",
+01429:             1 if decoder_available else 0,
+01430:             "GDAL-only GFAS decoder probe with Portugal negative-longitude crop.",
+01431:         ],
+01432:         ["gfas_probe", "gfas_grib_count", int(sources.get("gfas_grib_count") or 0), str(sources.get("gfas_dir", ""))],
+01433:         ["era5_probe", "era5_exists", 1 if bool(sources.get("era5_exists")) else 0, str(sources.get("era5_zip", ""))],
+01434:         [
+01435:             "route_decision",
+01436:             "route_selected",
+01437:             str(route_decision.get("route_selected", "")),
+01438:             str(route_decision.get("reason", "")),
+01439:         ],
+01440:     ]
+01441:     write_tsv(checkpoints, ["checkpoint", "metric", "value", "detail"], cp_rows)
+01442: 
+01443: 
+01444: def _resolve_gdal_tool(name: str) -> str:
+01445:     preferred = Path(r"C:\OSGeo4W64\bin") / name
+01446:     if preferred.exists():
+01447:         return str(preferred)
+01448:     return name
+01449: 
+01450: 
+01451: def _capture_warning_rows(tool_name: str, context: str, text: str) -> List[List[object]]:
+01452:     rows: List[List[object]] = []
+01453:     for raw in (text or "").splitlines():
+01454:         line = raw.strip()
+01455:         if not line:

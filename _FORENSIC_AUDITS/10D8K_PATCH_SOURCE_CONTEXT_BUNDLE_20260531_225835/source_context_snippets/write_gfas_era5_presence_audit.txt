@@ -1,0 +1,31 @@
+﻿# SOURCE: D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\01_REPO_COPY\pipeline\moduleC_pipeline_v2.py
+# TITLE: function write_gfas_era5_presence_audit
+# LINES: 1385-1411
+
+01385: 
+01386: 
+01387: def write_gfas_era5_presence_audit(qa_dir: Path, sources: Dict[str, object]) -> None:
+01388:     ensure_dir(qa_dir)
+01389:     out_tsv = qa_dir / "gfas_era5_presence_audit.tsv"
+01390:     rows = [
+01391:         ["PRES-001", "PASS" if bool(sources.get("gfas_exists")) else "HOLD", str(sources.get("gfas_dir", "")), "GFAS directory path"],
+01392:         ["PRES-002", "PASS" if int(sources.get("gfas_grib_count") or 0) > 0 else "HOLD", int(sources.get("gfas_grib_count") or 0), "GFAS grib file count"],
+01393:         ["PRES-003", "PASS" if int(sources.get("gfas_total_bytes") or 0) > 0 else "HOLD", int(sources.get("gfas_total_bytes") or 0), "GFAS total bytes"],
+01394:         ["PRES-004", "PASS" if bool(sources.get("era5_exists")) else "HOLD", str(sources.get("era5_zip", "")), "ERA5 zip path"],
+01395:         ["PRES-005", "PASS" if int(sources.get("parquet_zip_count") or 0) > 0 else "HOLD", int(sources.get("parquet_zip_count") or 0), "Parquet proxy zip count"],
+01396:     ]
+01397:     write_tsv(out_tsv, ["check_id", "status", "value", "evidence"], rows)
+01398: 
+01399: 
+01400: def write_gfas_era5_decoder_audit(
+01401:     qa_dir: Path,
+01402:     sources: Dict[str, object],
+01403:     route_decision: Dict[str, object],
+01404:     decoder_available: bool = False,
+01405: ) -> None:
+01406:     ensure_dir(qa_dir)
+01407:     out_tsv = qa_dir / "gfas_era5_decoder_audit.tsv"
+01408:     decoder_required = str(route_decision.get("route_selected", "")) == "BLOCKED_DECODER_REQUIRED"
+01409:     selected_real = str(route_decision.get("route_selected", "")) == "v0_gfas_era5_real"
+01410:     rows = [
+01411:         ["decoder_available", 1 if decoder_available else 0, "PASS" if decoder_available else "HOLD", "GDAL-only decoder probe result"],

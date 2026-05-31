@@ -1,0 +1,85 @@
+﻿# SOURCE: D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\01_REPO_COPY\pipeline\moduleC_pipeline_v2.py
+# TITLE: function iech_compute
+# LINES: 2292-2372
+
+02292:     return p2025 + (p2030 - p2025) * ((year - 2025) / 5.0)
+02293: 
+02294: def iech_compute(tables_dir: Path, report: Report) -> Tuple[Path, Path]:
+02295:     pop_csv = tables_dir / "pop_unit_2015_2025_2030.csv"
+02296:     smoke_csv = tables_dir / "smoke_days_unit_2015_2024.csv"
+02297:     rec_csv = tables_dir / "recurrence_unit_2015_2024.csv"
+02298:     for p in (pop_csv, smoke_csv, rec_csv):
+02299:         if not p.exists():
+02300:             report.fail(f"Missing table: {p}")
+02301: 
+02302:     pop_rows = read_csv_rows(pop_csv)[1]
+02303:     smoke_rows = read_csv_rows(smoke_csv)[1]
+02304:     if has_missing_flag(pop_rows) or has_missing_flag(smoke_rows):
+02305:         report.fail("Placeholder detected (missing_flag=1). IECH will not be computed.")
+02306: 
+02307:     pop = {}
+02308:     for r in pop_rows:
+02309:         uid = r.get("unit_id", "")
+02310:         pop[uid] = (
+02311:             safe_float(r.get("pop_2015_sum")) or 0.0,
+02312:             safe_float(r.get("pop_2020_sum")) or 0.0,
+02313:             safe_float(r.get("pop_2025_sum")) or 0.0,
+02314:             safe_float(r.get("pop_2030_sum")) or 0.0,
+02315:         )
+02316: 
+02317:     smoke = {}
+02318:     for r in smoke_rows:
+02319:         uid = r.get("unit_id", "")
+02320:         y = safe_float(r.get("year"))
+02321:         sd = safe_float(r.get("smoke_days"))
+02322:         if not uid or y is None:
+02323:             continue
+02324:         smoke.setdefault(uid, {})[int(y)] = sd
+02325: 
+02326:     unit_ids = sorted(pop.keys())
+02327:     if not unit_ids:
+02328:         report.fail("No unit_ids found in pop table.")
+02329: 
+02330:     iech_hist_csv = tables_dir / "IECH_unit_2015_2024.csv"
+02331:     rows_out = []
+02332:     for uid in unit_ids:
+02333:         p2015, p2020, p2025, _p2030 = pop.get(uid, (0.0, 0.0, 0.0, 0.0))
+02334:         for y in YEARS_HIST:
+02335:             sd = smoke.get(uid, {}).get(y, None)
+02336:             if sd is None:
+02337:                 report.fail(f"Missing smoke_days for {uid} {y}")
+02338:             hours = sd * 24.0
+02339:             p = interpolate_pop(p2015, p2020, p2025, y)
+02340:             expo = hours * p if p > 0 else None
+02341:             iech = (expo / p) if expo is not None and p > 0 else None
+02342:             rows_out.append([uid, y, sd, hours, p, expo, iech, "IECH=smoke_days*24;pop=interp(2015,2020,2025)"])
+02343: 
+02344:     write_csv(iech_hist_csv, ["unit_id", "year", "smoke_days", "smoke_hours_equiv", "pop", "expo_person_hours", "IECH", "method_flags"], rows_out, delim=";")
+02345: 
+02346:     iech_mean_csv = tables_dir / "IECH_unit_2015_2024_mean.csv"
+02347:     acc: Dict[str, List[float]] = {}
+02348:     for r in rows_out:
+02349:         uid = r[0]
+02350:         iech = safe_float(r[6])
+02351:         if iech is not None:
+02352:             acc.setdefault(uid, []).append(iech)
+02353:     rows_mean = []
+02354:     for uid, vals in sorted(acc.items()):
+02355:         mean_val = sum(vals) / len(vals) if vals else 0.0
+02356:         rows_mean.append([uid, mean_val])
+02357:     write_csv(iech_mean_csv, ["unit_id", "IECH_mean_2015_2024"], rows_mean, delim=";")
+02358:     return iech_hist_csv, iech_mean_csv
+02359: 
+02360: 
+02361: def scenarios_compute(tables_dir: Path, report: Report) -> Tuple[Path, Path]:
+02362:     smoke_csv = tables_dir / "smoke_days_unit_2015_2024.csv"
+02363:     pop_csv = tables_dir / "pop_unit_2015_2025_2030.csv"
+02364:     if not smoke_csv.exists() or not pop_csv.exists():
+02365:         report.fail("Missing smoke or pop table for scenarios.")
+02366: 
+02367:     smoke_rows = read_csv_rows(smoke_csv)[1]
+02368:     if has_missing_flag(smoke_rows):
+02369:         report.fail("Placeholder detected (smoke missing_flag=1). Scenarios not computed.")
+02370: 
+02371:     smoke_by_unit: Dict[str, List[float]] = {}
+02372:     for r in smoke_rows:

@@ -1,0 +1,6 @@
+﻿"priority"	"file"	"function"	"action"
+"1"	"pipeline\moduleC_pipeline_v2.py"	"write_gfas_era5_decoder_audit / route declaration block"	"Do not declare decoder available or SCIENTIFIC_PRIMARY_REAL when direct decoder evidence is absent or required_decoder is empty."
+"2"	"pipeline\moduleC_pipeline_v2.py"	"smoke_prepare"	"Propagate missing 2023/2024 direct-year state into route status and route reason; keep output zero only as HOLD/NO-GO evidence, not as real decoded smoke."
+"3"	"pipeline\moduleC_pipeline_v2.py"	"_fill_smoke_year_series"	"Separate direct_year, interpolated, extrapolated, and missing branches in audit outputs; prevent extrapolated missing years from being labeled as primary real coverage."
+"4"	"pipeline\moduleC_pipeline_v2.py"	"_derive_unit_anchor_scores_from_xyz"	"Verify whether GFAS/XYZ anchor scores are actual decoded values or synthetic anchors; expose decoder proof columns."
+"5"	"pipeline\scientific_threshold_gate.py"	"smoke/causal gate rules"	"Gate appears correctly blocking; only adjust messages if route declaration is corrected."

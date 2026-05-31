@@ -1,0 +1,2777 @@
+﻿MODULE C 10D8K - PATCH SOURCE CONTEXT BUNDLE
+MODE=READ_ONLY_NO_PATCH_NO_COMMIT_NO_RUNTIME
+BaseRoot=D:\GATA_MODULEC_UNIFIED_PROCESS
+ExpectedHead=206d40c30c9799ce0da4fcbb9ceb1295e556bfdf
+CurrentHead=206d40c30c9799ce0da4fcbb9ceb1295e556bfdf
+RuntimeRoot=D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\03_RUNTIMES\ModuleC_RUNTIME_10D7_REAL_PRODUCER_PATCH_20260531_083731_ITER3
+SourcePath=D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\01_REPO_COPY\pipeline\moduleC_pipeline_v2.py
+AuditRoot=D:\GATA_MODULEC_UNIFIED_PROCESS\_FORENSIC_AUDITS\10D8K_PATCH_SOURCE_CONTEXT_BUNDLE_20260531_225835
+
+PATCH TARGET REQUIREMENTS
+1. pipeline\moduleC_pipeline_v2.py | write_gfas_era5_decoder_audit / route declaration block | Do not declare decoder available or SCIENTIFIC_PRIMARY_REAL when direct decoder evidence is absent or required_decoder is empty.
+2. pipeline\moduleC_pipeline_v2.py | smoke_prepare | Propagate missing 2023/2024 direct-year state into route status and route reason; zero output remains HOLD/NO-GO evidence, not decoded smoke.
+3. pipeline\moduleC_pipeline_v2.py | _fill_smoke_year_series / _fill_smoke_year_series_relaxed | Separate direct_year, interpolated, extrapolated, and missing branches; prevent extrapolated missing years from being labeled as primary real coverage.
+4. pipeline\moduleC_pipeline_v2.py | _derive_unit_anchor_scores_from_xyz / GRIB helper zone | Expose proof columns that show whether GFAS anchors are direct decoded values, edge-summary rows, first-message extractions, synthetic anchors, or fallback.
+5. pipeline\scientific_threshold_gate.py | smoke/causal gate rules | Gate is blocking correctly; change only messages if route declaration is corrected, not blocking logic.
+
+============================================================
+FIXED RANGE: moduleC_smoke_anchor_and_series_830_1010
+============================================================
+# SOURCE: D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\01_REPO_COPY\pipeline\moduleC_pipeline_v2.py
+# TITLE: moduleC_smoke_anchor_and_series_830_1010
+# LINES: 830-1010
+
+00830:     crs_3763 = QgsCoordinateReferenceSystem("EPSG:3763")
+00831:     layer = processing.run("native:reprojectlayer", {"INPUT": layer, "TARGET_CRS": crs_3763, "OUTPUT": "memory:"})["OUTPUT"]
+00832: 
+00833:     if layer.featureCount() <= 0:
+00834:         report.fail("NUTS3 layer has zero features after filter.")
+00835: 
+00836:     gpkg_path = out_maps / "IECH_ModuleC_master.gpkg"
+00837:     write_layer_to_gpkg(layer, gpkg_path, "admin_nuts3_2024", report)
+00838:     return gpkg_path
+00839: 
+00840: 
+00841: def _collect_primary_smoke_anchors(modulec_datos: Path, report: Report) -> Dict[int, float]:
+00842:     from osgeo import ogr  # type: ignore
+00843: 
+00844:     parquet_zips = [modulec_datos / "ParquetFiles 2017.zip", modulec_datos / "ParquetFiles 2022.zip"]
+00845:     parquet_zips = [p for p in parquet_zips if p.exists()]
+00846:     if not parquet_zips:
+00847:         report.fail(f"Primary smoke source missing. Expected parquet zips in: {modulec_datos}")
+00848: 
+00849:     # station/year/day -> any(Value > 0). This preserves smoke-day signal from primary source.
+00850:     day_signal: Dict[Tuple[str, int, str], bool] = {}
+00851:     for zpath in parquet_zips:
+00852:         with zipfile.ZipFile(zpath, "r") as zf:
+00853:             entries = [n for n in zf.namelist() if n.lower().endswith(".parquet")]
+00854:         if not entries:
+00855:             report.fail(f"Primary smoke parquet zip has no parquet entries: {zpath}")
+00856: 
+00857:         for entry in entries:
+00858:             station = Path(entry).stem
+00859:             vpath = f"/vsizip/{zpath.as_posix()}/{entry}"
+00860:             ds = ogr.Open(vpath, 0)
+00861:             if ds is None:
+00862:                 report.fail(f"Cannot open primary smoke parquet: {vpath}")
+00863:             lyr = ds.GetLayer(0)
+00864:             if lyr is None:
+00865:                 report.fail(f"Primary smoke parquet has no layer: {vpath}")
+00866:             lyr.ResetReading()
+00867:             for ft in lyr:
+00868:                 start_val = ft.GetField("Start")
+00869:                 y = _extract_year_from_text(start_val)
+00870:                 if y is None or y not in YEARS_HIST:
+00871:                     continue
+00872:                 day = str(start_val)[:10]
+00873:                 if len(day) != 10:
+00874:                     continue
+00875:                 v = safe_float(ft.GetField("Value"))
+00876:                 gt0 = v is not None and v > 0.0
+00877:                 key = (station, y, day)
+00878:                 day_signal[key] = day_signal.get(key, False) or gt0
+00879: 
+00880:     if not day_signal:
+00881:         report.fail("Primary smoke parquet contains no usable day-level records for 2015-2024.")
+00882: 
+00883:     station_year_days_gt0: Dict[Tuple[str, int], int] = {}
+00884:     for (station, y, _day), flag in day_signal.items():
+00885:         if not flag:
+00886:             continue
+00887:         key = (station, y)
+00888:         station_year_days_gt0[key] = station_year_days_gt0.get(key, 0) + 1
+00889: 
+00890:     by_year: Dict[int, List[float]] = {}
+00891:     for (_station, y), days_gt0 in station_year_days_gt0.items():
+00892:         by_year.setdefault(y, []).append(float(days_gt0))
+00893: 
+00894:     if not by_year:
+00895:         report.fail("Primary smoke parquet has total absence of smoke signal (all days <= 0).")
+00896: 
+00897:     anchors = {y: _median(vals) for y, vals in by_year.items() if vals}
+00898:     if not anchors:
+00899:         report.fail("Primary smoke anchors could not be computed.")
+00900:     if sum(anchors.values()) <= 0.0:
+00901:         report.fail("Primary smoke anchors are degenerate: sum(smoke_days)==0.")
+00902:     if max(anchors.values()) <= 0.0:
+00903:         report.fail("Primary smoke anchors are degenerate: max(smoke_days)==0.")
+00904: 
+00905:     anchor_txt = ", ".join(f"{y}:{anchors[y]:.3f}" for y in sorted(anchors.keys()))
+00906:     report.log(f"Primary smoke anchors built from parquet: {anchor_txt}")
+00907:     return anchors
+00908: 
+00909: 
+00910: def _fill_smoke_year_series(anchors: Dict[int, float], report: Report) -> Tuple[Dict[int, float], Dict[int, str]]:
+00911:     years = sorted(anchors.keys())
+00912:     if not years:
+00913:         report.fail("No primary smoke anchors available for interpolation.")
+00914: 
+00915:     values: Dict[int, float] = {}
+00916:     methods: Dict[int, str] = {}
+00917: 
+00918:     if len(years) == 1:
+00919:         y0 = years[0]
+00920:         v0 = float(anchors[y0])
+00921:         for y in YEARS_HIST:
+00922:             values[y] = max(v0, 0.0)
+00923:             methods[y] = "primary_parquet_direct_year" if y == y0 else "primary_parquet_flat_single_anchor"
+00924:         return values, methods
+00925: 
+00926:     for y in YEARS_HIST:
+00927:         if y in anchors:
+00928:             values[y] = max(float(anchors[y]), 0.0)
+00929:             methods[y] = "primary_parquet_direct_year"
+00930:             continue
+00931: 
+00932:         if y < years[0]:
+00933:             y0, y1 = years[0], years[1]
+00934:             method = "primary_parquet_extrapolated_from_anchors"
+00935:         elif y > years[-1]:
+00936:             y0, y1 = years[-2], years[-1]
+00937:             method = "primary_parquet_extrapolated_from_anchors"
+00938:         else:
+00939:             y0, y1 = years[0], years[-1]
+00940:             for i in range(len(years) - 1):
+00941:                 a, b = years[i], years[i + 1]
+00942:                 if a <= y <= b:
+00943:                     y0, y1 = a, b
+00944:                     break
+00945:             method = "primary_parquet_interpolated_from_anchors"
+00946: 
+00947:         v0 = float(anchors[y0])
+00948:         v1 = float(anchors[y1])
+00949:         frac = 0.0 if y1 == y0 else (float(y - y0) / float(y1 - y0))
+00950:         vy = v0 + (v1 - v0) * frac
+00951:         values[y] = max(vy, 0.0)
+00952:         methods[y] = method
+00953: 
+00954:     if sum(values.values()) <= 0.0:
+00955:         report.fail("Smoke year series is degenerate after interpolation: sum(smoke_days)==0.")
+00956:     if max(values.values()) <= 0.0:
+00957:         report.fail("Smoke year series is degenerate after interpolation: max(smoke_days)==0.")
+00958:     return values, methods
+00959: 
+00960: 
+00961: def _fill_smoke_year_series_relaxed(anchors: Dict[int, float], method_prefix: str) -> Tuple[Dict[int, float], Dict[int, str]]:
+00962:     years = sorted(int(y) for y in anchors.keys())
+00963:     values: Dict[int, float] = {}
+00964:     methods: Dict[int, str] = {}
+00965:     if not years:
+00966:         return values, methods
+00967: 
+00968:     if len(years) == 1:
+00969:         y0 = years[0]
+00970:         v0 = max(float(anchors[y0]), 0.0)
+00971:         for y in YEARS_HIST:
+00972:             values[y] = v0
+00973:             methods[y] = f"{method_prefix}_direct_year" if y == y0 else f"{method_prefix}_flat_single_anchor"
+00974:         return values, methods
+00975: 
+00976:     for y in YEARS_HIST:
+00977:         if y in anchors:
+00978:             values[y] = max(float(anchors[y]), 0.0)
+00979:             methods[y] = f"{method_prefix}_direct_year"
+00980:             continue
+00981:         if y < years[0]:
+00982:             y0, y1 = years[0], years[1]
+00983:             method = f"{method_prefix}_extrapolated_from_anchors"
+00984:         elif y > years[-1]:
+00985:             y0, y1 = years[-2], years[-1]
+00986:             method = f"{method_prefix}_extrapolated_from_anchors"
+00987:         else:
+00988:             y0, y1 = years[0], years[-1]
+00989:             for i in range(len(years) - 1):
+00990:                 a, b = years[i], years[i + 1]
+00991:                 if a <= y <= b:
+00992:                     y0, y1 = a, b
+00993:                     break
+00994:             method = f"{method_prefix}_interpolated_from_anchors"
+00995:         v0 = float(anchors[y0])
+00996:         v1 = float(anchors[y1])
+00997:         frac = 0.0 if y1 == y0 else (float(y - y0) / float(y1 - y0))
+00998:         values[y] = max(v0 + (v1 - v0) * frac, 0.0)
+00999:         methods[y] = method
+01000:     return values, methods
+01001: 
+01002: 
+01003: def _derive_unit_anchor_scores_from_xyz(admin_layer, daily_rows: List[Dict[str, object]], report: Report) -> Dict[str, Dict[int, float]]:
+01004:     from qgis.core import (  # type: ignore
+01005:         QgsCoordinateReferenceSystem,
+01006:         QgsCoordinateTransform,
+01007:         QgsGeometry,
+01008:         QgsPointXY,
+01009:         QgsProject,
+01010:     )
+
+============================================================
+FIXED RANGE: moduleC_xyz_and_decoder_audits_1000_1455
+============================================================
+# SOURCE: D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\01_REPO_COPY\pipeline\moduleC_pipeline_v2.py
+# TITLE: moduleC_xyz_and_decoder_audits_1000_1455
+# LINES: 1000-1455
+
+01000:     return values, methods
+01001: 
+01002: 
+01003: def _derive_unit_anchor_scores_from_xyz(admin_layer, daily_rows: List[Dict[str, object]], report: Report) -> Dict[str, Dict[int, float]]:
+01004:     from qgis.core import (  # type: ignore
+01005:         QgsCoordinateReferenceSystem,
+01006:         QgsCoordinateTransform,
+01007:         QgsGeometry,
+01008:         QgsPointXY,
+01009:         QgsProject,
+01010:     )
+01011: 
+01012:     features = []
+01013:     for ft in admin_layer.getFeatures():
+01014:         uid = str(ft["NUTS_ID"]) if ft["NUTS_ID"] is not None else ""
+01015:         if not uid:
+01016:             continue
+01017:         geom = ft.geometry()
+01018:         if geom is None or geom.isEmpty():
+01019:             continue
+01020:         features.append((uid, geom, geom.boundingBox()))
+01021:     if not features:
+01022:         return {}
+01023: 
+01024:     src_crs = QgsCoordinateReferenceSystem("EPSG:4326")
+01025:     dst_crs = admin_layer.crs()
+01026:     transform = QgsCoordinateTransform(src_crs, dst_crs, QgsProject.instance())
+01027: 
+01028:     anchors_by_unit: Dict[str, Dict[int, float]] = {}
+01029:     for d in daily_rows:
+01030:         y = safe_float(d.get("year"))
+01031:         xyz_path_raw = str(d.get("xyz_path") or "").strip()
+01032:         if y is None or not xyz_path_raw:
+01033:             continue
+01034:         xyz_path = Path(xyz_path_raw)
+01035:         if not xyz_path.exists():
+01036:             continue
+01037:         year = int(y)
+01038:         stats = _parse_xyz_stats(xyz_path)
+01039:         per_unit_max: Dict[str, float] = {}
+01040: 
+01041:         for x, yv, vv in stats.get("triples", []):
+01042:             if vv is None:
+01043:                 continue
+01044:             try:
+01045:                 pt = transform.transform(QgsPointXY(float(x), float(yv)))
+01046:             except Exception:
+01047:                 continue
+01048:             pt_geom = QgsGeometry.fromPointXY(pt)
+01049:             for uid, geom, bbox in features:
+01050:                 try:
+01051:                     if not bbox.contains(pt):
+01052:                         continue
+01053:                     if not (geom.contains(pt_geom) or geom.intersects(pt_geom)):
+01054:                         continue
+01055:                 except Exception:
+01056:                     continue
+01057:                 prev = per_unit_max.get(uid)
+01058:                 if prev is None or vv > prev:
+01059:                     per_unit_max[uid] = vv
+01060:                 break
+01061: 
+01062:         for uid, mx in per_unit_max.items():
+01063:             anchors_by_unit.setdefault(uid, {})[year] = max(float(mx) * 1.0e11, 0.0)
+01064: 
+01065:     if anchors_by_unit:
+01066:         sampled_units = len(anchors_by_unit)
+01067:         report.log(f"GFAS XYZ unit anchor extraction complete: units_with_anchor={sampled_units}")
+01068:     return anchors_by_unit
+01069: 
+01070: 
+01071: def _load_modulea_smoke_year_series(smoke_catalog_path: Path, report: Report) -> Tuple[Dict[int, float], Dict[int, str]]:
+01072:     if not smoke_catalog_path.exists():
+01073:         report.fail(f"v1_moduleA smoke catalog not found: {smoke_catalog_path}")
+01074:     _header, rows, _delim = read_csv_rows(smoke_catalog_path)
+01075:     by_year: Dict[int, List[float]] = {}
+01076:     for r in rows:
+01077:         y = safe_float(r.get("year"))
+01078:         if y is None:
+01079:             continue
+01080:         val = safe_float(r.get("smoke_days"))
+01081:         if val is None:
+01082:             val = safe_float(r.get("smoke_hours"))
+01083:             if val is not None:
+01084:                 val = val / 24.0
+01085:         if val is None:
+01086:             continue
+01087:         yy = int(y)
+01088:         if yy in YEARS_HIST:
+01089:             by_year.setdefault(yy, []).append(float(val))
+01090: 
+01091:     values: Dict[int, float] = {}
+01092:     methods: Dict[int, str] = {}
+01093:     for y in YEARS_HIST:
+01094:         vals = by_year.get(y, [])
+01095:         if not vals:
+01096:             report.fail(f"v1_moduleA smoke catalog missing required year={y}")
+01097:         values[y] = float(sum(vals) / len(vals))
+01098:         methods[y] = "v1_moduleA_catalog_mean"
+01099:     return values, methods
+01100: 
+01101: 
+01102: def _degrade_smoke_methods(by_year_method: Dict[int, str], prefix: str) -> Dict[int, str]:
+01103:     out: Dict[int, str] = {}
+01104:     for y, m in by_year_method.items():
+01105:         out[y] = f"{prefix}_{m}"
+01106:     return out
+01107: 
+01108: 
+01109: def write_smoke_route_audit(
+01110:     qa_dir: Path,
+01111:     smoke_csv: Path,
+01112:     route_decision: Dict[str, object],
+01113: ) -> None:
+01114:     ensure_dir(qa_dir)
+01115:     out_tsv = qa_dir / "smoke_route_audit.tsv"
+01116:     _hdr, rows, _delim = read_csv_rows(smoke_csv)
+01117:     unique_by_year: Dict[int, set] = {}
+01118:     method_by_year: Dict[int, str] = {}
+01119:     for r in rows:
+01120:         y = safe_float(r.get("year"))
+01121:         sd = safe_float(r.get("smoke_days"))
+01122:         if y is None or sd is None:
+01123:             continue
+01124:         yy = int(y)
+01125:         unique_by_year.setdefault(yy, set()).add(round(sd, 8))
+01126:         if yy not in method_by_year:
+01127:             method_by_year[yy] = (r.get("smoke_method") or "").strip()
+01128: 
+01129:     rows_out: List[List[object]] = []
+01130:     for y in YEARS_HIST:
+01131:         uniq = len(unique_by_year.get(y, set()))
+01132:         rows_out.append(
+01133:             [
+01134:                 y,
+01135:                 uniq,
+01136:                 method_by_year.get(y, ""),
+01137:                 1 if uniq <= 1 else 0,
+01138:                 str(route_decision.get("route_selected", "")),
+01139:                 str(route_decision.get("smoke_route_status", "")),
+01140:                 str(route_decision.get("smoke_route_decision", "")),
+01141:                 str(route_decision.get("health_exposure_claim", "")),
+01142:                 str(route_decision.get("iech_decision", "")),
+01143:                 str(route_decision.get("causal_matrix_decision", "")),
+01144:                 str(route_decision.get("brief_decision", "")),
+01145:                 str(route_decision.get("final_scientific_decision", "")),
+01146:             ]
+01147:         )
+01148:     write_tsv(
+01149:         out_tsv,
+01150:         [
+01151:             "year",
+01152:             "unique_values",
+01153:             "method",
+01154:             "spatial_homogeneous_flag",
+01155:             "route_selected",
+01156:             "smoke_route_status",
+01157:             "smoke_route_decision",
+01158:             "health_exposure_claim",
+01159:             "iech_decision",
+01160:             "causal_matrix_decision",
+01161:             "brief_decision",
+01162:             "final_scientific_decision",
+01163:         ],
+01164:         rows_out,
+01165:     )
+01166: 
+01167: 
+01168: def write_spatial_collapse_root_cause_audit(
+01169:     output_root: Path,
+01170:     smoke_annual_csv: Path,
+01171:     smoke_daily_csv: Path,
+01172:     gfas_daily_summary_csv: Path,
+01173:     iech_hist_csv: Path,
+01174: ) -> None:
+01175:     qa_dir = output_root / "qa"
+01176:     ensure_dir(qa_dir)
+01177:     out_tsv = qa_dir / "spatial_collapse_root_cause_audit.tsv"
+01178:     out_md = qa_dir / "spatial_collapse_root_cause_audit.md"
+01179: 
+01180:     rows_out: List[List[object]] = []
+01181: 
+01182:     def add_row(artifact: str, metric: str, value: object, evidence: str, decision: str) -> None:
+01183:         rows_out.append([artifact, metric, value, evidence, decision])
+01184: 
+01185:     daily_homogeneous: Optional[bool] = None
+01186:     annual_homogeneous: Optional[bool] = None
+01187:     gfas_global_summary: Optional[bool] = None
+01188:     iech_collapsed: Optional[bool] = None
+01189:     missing_inputs: List[str] = []
+01190: 
+01191:     if smoke_daily_csv.exists():
+01192:         _hdr, daily_rows, _delim = read_csv_rows(smoke_daily_csv)
+01193:         add_row(smoke_daily_csv.name, "rows", len(daily_rows), "row_count", "READ")
+01194:         unit_ids = sorted({(r.get("unit_id") or "").strip() for r in daily_rows if (r.get("unit_id") or "").strip()})
+01195:         dates = sorted({(r.get("date") or "").strip() for r in daily_rows if (r.get("date") or "").strip()})
+01196:         years = sorted({(r.get("year") or "").strip() for r in daily_rows if (r.get("year") or "").strip()})
+01197:         add_row(smoke_daily_csv.name, "unit_id_unique", len(unit_ids), "distinct unit_id count", "READ")
+01198:         add_row(smoke_daily_csv.name, "date_unique", len(dates), "distinct date count", "READ")
+01199:         add_row(smoke_daily_csv.name, "year_unique", len(years), "distinct year count", "READ")
+01200: 
+01201:         unique_by_date: Dict[str, set] = {}
+01202:         unique_by_year: Dict[str, set] = {}
+01203:         for r in daily_rows:
+01204:             d = (r.get("date") or "").strip()
+01205:             y = (r.get("year") or "").strip()
+01206:             v = safe_float(r.get("smoke_day_score"))
+01207:             if d and v is not None:
+01208:                 unique_by_date.setdefault(d, set()).add(round(v, 8))
+01209:             if y and v is not None:
+01210:                 unique_by_year.setdefault(y, set()).add(round(v, 8))
+01211:         daily_homogeneous = True
+01212:         for s in unique_by_date.values():
+01213:             if len(s) > 1:
+01214:                 daily_homogeneous = False
+01215:                 break
+01216:         yearly_homogeneous = True
+01217:         for s in unique_by_year.values():
+01218:             if len(s) > 1:
+01219:                 yearly_homogeneous = False
+01220:                 break
+01221:         add_row(
+01222:             smoke_daily_csv.name,
+01223:             "all_units_same_score_by_date",
+01224:             1 if daily_homogeneous else 0,
+01225:             ",".join(f"{k}:{len(v)}" for k, v in sorted(unique_by_date.items())),
+01226:             "HOMOGENEOUS" if daily_homogeneous else "DIFFERENTIATED",
+01227:         )
+01228:         add_row(
+01229:             smoke_daily_csv.name,
+01230:             "all_units_same_score_by_year",
+01231:             1 if yearly_homogeneous else 0,
+01232:             ",".join(f"{k}:{len(v)}" for k, v in sorted(unique_by_year.items())),
+01233:             "HOMOGENEOUS" if yearly_homogeneous else "DIFFERENTIATED",
+01234:         )
+01235:     else:
+01236:         missing_inputs.append(str(smoke_daily_csv))
+01237:         add_row(smoke_daily_csv.name, "exists", 0, "missing file", "FAIL")
+01238: 
+01239:     if smoke_annual_csv.exists():
+01240:         _hdr, annual_rows, _delim = read_csv_rows(smoke_annual_csv)
+01241:         add_row(smoke_annual_csv.name, "rows", len(annual_rows), "row_count", "READ")
+01242:         unique_by_year_annual: Dict[int, set] = {}
+01243:         for r in annual_rows:
+01244:             y = safe_float(r.get("year"))
+01245:             v = safe_float(r.get("smoke_days"))
+01246:             if y is None or v is None:
+01247:                 continue
+01248:             unique_by_year_annual.setdefault(int(y), set()).add(round(v, 8))
+01249:         annual_homogeneous = True
+01250:         for s in unique_by_year_annual.values():
+01251:             if len(s) > 1:
+01252:                 annual_homogeneous = False
+01253:                 break
+01254:         add_row(
+01255:             smoke_annual_csv.name,
+01256:             "spatial_homogeneous_flag_derived",
+01257:             1 if annual_homogeneous else 0,
+01258:             ",".join(f"{y}:{len(v)}" for y, v in sorted(unique_by_year_annual.items())),
+01259:             "HOMOGENEOUS" if annual_homogeneous else "DIFFERENTIATED",
+01260:         )
+01261:     else:
+01262:         missing_inputs.append(str(smoke_annual_csv))
+01263:         add_row(smoke_annual_csv.name, "exists", 0, "missing file", "FAIL")
+01264: 
+01265:     if gfas_daily_summary_csv.exists():
+01266:         hdr, gfas_rows, _delim = read_csv_rows(gfas_daily_summary_csv)
+01267:         add_row(gfas_daily_summary_csv.name, "rows", len(gfas_rows), "row_count", "READ")
+01268:         hdr_low = {str(h).strip().lower() for h in hdr}
+01269:         has_unit_id = "unit_id" in hdr_low
+01270:         has_latlon = (("lat" in hdr_low) or ("y" in hdr_low)) and (("lon" in hdr_low) or ("x" in hdr_low))
+01271:         gfas_global_summary = not has_unit_id
+01272:         add_row(
+01273:             gfas_daily_summary_csv.name,
+01274:             "is_portugal_global_summary",
+01275:             1 if gfas_global_summary else 0,
+01276:             f"has_unit_id={has_unit_id}",
+01277:             "GLOBAL_ONLY" if gfas_global_summary else "UNIT_LEVEL",
+01278:         )
+01279:         add_row(
+01280:             gfas_daily_summary_csv.name,
+01281:             "has_lat_lon_or_cell_for_zonal_assignment",
+01282:             1 if has_latlon else 0,
+01283:             f"has_latlon={has_latlon}",
+01284:             "HAS_COORDS" if has_latlon else "NO_COORDS",
+01285:         )
+01286:     else:
+01287:         missing_inputs.append(str(gfas_daily_summary_csv))
+01288:         add_row(gfas_daily_summary_csv.name, "exists", 0, "missing file", "FAIL")
+01289: 
+01290:     if iech_hist_csv.exists():
+01291:         _hdr, iech_rows, _delim = read_csv_rows(iech_hist_csv)
+01292:         add_row(iech_hist_csv.name, "rows", len(iech_rows), "row_count", "READ")
+01293:         comparable = 0
+01294:         eq_rows = 0
+01295:         expo_comparable = 0
+01296:         expo_eq_rows = 0
+01297:         for r in iech_rows:
+01298:             iech = safe_float(r.get("IECH"))
+01299:             hours = safe_float(r.get("smoke_hours_equiv"))
+01300:             expo = safe_float(r.get("expo_person_hours"))
+01301:             pop = safe_float(r.get("pop"))
+01302:             if iech is not None and hours is not None:
+01303:                 comparable += 1
+01304:                 if abs(iech - hours) <= 1e-9:
+01305:                     eq_rows += 1
+01306:             if expo is not None and pop is not None and hours is not None:
+01307:                 expo_comparable += 1
+01308:                 if abs(expo - (pop * hours)) <= 1e-6:
+01309:                     expo_eq_rows += 1
+01310:         iech_collapsed = comparable > 0 and comparable == eq_rows
+01311:         expo_identity = expo_comparable > 0 and expo_comparable == expo_eq_rows
+01312:         add_row(
+01313:             iech_hist_csv.name,
+01314:             "iech_equals_smoke_hours_equiv_all_rows",
+01315:             1 if iech_collapsed else 0,
+01316:             f"{eq_rows}/{comparable}",
+01317:             "COLLAPSED" if iech_collapsed else "NOT_COLLAPSED",
+01318:         )
+01319:         add_row(
+01320:             iech_hist_csv.name,
+01321:             "expo_person_hours_equals_pop_times_smoke_hours_all_rows",
+01322:             1 if expo_identity else 0,
+01323:             f"{expo_eq_rows}/{expo_comparable}",
+01324:             "IDENTITY" if expo_identity else "NOT_IDENTITY",
+01325:         )
+01326:     else:
+01327:         missing_inputs.append(str(iech_hist_csv))
+01328:         add_row(iech_hist_csv.name, "exists", 0, "missing file", "FAIL")
+01329: 
+01330:     decision = "BLOCKED_COLLAPSE_ORIGIN_NOT_LOCALIZED"
+01331:     if missing_inputs:
+01332:         decision = "BLOCKED_COLLAPSE_ORIGIN_NOT_LOCALIZED"
+01333:     elif daily_homogeneous and annual_homogeneous and gfas_global_summary and iech_collapsed:
+01334:         decision = "COLLAPSE_ORIGIN_MULTIPLE"
+01335:     elif daily_homogeneous and gfas_global_summary:
+01336:         decision = "COLLAPSE_ORIGIN_GDAL_PORTUGAL_SUMMARY"
+01337:     elif annual_homogeneous and (daily_homogeneous is False):
+01338:         decision = "COLLAPSE_ORIGIN_DAILY_TO_ANNUAL_AGGREGATION"
+01339:     elif iech_collapsed:
+01340:         decision = "COLLAPSE_ORIGIN_IECH_FORMULA"
+01341: 
+01342:     add_row(
+01343:         "AUDIT",
+01344:         "collapse_origin_decision",
+01345:         decision,
+01346:         "daily_homogeneous + annual_homogeneous + portugal_global_summary + iech_collapse",
+01347:         decision,
+01348:     )
+01349:     write_tsv(out_tsv, ["artifact", "metric", "value", "evidence", "decision"], rows_out)
+01350: 
+01351:     md_lines = [
+01352:         "# Spatial Collapse Root Cause Audit",
+01353:         "",
+01354:         f"- generated_at: {now_iso()}",
+01355:         f"- output_root: {output_root}",
+01356:         f"- decision: {decision}",
+01357:         "",
+01358:         "## Findings",
+01359:     ]
+01360:     for r in rows_out:
+01361:         md_lines.append(f"- [{r[0]}] {r[1]}={r[2]} | evidence={r[3]} | decision={r[4]}")
+01362:     out_md.write_text("\n".join(md_lines) + "\n", encoding="utf-8")
+01363: 
+01364: 
+01365: def write_smoke_route_source_trace_audit(
+01366:     qa_dir: Path,
+01367:     inputs: Dict[str, object],
+01368:     sources: Dict[str, object],
+01369:     route_decision: Dict[str, object],
+01370: ) -> None:
+01371:     ensure_dir(qa_dir)
+01372:     out_tsv = qa_dir / "smoke_route_source_trace_audit.tsv"
+01373:     payload = json.dumps(inputs, ensure_ascii=False).lower()
+01374:     rows = [
+01375:         ["TRACE-001", "PASS" if str(sources.get("smoke_csv_input", "")) else "HOLD", str(sources.get("smoke_csv_input", "")), "inputs_resolved.paths.smoke_csv"],
+01376:         ["TRACE-002", "PASS" if bool(sources.get("modulea_validated")) else "HOLD", str(bool(sources.get("modulea_validated"))), "validated v1 moduleA smoke catalog"],
+01377:         ["TRACE-003", "PASS" if bool(sources.get("gfas_exists")) else "HOLD", str(bool(sources.get("gfas_exists"))), "GFAS directory physical presence"],
+01378:         ["TRACE-004", "PASS" if bool(sources.get("era5_exists")) else "HOLD", str(bool(sources.get("era5_exists"))), "ERA5 zip physical presence"],
+01379:         ["TRACE-005", "PASS" if "gfas" in payload else "HOLD", str("gfas" in payload), "inputs_resolved contains GFAS trace tokens"],
+01380:         ["TRACE-006", "PASS" if "era5" in payload else "HOLD", str("era5" in payload), "inputs_resolved contains ERA5 trace tokens"],
+01381:         ["TRACE-007", "PASS", str(route_decision.get("route_selected", "")), "selector route_selected"],
+01382:         ["TRACE-008", "PASS", str(route_decision.get("smoke_route_decision", "")), "selector smoke_route_decision"],
+01383:     ]
+01384:     write_tsv(out_tsv, ["check_id", "status", "value", "evidence"], rows)
+01385: 
+01386: 
+01387: def write_gfas_era5_presence_audit(qa_dir: Path, sources: Dict[str, object]) -> None:
+01388:     ensure_dir(qa_dir)
+01389:     out_tsv = qa_dir / "gfas_era5_presence_audit.tsv"
+01390:     rows = [
+01391:         ["PRES-001", "PASS" if bool(sources.get("gfas_exists")) else "HOLD", str(sources.get("gfas_dir", "")), "GFAS directory path"],
+01392:         ["PRES-002", "PASS" if int(sources.get("gfas_grib_count") or 0) > 0 else "HOLD", int(sources.get("gfas_grib_count") or 0), "GFAS grib file count"],
+01393:         ["PRES-003", "PASS" if int(sources.get("gfas_total_bytes") or 0) > 0 else "HOLD", int(sources.get("gfas_total_bytes") or 0), "GFAS total bytes"],
+01394:         ["PRES-004", "PASS" if bool(sources.get("era5_exists")) else "HOLD", str(sources.get("era5_zip", "")), "ERA5 zip path"],
+01395:         ["PRES-005", "PASS" if int(sources.get("parquet_zip_count") or 0) > 0 else "HOLD", int(sources.get("parquet_zip_count") or 0), "Parquet proxy zip count"],
+01396:     ]
+01397:     write_tsv(out_tsv, ["check_id", "status", "value", "evidence"], rows)
+01398: 
+01399: 
+01400: def write_gfas_era5_decoder_audit(
+01401:     qa_dir: Path,
+01402:     sources: Dict[str, object],
+01403:     route_decision: Dict[str, object],
+01404:     decoder_available: bool = False,
+01405: ) -> None:
+01406:     ensure_dir(qa_dir)
+01407:     out_tsv = qa_dir / "gfas_era5_decoder_audit.tsv"
+01408:     decoder_required = str(route_decision.get("route_selected", "")) == "BLOCKED_DECODER_REQUIRED"
+01409:     selected_real = str(route_decision.get("route_selected", "")) == "v0_gfas_era5_real"
+01410:     rows = [
+01411:         ["decoder_available", 1 if decoder_available else 0, "PASS" if decoder_available else "HOLD", "GDAL-only decoder probe result"],
+01412:         ["decoder_required", 1 if decoder_required else 0, "BLOCKED" if decoder_required else "PASS", str(route_decision.get("required_decoder", ""))],
+01413:         ["required_inputs", str(route_decision.get("required_inputs", "")), "PASS" if decoder_required or selected_real else "INFO", ""],
+01414:         ["gfas_grib_count", int(sources.get("gfas_grib_count") or 0), "PASS" if int(sources.get("gfas_grib_count") or 0) > 0 else "HOLD", ""],
+01415:         ["era5_exists", 1 if bool(sources.get("era5_exists")) else 0, "PASS" if bool(sources.get("era5_exists")) else "HOLD", ""],
+01416:         [
+01417:             "decoder_status",
+01418:             str(route_decision.get("smoke_route_decision", "")),
+01419:             "BLOCKED" if decoder_required else "PASS",
+01420:             str(route_decision.get("reason", "")),
+01421:         ],
+01422:     ]
+01423:     write_tsv(out_tsv, ["metric", "value", "status", "detail"], rows)
+01424:     checkpoints = qa_dir / "gfas_era5_decoder_checkpoints.tsv"
+01425:     cp_rows = [
+01426:         [
+01427:             "decoder_probe",
+01428:             "decoder_available",
+01429:             1 if decoder_available else 0,
+01430:             "GDAL-only GFAS decoder probe with Portugal negative-longitude crop.",
+01431:         ],
+01432:         ["gfas_probe", "gfas_grib_count", int(sources.get("gfas_grib_count") or 0), str(sources.get("gfas_dir", ""))],
+01433:         ["era5_probe", "era5_exists", 1 if bool(sources.get("era5_exists")) else 0, str(sources.get("era5_zip", ""))],
+01434:         [
+01435:             "route_decision",
+01436:             "route_selected",
+01437:             str(route_decision.get("route_selected", "")),
+01438:             str(route_decision.get("reason", "")),
+01439:         ],
+01440:     ]
+01441:     write_tsv(checkpoints, ["checkpoint", "metric", "value", "detail"], cp_rows)
+01442: 
+01443: 
+01444: def _resolve_gdal_tool(name: str) -> str:
+01445:     preferred = Path(r"C:\OSGeo4W64\bin") / name
+01446:     if preferred.exists():
+01447:         return str(preferred)
+01448:     return name
+01449: 
+01450: 
+01451: def _capture_warning_rows(tool_name: str, context: str, text: str) -> List[List[object]]:
+01452:     rows: List[List[object]] = []
+01453:     for raw in (text or "").splitlines():
+01454:         line = raw.strip()
+01455:         if not line:
+
+============================================================
+FIXED RANGE: moduleC_grib_decoder_zone_1460_1805
+============================================================
+# SOURCE: D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\01_REPO_COPY\pipeline\moduleC_pipeline_v2.py
+# TITLE: moduleC_grib_decoder_zone_1460_1805
+# LINES: 1460-1805
+
+01460:         status = "PASS"
+01461:         classification = "CLASSIFIED_WARNING"
+01462:         impact = "LOW"
+01463:         explained = "1"
+01464:         if "NUMPTS * (NUMBITS IN A GROUP)" in upper:
+01465:             classification = "GFAS_PACKING_WARNING_CLASSIFIED"
+01466:         elif "OUTSIDE RASTER EXTENT" in upper:
+01467:             classification = "WINDOW_OUTSIDE_RASTER_REJECTED"
+01468:         elif "WARNING" in upper:
+01469:             classification = "GENERIC_WARNING_UNCLASSIFIED"
+01470:             status = "BLOCKED"
+01471:             explained = "0"
+01472:             impact = "UNKNOWN"
+01473:         rows.append([tool_name, context, classification, explained, impact, status, line])
+01474:     return rows
+01475: 
+01476: 
+01477: def _extract_first_message_by_next_grib(src: Path, dst: Path, max_scan_bytes: int = 64 * 1024 * 1024) -> Tuple[int, int]:
+01478:     if not src.exists():
+01479:         raise FileNotFoundError(f"GFAS source GRIB missing: {src}")
+01480:     chunk_size = 4 * 1024 * 1024
+01481:     buf = bytearray()
+01482:     with src.open("rb") as f:
+01483:         while len(buf) < max_scan_bytes:
+01484:             to_read = min(chunk_size, max_scan_bytes - len(buf))
+01485:             part = f.read(to_read)
+01486:             if not part:
+01487:                 break
+01488:             buf.extend(part)
+01489:             if len(buf) >= 8 and buf[:4] == b"GRIB":
+01490:                 next_idx = bytes(buf).find(b"GRIB", 4)
+01491:                 if next_idx > 0:
+01492:                     payload = bytes(buf[:next_idx])
+01493:                     ensure_dir(dst.parent)
+01494:                     dst.write_bytes(payload)
+01495:                     return next_idx, len(payload)
+01496:     raise RuntimeError(f"Could not delimit first GRIB message using next GRIB within {max_scan_bytes} bytes for {src}")
+01497: 
+01498: 
+01499: def _parse_xyz_stats(path: Path) -> Dict[str, object]:
+01500:     rows = 0
+01501:     numeric = 0
+01502:     zeros = 0
+01503:     nonzero = 0
+01504:     vmin: Optional[float] = None
+01505:     vmax: Optional[float] = None
+01506:     vsum = 0.0
+01507:     triples: List[Tuple[float, float, float]] = []
+01508:     with path.open("r", encoding="utf-8", errors="replace") as f:
+01509:         for line in f:
+01510:             s = line.strip()
+01511:             if not s:
+01512:                 continue
+01513:             rows += 1
+01514:             parts = s.split()
+01515:             if len(parts) < 3:
+01516:                 continue
+01517:             x = safe_float(parts[0])
+01518:             y = safe_float(parts[1])
+01519:             v = safe_float(parts[2])
+01520:             if x is None or y is None or v is None:
+01521:                 continue
+01522:             triples.append((x, y, v))
+01523:             numeric += 1
+01524:             if abs(v) <= 1e-15:
+01525:                 zeros += 1
+01526:             else:
+01527:                 nonzero += 1
+01528:             vsum += v
+01529:             if vmin is None or v < vmin:
+01530:                 vmin = v
+01531:             if vmax is None or v > vmax:
+01532:                 vmax = v
+01533:     mean = (vsum / float(numeric)) if numeric > 0 else None
+01534:     return {
+01535:         "rows": rows,
+01536:         "numeric": numeric,
+01537:         "zero": zeros,
+01538:         "nonzero": nonzero,
+01539:         "min": vmin,
+01540:         "max": vmax,
+01541:         "mean": mean,
+01542:         "triples": triples,
+01543:     }
+01544: 
+01545: 
+01546: def _run_external(cmd: List[str], timeout_sec: int = 600) -> Tuple[int, str, str]:
+01547:     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
+01548:     return proc.returncode, proc.stdout or "", proc.stderr or ""
+01549: 
+01550: 
+01551: def _yyyymmdd_to_iso(v: str) -> str:
+01552:     s = (v or "").strip()
+01553:     if len(s) == 8 and s.isdigit():
+01554:         return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
+01555:     return s
+01556: 
+01557: 
+01558: def _smoke_route_v0_audit_rows(unexplained_warnings_count: int, failed: bool, detail: str) -> List[List[object]]:
+01559:     if not failed:
+01560:         return [
+01561:             ["backend_gfas", "GDAL", "PASS", "GFAS decoded through GDAL-only message extraction path."],
+01562:             ["backend_era5", "GDAL", "PASS", "ERA5 10U/10V validated through GDAL."],
+01563:             ["eccodes_for_gfas", "REJECTED_OR_FORBIDDEN", "PASS", "ecCodes is not used as GFAS decoder backend."],
+01564:             ["smoke_claim_level", "OPERATIONAL_PROXY", "PASS", "Atmospheric proxy only (non-health validated)."],
+01565:             ["health_exposure_claim", "BLOCKED_UNLESS_VALIDATED", "BLOCKED", "No official pollutant threshold validation in this v0 route."],
+01566:             ["portugal_crop_convention", "NEGATIVE_LONGITUDE", "PASS", "Main crop: -projwin -10.0 43.0 -6.0 36.5"],
+01567:             ["unexplained_warnings_count", unexplained_warnings_count, "PASS" if unexplained_warnings_count == 0 else "BLOCKED", detail],
+01568:         ]
+01569:     return [
+01570:         ["backend_gfas", "GDAL", "HOLD", "GFAS GDAL path failed during probe."],
+01571:         ["backend_era5", "GDAL", "HOLD", "ERA5 GDAL probe not completed."],
+01572:         ["eccodes_for_gfas", "REJECTED_OR_FORBIDDEN", "PASS", "ecCodes is not used as GFAS decoder backend."],
+01573:         ["smoke_claim_level", "OPERATIONAL_PROXY", "HOLD", "Proxy route blocked until decoder probe succeeds."],
+01574:         ["health_exposure_claim", "BLOCKED_UNLESS_VALIDATED", "BLOCKED", "Health claim remains blocked."],
+01575:         ["portugal_crop_convention", "NEGATIVE_LONGITUDE", "HOLD", "Not validated in this run."],
+01576:         ["unexplained_warnings_count", unexplained_warnings_count, "BLOCKED", detail],
+01577:     ]
+01578: 
+01579: 
+01580: def decode_gfas_era5_gdal_proxy(modulec_datos: Path, qa_dir: Path, report: Report) -> Dict[str, object]:
+01581:     ensure_dir(qa_dir)
+01582:     gdal_translate = _resolve_gdal_tool("gdal_translate.exe")
+01583:     gdalinfo = _resolve_gdal_tool("gdalinfo.exe")
+01584:     result: Dict[str, object] = {
+01585:         "decoder_available": False,
+01586:         "by_year": {},
+01587:         "by_year_method": {},
+01588:         "daily_rows": [],
+01589:         "spatial_scope": "UNKNOWN",
+01590:         "unit_assignment": "UNKNOWN",
+01591:         "warning_inventory_path": str(qa_dir / "warning_inventory.tsv"),
+01592:         "reason": "",
+01593:     }
+01594:     warning_rows: List[List[object]] = []
+01595: 
+01596:     def _write_warning_inventory() -> int:
+01597:         out = qa_dir / "warning_inventory.tsv"
+01598:         if not warning_rows:
+01599:             warning_rows.append(
+01600:                 ["runtime", "none", "NO_WARNINGS", "1", "NONE", "PASS", "No warning captured in GFAS/ERA5 GDAL decoder path."]
+01601:             )
+01602:         write_tsv(
+01603:             out,
+01604:             ["tool", "context", "classification", "explained", "impact", "status", "warning_text"],
+01605:             warning_rows,
+01606:         )
+01607:         return sum(1 for r in warning_rows if str(r[5]).upper() == "BLOCKED")
+01608: 
+01609:     try:
+01610:         gfas_dir = modulec_datos / "CAM-GFAS (ADS)"
+01611:         edge_summary = gfas_dir / "_grib_edge_summary.csv"
+01612:         if not edge_summary.exists():
+01613:             raise FileNotFoundError(f"GFAS edge summary not found: {edge_summary}")
+01614:         _hdr, edge_rows, _delim = read_csv_rows(edge_summary)
+01615:         pm_rows: List[Dict[str, str]] = []
+01616:         for r in edge_rows:
+01617:             s1 = (r.get("shortName_1") or "").strip().lower()
+01618:             sl = (r.get("shortName_L") or "").strip().lower()
+01619:             if "pm2p5fire" in s1 or "pm2p5fire" in sl:
+01620:                 pm_rows.append(r)
+01621:         if not pm_rows:
+01622:             raise RuntimeError("No PM2P5FIRE candidate rows found in _grib_edge_summary.csv")
+01623: 
+01624:         inv_rows: List[List[object]] = []
+01625:         gfas_xyz_rows: List[List[object]] = []
+01626:         daily_summary_rows: List[List[object]] = []
+01627:         daily_rows: List[Dict[str, object]] = []
+01628:         anchors: Dict[int, float] = {}
+01629:         methods: Dict[int, str] = {}
+01630: 
+01631:         for r in pm_rows:
+01632:             file_name = (r.get("file") or "").strip()
+01633:             if not file_name:
+01634:                 continue
+01635:             src_grib = gfas_dir / file_name
+01636:             if not src_grib.exists():
+01637:                 continue
+01638:             date_raw = (r.get("validityDate_1") or r.get("dataDate_1") or "").strip()
+01639:             year_hint = safe_float((date_raw[:4] if len(date_raw) >= 4 else ""))
+01640:             year_int = int(year_hint) if year_hint is not None else None
+01641:             if year_int is None:
+01642:                 continue
+01643:             if year_int < min(YEARS_HIST) or year_int > max(YEARS_HIST):
+01644:                 continue
+01645: 
+01646:             extracted_msg = qa_dir / f"gfas_pm2p5fire_{year_int}_message1.grib"
+01647:             next_idx, payload_bytes = _extract_first_message_by_next_grib(src_grib, extracted_msg)
+01648: 
+01649:             xyz_path = qa_dir / f"gfas_pm2p5fire_{year_int}_portugal.xyz"
+01650:             cmd = [
+01651:                 gdal_translate,
+01652:                 "-of",
+01653:                 "XYZ",
+01654:                 "-projwin",
+01655:                 "-10.0",
+01656:                 "43.0",
+01657:                 "-6.0",
+01658:                 "36.5",
+01659:                 str(extracted_msg),
+01660:                 str(xyz_path),
+01661:             ]
+01662:             rc, stdout, stderr = _run_external(cmd, timeout_sec=900)
+01663:             warning_rows.extend(_capture_warning_rows("gdal_translate", f"GFAS_PM2P5_{year_int}", stdout + "\n" + stderr))
+01664:             if rc != 0:
+01665:                 raise RuntimeError(f"gdal_translate failed for {file_name} year={year_int}; rc={rc}")
+01666:             if not xyz_path.exists():
+01667:                 raise RuntimeError(f"gdal_translate output missing: {xyz_path}")
+01668: 
+01669:             stats = _parse_xyz_stats(xyz_path)
+01670:             max_val = safe_float(stats.get("max"))
+01671:             daily_score = (max_val * 1.0e11) if max_val is not None else 0.0
+01672:             if daily_score < 0:
+01673:                 daily_score = 0.0
+01674:             anchors[year_int] = daily_score
+01675:             methods[year_int] = "gfas_pm2p5fire_gdal_message1_negative_lon_proxy"
+01676: 
+01677:             date_iso = _yyyymmdd_to_iso(date_raw)
+01678:             inv_rows.append(
+01679:                 [
+01680:                     file_name,
+01681:                     year_int,
+01682:                     str(src_grib),
+01683:                     str(extracted_msg),
+01684:                     payload_bytes,
+01685:                     next_idx,
+01686:                     (r.get("shortName_1") or ""),
+01687:                     (r.get("units_1") or ""),
+01688:                     date_raw,
+01689:                     "PASS",
+01690:                 ]
+01691:             )
+01692:             daily_summary_rows.append(
+01693:                 [
+01694:                     date_iso,
+01695:                     year_int,
+01696:                     file_name,
+01697:                     stats.get("rows", 0),
+01698:                     stats.get("numeric", 0),
+01699:                     stats.get("zero", 0),
+01700:                     stats.get("nonzero", 0),
+01701:                     stats.get("min", ""),
+01702:                     stats.get("max", ""),
+01703:                     stats.get("mean", ""),
+01704:                     daily_score,
+01705:                 ]
+01706:             )
+01707:             daily_rows.append(
+01708:                 {
+01709:                     "date": date_iso,
+01710:                     "year": year_int,
+01711:                     "smoke_day_score": daily_score,
+01712:                     "source_file": file_name,
+01713:                     "method": "gfas_pm2p5fire_gdal_negative_lon",
+01714:                     "xyz_path": str(xyz_path),
+01715:                 }
+01716:             )
+01717: 
+01718:             for x, y, v in stats.get("triples", []):
+01719:                 gfas_xyz_rows.append([file_name, date_iso, x, y, v])
+01720: 
+01721:         if not anchors:
+01722:             raise RuntimeError("PM2P5FIRE decoder produced no annual anchors within 2015-2024.")
+01723: 
+01724:         filled_vals, filled_methods = _fill_smoke_year_series(anchors, report)
+01725:         by_year: Dict[int, float] = {}
+01726:         by_year_method: Dict[int, str] = {}
+01727:         for y in YEARS_HIST:
+01728:             by_year[y] = float(filled_vals.get(y, 0.0))
+01729:             src_method = methods.get(y)
+01730:             if src_method is None:
+01731:                 fallback_method = str(filled_methods.get(y, "gfas_pm2p5fire_unknown"))
+01732:                 if fallback_method.startswith("primary_parquet_"):
+01733:                     fallback_method = "gfas_pm2p5fire_" + fallback_method[len("primary_parquet_") :]
+01734:                 src_method = fallback_method
+01735:             by_year_method[y] = src_method
+01736: 
+01737:         write_tsv(
+01738:             qa_dir / "gfas_pm2p5fire_message_inventory.tsv",
+01739:             [
+01740:                 "source_file",
+01741:                 "year_hint",
+01742:                 "source_grib_path",
+01743:                 "extracted_message_path",
+01744:                 "extracted_message_bytes",
+01745:                 "next_grib_offset",
+01746:                 "shortName_1",
+01747:                 "units_1",
+01748:                 "validityDate_1",
+01749:                 "status",
+01750:             ],
+01751:             inv_rows,
+01752:         )
+01753:         write_csv(
+01754:             qa_dir / "gfas_pm2p5fire_portugal_xyz.csv",
+01755:             ["source_file", "date", "x", "y", "value"],
+01756:             gfas_xyz_rows,
+01757:             delim=";",
+01758:         )
+01759:         write_csv(
+01760:             qa_dir / "gfas_pm2p5fire_portugal_daily_summary.csv",
+01761:             [
+01762:                 "date",
+01763:                 "year",
+01764:                 "source_file",
+01765:                 "rows",
+01766:                 "numeric",
+01767:                 "zero",
+01768:                 "nonzero",
+01769:                 "min",
+01770:                 "max",
+01771:                 "mean",
+01772:                 "smoke_day_score",
+01773:             ],
+01774:             daily_summary_rows,
+01775:             delim=";",
+01776:         )
+01777: 
+01778:         era5_candidates = sorted(modulec_datos.glob("*ERA5*.zip"))
+01779:         era5_zip = era5_candidates[0] if era5_candidates else None
+01780:         if era5_zip is None or not era5_zip.exists():
+01781:             raise FileNotFoundError("ERA5 zip not found for decoder probe.")
+01782:         era5_vsi = f"/vsizip/{era5_zip.as_posix()}/data.grib"
+01783:         rc_i, out_i, err_i = _run_external([gdalinfo, era5_vsi], timeout_sec=180)
+01784:         warning_rows.extend(_capture_warning_rows("gdalinfo", "ERA5_INFO", out_i + "\n" + err_i))
+01785:         if rc_i != 0:
+01786:             raise RuntimeError(f"gdalinfo failed for ERA5: rc={rc_i}")
+01787:         low_info = (out_i + "\n" + err_i).lower()
+01788:         has_10u = ("10 metre u wind component" in low_info) or ("grib_element=10u" in low_info)
+01789:         has_10v = ("10 metre v wind component" in low_info) or ("grib_element=10v" in low_info)
+01790:         if not (has_10u and has_10v):
+01791:             raise RuntimeError("ERA5 10U/10V not detected in GDAL probe.")
+01792: 
+01793:         era5_u_xyz = qa_dir / "era5_10u_portugal.xyz"
+01794:         era5_v_xyz = qa_dir / "era5_10v_portugal.xyz"
+01795:         rc_u, out_u, err_u = _run_external([gdal_translate, "-of", "XYZ", "-b", "1", era5_vsi, str(era5_u_xyz)], timeout_sec=240)
+01796:         warning_rows.extend(_capture_warning_rows("gdal_translate", "ERA5_10U_XYZ", out_u + "\n" + err_u))
+01797:         if rc_u != 0:
+01798:             raise RuntimeError(f"gdal_translate ERA5 band1 failed rc={rc_u}")
+01799:         rc_v, out_v, err_v = _run_external([gdal_translate, "-of", "XYZ", "-b", "2", era5_vsi, str(era5_v_xyz)], timeout_sec=240)
+01800:         warning_rows.extend(_capture_warning_rows("gdal_translate", "ERA5_10V_XYZ", out_v + "\n" + err_v))
+01801:         if rc_v != 0:
+01802:             raise RuntimeError(f"gdal_translate ERA5 band2 failed rc={rc_v}")
+01803: 
+01804:         u_stats = _parse_xyz_stats(era5_u_xyz)
+01805:         v_stats = _parse_xyz_stats(era5_v_xyz)
+
+============================================================
+FIXED RANGE: moduleC_smoke_prepare_1860_2050
+============================================================
+# SOURCE: D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\01_REPO_COPY\pipeline\moduleC_pipeline_v2.py
+# TITLE: moduleC_smoke_prepare_1860_2050
+# LINES: 1860-2050
+
+01860:                 str(exc),
+01861:             ]
+01862:         )
+01863:         _write_warning_inventory()
+01864:         write_tsv(
+01865:             qa_dir / "smoke_route_v0_audit.tsv",
+01866:             ["metric", "value", "status", "detail"],
+01867:             _smoke_route_v0_audit_rows(1, failed=True, detail=str(exc)),
+01868:         )
+01869:         report.log(f"GFAS/ERA5 decoder probe blocked: {exc}")
+01870:     return result
+01871: 
+01872: 
+01873: def smoke_prepare(
+01874:     inputs: Dict[str, object],
+01875:     admin_layer_path: Path,
+01876:     tables_dir: Path,
+01877:     modulec_datos: Path,
+01878:     route_decision: Dict[str, object],
+01879:     sources: Dict[str, object],
+01880:     report: Report,
+01881:     decoder_payload: Optional[Dict[str, object]] = None,
+01882: ) -> Path:
+01883:     smoke_path = Path(str(inputs["paths"].get("smoke_csv", "")))
+01884:     if smoke_path:
+01885:         if _is_forbidden_smoke_output_source(smoke_path):
+01886:             report.log(f"smoke_csv rejected (forbidden canonical source under 03_outputs\\tables): {smoke_path}")
+01887:         else:
+01888:             report.log(f"smoke_csv input registered: {smoke_path}")
+01889: 
+01890:     route_selected = str(route_decision.get("route_selected", "")).strip()
+01891:     unit_assignment = ""
+01892:     global_replicated_assignment = False
+01893:     if route_selected == "NO-GO_SMOKE_ROUTE":
+01894:         report.fail("NO-GO_SMOKE_ROUTE: no smoke route available.")
+01895: 
+01896:     if route_selected == "v1_moduleA_validated":
+01897:         modulea_path = Path(str(sources.get("modulea_catalog_path", "")))
+01898:         by_year, by_year_method = _load_modulea_smoke_year_series(modulea_path, report)
+01899:     elif route_selected in ("v0_parquet_proxy_degraded", "BLOCKED_DECODER_REQUIRED"):
+01900:         anchors = _collect_primary_smoke_anchors(modulec_datos, report)
+01901:         by_year, by_year_method = _fill_smoke_year_series(anchors, report)
+01902:         by_year_method = _degrade_smoke_methods(by_year_method, "proxy_degraded")
+01903:         if route_selected == "BLOCKED_DECODER_REQUIRED":
+01904:             report.log("BLOCKED_DECODER_REQUIRED: using v0_parquet_proxy_degraded for diagnostic output only.")
+01905:     elif route_selected == "v0_gfas_era5_real":
+01906:         payload = decoder_payload or {}
+01907:         if not bool(payload.get("decoder_available")):
+01908:             report.fail("v0_gfas_era5_real selected but decoder payload is unavailable.")
+01909:         by_year = {int(y): float(v) for y, v in dict(payload.get("by_year", {})).items()}
+01910:         by_year_method = {int(y): str(v) for y, v in dict(payload.get("by_year_method", {})).items()}
+01911:         unit_assignment = str(payload.get("unit_assignment", "")).strip()
+01912:         global_replicated_assignment = unit_assignment == "GLOBAL_PORTUGAL_REPLICATED_TO_NUTS3"
+01913:         if not by_year:
+01914:             report.fail("v0_gfas_era5_real selected but by_year decoder output is empty.")
+01915:     else:
+01916:         report.fail(f"Unknown smoke route_selected value: {route_selected}")
+01917: 
+01918:     from qgis.core import QgsVectorLayer  # type: ignore
+01919:     admin = QgsVectorLayer(str(admin_layer_path) + "|layername=admin_nuts3_2024", "admin", "ogr")
+01920:     if not admin.isValid():
+01921:         report.fail(f"Admin layer invalid: {admin_layer_path}")
+01922:     unit_ids = sorted({str(f["NUTS_ID"]) for f in admin.getFeatures() if f["NUTS_ID"] is not None})
+01923:     if not unit_ids:
+01924:         report.fail("Admin layer has no NUTS_ID values.")
+01925: 
+01926:     use_unit_series = False
+01927:     unit_year_values: Dict[str, Dict[int, float]] = {}
+01928:     unit_year_methods: Dict[str, Dict[int, str]] = {}
+01929:     if route_selected == "v0_gfas_era5_real" and global_replicated_assignment and decoder_payload:
+01930:         daily_seed = list(decoder_payload.get("daily_rows", []))
+01931:         anchors_by_unit = _derive_unit_anchor_scores_from_xyz(admin, daily_seed, report) if daily_seed else {}
+01932:         for uid in unit_ids:
+01933:             anchors = anchors_by_unit.get(uid, {})
+01934:             if not anchors:
+01935:                 continue
+01936:             vals_u, meth_u = _fill_smoke_year_series_relaxed(anchors, "gfas_pm2p5fire_gdal_unit")
+01937:             if vals_u:
+01938:                 unit_year_values[uid] = vals_u
+01939:                 unit_year_methods[uid] = meth_u
+01940:         has_spread = False
+01941:         if unit_year_values:
+01942:             for y in YEARS_HIST:
+01943:                 vals = []
+01944:                 for uid in unit_ids:
+01945:                     if uid in unit_year_values and y in unit_year_values[uid]:
+01946:                         vals.append(round(float(unit_year_values[uid][y]), 8))
+01947:                     else:
+01948:                         base = by_year.get(y, None)
+01949:                         if base is not None:
+01950:                             vals.append(round(float(base), 8))
+01951:                 if len(set(vals)) > 1:
+01952:                     has_spread = True
+01953:                     break
+01954:         if has_spread:
+01955:             use_unit_series = True
+01956:             unit_assignment = "UNIT_ZONAL_MAX_FROM_GFAS_XYZ_ANCHORS"
+01957:             report.log("GFAS smoke route upgraded to unit-level zonal anchors from XYZ.")
+01958:         else:
+01959:             report.log("GFAS XYZ unit anchors available but no spatial spread detected; keeping global replication.")
+01960: 
+01961:     out_path = tables_dir / "smoke_days_unit_2015_2024.csv"
+01962:     rows_out = []
+01963:     for uid in unit_ids:
+01964:         for y in YEARS_HIST:
+01965:             sd = None
+01966:             smoke_method = ""
+01967:             if use_unit_series and uid in unit_year_values:
+01968:                 sd = unit_year_values[uid].get(y, None)
+01969:                 smoke_method = unit_year_methods.get(uid, {}).get(y, "gfas_pm2p5fire_gdal_unit_unknown")
+01970:             if sd is None:
+01971:                 sd = by_year.get(y, None)
+01972:                 smoke_method = by_year_method.get(y, "primary_parquet_unknown")
+01973:             if sd is None:
+01974:                 report.fail(f"Primary smoke series missing required year: {y}")
+01975:             if route_selected == "v0_gfas_era5_real" and global_replicated_assignment:
+01976:                 if (not use_unit_series) and ("replicated_to_nuts3" not in smoke_method):
+01977:                     smoke_method = f"{smoke_method}_replicated_to_nuts3_from_portugal_global"
+01978:             rows_out.append([uid, y, sd, "", "", smoke_method, 0])
+01979: 
+01980:     write_csv(
+01981:         out_path,
+01982:         ["unit_id", "year", "smoke_days", "smoke_score_mean", "smoke_score_p80", "smoke_method", "smoke_missing_flag"],
+01983:         rows_out,
+01984:         delim=";",
+01985:     )
+01986: 
+01987:     # Alias required by route-v0 GFAS/ERA5 audits (same payload as canonical smoke table).
+01988:     alias_path = tables_dir / "smoke_days_nuts3_annual_2015_2024.csv"
+01989:     write_csv(
+01990:         alias_path,
+01991:         ["unit_id", "year", "smoke_days", "smoke_score_mean", "smoke_score_p80", "smoke_method", "smoke_missing_flag"],
+01992:         rows_out,
+01993:         delim=";",
+01994:     )
+01995: 
+01996:     # Optional daily proxy table generated when v0_gfas_era5_real decoder probe is available.
+01997:     if route_selected == "v0_gfas_era5_real" and decoder_payload:
+01998:         daily = list(decoder_payload.get("daily_rows", []))
+01999:         if daily:
+02000:             daily_out = tables_dir / "smoke_day_score_nuts3_daily.csv"
+02001:             daily_rows: List[List[object]] = []
+02002:             for uid in unit_ids:
+02003:                 for d in daily:
+02004:                     day_score = d.get("smoke_day_score", "")
+02005:                     day_method = d.get("method", "")
+02006:                     yv = safe_float(d.get("year"))
+02007:                     if use_unit_series and yv is not None:
+02008:                         y_int = int(yv)
+02009:                         unit_score = unit_year_values.get(uid, {}).get(y_int, None)
+02010:                         if unit_score is not None:
+02011:                             day_score = unit_score
+02012:                             day_method = "gfas_pm2p5fire_gdal_unit_negative_lon"
+02013:                     daily_rows.append(
+02014:                         [
+02015:                             uid,
+02016:                             d.get("date", ""),
+02017:                             d.get("year", ""),
+02018:                             day_score,
+02019:                             d.get("source_file", ""),
+02020:                             day_method,
+02021:                             unit_assignment or "UNKNOWN_ASSIGNMENT",
+02022:                         ]
+02023:                     )
+02024:             write_csv(
+02025:                 daily_out,
+02026:                 ["unit_id", "date", "year", "smoke_day_score", "source_file", "method", "spatial_assignment"],
+02027:                 daily_rows,
+02028:                 delim=";",
+02029:             )
+02030: 
+02031:     return out_path
+02032: 
+02033: def pop_prepare(inputs: Dict[str, object], admin_layer_path: Path, work_dir: Path, tables_dir: Path, report: Report) -> Path:
+02034:     from qgis.core import QgsVectorLayer  # type: ignore
+02035:     import processing  # type: ignore
+02036: 
+02037:     admin = QgsVectorLayer(str(admin_layer_path) + "|layername=admin_nuts3_2024", "admin", "ogr")
+02038:     if not admin.isValid():
+02039:         report.fail(f"Admin layer invalid: {admin_layer_path}")
+02040:     admin_extent = admin.extent()
+02041:     xmin = admin_extent.xMinimum()
+02042:     xmax = admin_extent.xMaximum()
+02043:     ymin = admin_extent.yMinimum()
+02044:     ymax = admin_extent.yMaximum()
+02045:     target_extent = (
+02046:         f"{xmin},{xmax},{ymin},{ymax} [EPSG:3763]"
+02047:     )
+02048:     warp_extra = f"-te {xmin} {ymin} {xmax} {ymax} -tr 100 100 -overwrite"
+02049: 
+02050:     ghsl = inputs["paths"]["ghsl_pop"]
+
+============================================================
+FIXED RANGE: moduleC_iech_scenario_missing_flag_2280_2395
+============================================================
+# SOURCE: D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\01_REPO_COPY\pipeline\moduleC_pipeline_v2.py
+# TITLE: moduleC_iech_scenario_missing_flag_2280_2395
+# LINES: 2280-2395
+
+02280: 
+02281:     write_csv(out_path, ["unit_id", "total_burn_ha_2015_2024", "years_area_gt_p75", "n_events_gt_1000ha", "recurrence_class", "recurrence_missing_flag"], rows_out, delim=";")
+02282:     return out_path
+02283: 
+02284: 
+02285: def interpolate_pop(p2015: float, p2020: float, p2025: float, year: int) -> float:
+02286:     if year <= 2020:
+02287:         return p2015 + (p2020 - p2015) * ((year - 2015) / 5.0)
+02288:     return p2020 + (p2025 - p2020) * ((year - 2020) / 5.0)
+02289: 
+02290: 
+02291: def interpolate_pop_scen(p2025: float, p2030: float, year: int) -> float:
+02292:     return p2025 + (p2030 - p2025) * ((year - 2025) / 5.0)
+02293: 
+02294: def iech_compute(tables_dir: Path, report: Report) -> Tuple[Path, Path]:
+02295:     pop_csv = tables_dir / "pop_unit_2015_2025_2030.csv"
+02296:     smoke_csv = tables_dir / "smoke_days_unit_2015_2024.csv"
+02297:     rec_csv = tables_dir / "recurrence_unit_2015_2024.csv"
+02298:     for p in (pop_csv, smoke_csv, rec_csv):
+02299:         if not p.exists():
+02300:             report.fail(f"Missing table: {p}")
+02301: 
+02302:     pop_rows = read_csv_rows(pop_csv)[1]
+02303:     smoke_rows = read_csv_rows(smoke_csv)[1]
+02304:     if has_missing_flag(pop_rows) or has_missing_flag(smoke_rows):
+02305:         report.fail("Placeholder detected (missing_flag=1). IECH will not be computed.")
+02306: 
+02307:     pop = {}
+02308:     for r in pop_rows:
+02309:         uid = r.get("unit_id", "")
+02310:         pop[uid] = (
+02311:             safe_float(r.get("pop_2015_sum")) or 0.0,
+02312:             safe_float(r.get("pop_2020_sum")) or 0.0,
+02313:             safe_float(r.get("pop_2025_sum")) or 0.0,
+02314:             safe_float(r.get("pop_2030_sum")) or 0.0,
+02315:         )
+02316: 
+02317:     smoke = {}
+02318:     for r in smoke_rows:
+02319:         uid = r.get("unit_id", "")
+02320:         y = safe_float(r.get("year"))
+02321:         sd = safe_float(r.get("smoke_days"))
+02322:         if not uid or y is None:
+02323:             continue
+02324:         smoke.setdefault(uid, {})[int(y)] = sd
+02325: 
+02326:     unit_ids = sorted(pop.keys())
+02327:     if not unit_ids:
+02328:         report.fail("No unit_ids found in pop table.")
+02329: 
+02330:     iech_hist_csv = tables_dir / "IECH_unit_2015_2024.csv"
+02331:     rows_out = []
+02332:     for uid in unit_ids:
+02333:         p2015, p2020, p2025, _p2030 = pop.get(uid, (0.0, 0.0, 0.0, 0.0))
+02334:         for y in YEARS_HIST:
+02335:             sd = smoke.get(uid, {}).get(y, None)
+02336:             if sd is None:
+02337:                 report.fail(f"Missing smoke_days for {uid} {y}")
+02338:             hours = sd * 24.0
+02339:             p = interpolate_pop(p2015, p2020, p2025, y)
+02340:             expo = hours * p if p > 0 else None
+02341:             iech = (expo / p) if expo is not None and p > 0 else None
+02342:             rows_out.append([uid, y, sd, hours, p, expo, iech, "IECH=smoke_days*24;pop=interp(2015,2020,2025)"])
+02343: 
+02344:     write_csv(iech_hist_csv, ["unit_id", "year", "smoke_days", "smoke_hours_equiv", "pop", "expo_person_hours", "IECH", "method_flags"], rows_out, delim=";")
+02345: 
+02346:     iech_mean_csv = tables_dir / "IECH_unit_2015_2024_mean.csv"
+02347:     acc: Dict[str, List[float]] = {}
+02348:     for r in rows_out:
+02349:         uid = r[0]
+02350:         iech = safe_float(r[6])
+02351:         if iech is not None:
+02352:             acc.setdefault(uid, []).append(iech)
+02353:     rows_mean = []
+02354:     for uid, vals in sorted(acc.items()):
+02355:         mean_val = sum(vals) / len(vals) if vals else 0.0
+02356:         rows_mean.append([uid, mean_val])
+02357:     write_csv(iech_mean_csv, ["unit_id", "IECH_mean_2015_2024"], rows_mean, delim=";")
+02358:     return iech_hist_csv, iech_mean_csv
+02359: 
+02360: 
+02361: def scenarios_compute(tables_dir: Path, report: Report) -> Tuple[Path, Path]:
+02362:     smoke_csv = tables_dir / "smoke_days_unit_2015_2024.csv"
+02363:     pop_csv = tables_dir / "pop_unit_2015_2025_2030.csv"
+02364:     if not smoke_csv.exists() or not pop_csv.exists():
+02365:         report.fail("Missing smoke or pop table for scenarios.")
+02366: 
+02367:     smoke_rows = read_csv_rows(smoke_csv)[1]
+02368:     if has_missing_flag(smoke_rows):
+02369:         report.fail("Placeholder detected (smoke missing_flag=1). Scenarios not computed.")
+02370: 
+02371:     smoke_by_unit: Dict[str, List[float]] = {}
+02372:     for r in smoke_rows:
+02373:         uid = r.get("unit_id", "")
+02374:         sd = safe_float(r.get("smoke_days"))
+02375:         if uid and sd is not None:
+02376:             smoke_by_unit.setdefault(uid, []).append(sd)
+02377: 
+02378:     if not smoke_by_unit:
+02379:         report.fail("No smoke data to compute scenarios.")
+02380: 
+02381:     baseline = {u: (sum(vs) / len(vs)) for u, vs in smoke_by_unit.items() if vs}
+02382:     baseline_vals = sorted(baseline.values())
+02383:     thr80 = baseline_vals[int(0.80 * (len(baseline_vals) - 1))] if baseline_vals else None
+02384:     target = {u for u, v in baseline.items() if thr80 is not None and v >= thr80}
+02385: 
+02386:     pop_rows = read_csv_rows(pop_csv)[1]
+02387:     if has_missing_flag(pop_rows):
+02388:         report.fail("Placeholder detected (pop missing_flag=1). Scenarios not computed.")
+02389: 
+02390:     pop_anchor = {}
+02391:     for r in pop_rows:
+02392:         uid = r.get("unit_id", "")
+02393:         p2025 = safe_float(r.get("pop_2025_sum"))
+02394:         p2030 = safe_float(r.get("pop_2030_sum"))
+02395:         if uid and p2025 is not None and p2030 is not None:
+
+============================================================
+FIXED RANGE: moduleC_qa_missing_flag_3060_3125
+============================================================
+# SOURCE: D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\01_REPO_COPY\pipeline\moduleC_pipeline_v2.py
+# TITLE: moduleC_qa_missing_flag_3060_3125
+# LINES: 3060-3125
+
+03060: 
+03061:         report.log("MARK: after init_qgis (main)")
+03062:         report.log("MARK: after init_qgis (main)")
+03063:         admin_gpkg = admin_prepare(inputs, maps_dir, report)
+03064:         smoke_csv = smoke_prepare(
+03065:             inputs,
+03066:             admin_gpkg,
+03067:             tables_dir,
+03068:             Path(args.modulec_datos),
+03069:             route_decision,
+03070:             sources,
+03071:             report,
+03072:             decoder_payload=decoder_payload,
+03073:         )
+03074:         write_smoke_route_audit(qa_dir, smoke_csv, route_decision)
+03075:         pop_csv = pop_prepare(inputs, admin_gpkg, work_dir, tables_dir, report)
+03076:         rec_csv = recurrence_prepare(inputs, admin_gpkg, tables_dir, report)
+03077: 
+03078:         for p in (smoke_csv, pop_csv, rec_csv):
+03079:             if not p.exists():
+03080:                 report.fail(f"Expected table missing: {p}")
+03081: 
+03082:         smoke_rows = read_csv_rows(smoke_csv)[1]
+03083:         nan_count, total, ratio = count_nan_ratio(smoke_rows, "smoke_days")
+03084:         if ratio > 0.05:
+03085:             report.fail(f"smoke_days NaN ratio {ratio:.2%} ({nan_count}/{total}) exceeds 5%")
+03086:         if has_missing_flag(smoke_rows):
+03087:             report.fail("smoke_days has missing_flag=1; placeholder detected")
+03088:         smoke_vals = [safe_float(r.get("smoke_days")) for r in smoke_rows]
+03089:         smoke_vals = [v for v in smoke_vals if v is not None]
+03090:         if not smoke_vals:
+03091:             report.fail("smoke_days table has no numeric values.")
+03092:         if sum(smoke_vals) <= 0.0:
+03093:             report.fail("smoke_days degenerate: sum(smoke_days)==0.")
+03094:         if max(smoke_vals) <= 0.0:
+03095:             report.fail("smoke_days degenerate: max(smoke_days)==0.")
+03096:         smoke_methods = [(r.get("smoke_method") or "").strip().lower() for r in smoke_rows]
+03097:         if any(m == "proxy_fill_unit_mean" for m in smoke_methods):
+03098:             report.fail("Forbidden smoke_method detected: proxy_fill_unit_mean.")
+03099: 
+03100:         pop_rows = read_csv_rows(pop_csv)[1]
+03101:         for col in ("pop_2020_sum", "pop_2025_sum", "pop_2030_sum"):
+03102:             n0, t0, r0 = count_nan_ratio(pop_rows, col)
+03103:             if r0 > 0.0:
+03104:                 report.fail(f"{col} has missing values ({n0}/{t0})")
+03105:         if has_missing_flag(pop_rows):
+03106:             report.fail("pop table has missing_flag=1; placeholder detected")
+03107: 
+03108:         rec_rows = read_csv_rows(rec_csv)[1]
+03109:         if has_missing_flag(rec_rows):
+03110:             report.fail("recurrence table has missing_flag=1; placeholder detected")
+03111: 
+03112:         iech_hist, iech_mean = iech_compute(tables_dir, report)
+03113:         scen_csv, scen_mean = scenarios_compute(tables_dir, report)
+03114:         write_spatial_collapse_root_cause_audit(
+03115:             output_root=out_dir,
+03116:             smoke_annual_csv=smoke_csv,
+03117:             smoke_daily_csv=tables_dir / "smoke_day_score_nuts3_daily.csv",
+03118:             gfas_daily_summary_csv=qa_dir / "gfas_pm2p5fire_portugal_daily_summary.csv",
+03119:             iech_hist_csv=iech_hist,
+03120:         )
+03121: 
+03122:         iech_rows = read_csv_rows(iech_hist)[1]
+03123:         n_iech, t_iech, r_iech = count_nan_ratio(iech_rows, "IECH")
+03124:         if not iech_rows or r_iech > 0.05:
+03125:             report.fail(f"IECH NaN ratio {r_iech:.2%} ({n_iech}/{t_iech}) exceeds 5%")
+
+============================================================
+FIXED RANGE: scientific_gate_smoke_rules_220_260
+============================================================
+# SOURCE: D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\01_REPO_COPY\pipeline\scientific_threshold_gate.py
+# TITLE: scientific_gate_smoke_rules_220_260
+# LINES: 220-260
+
+00220:     try:
+00221:         payload = json.loads(inputs_json.read_text(encoding="utf-8-sig"))
+00222:     except Exception as exc:
+00223:         return "BLOCKED_FOR_REQUIRED_VARIABLE", f"inputs_resolved.json parse error: {exc}", ""
+00224:     if not isinstance(payload, dict):
+00225:         return "BLOCKED_FOR_REQUIRED_VARIABLE", "inputs_resolved.json is not an object", ""
+00226:     meta = payload.get("meta", {})
+00227:     if not isinstance(meta, dict):
+00228:         meta = {}
+00229:     route_selected = str(meta.get("smoke_route_selected") or meta.get("smoke_route_mode") or "").strip()
+00230:     route_decision = str(meta.get("smoke_route_decision") or "").strip()
+00231:     if not route_selected:
+00232:         return "BLOCKED_FOR_REQUIRED_VARIABLE", "smoke_route_selected missing in inputs_resolved meta", ""
+00233: 
+00234:     if route_selected in ("v1_moduleA_validated", "v0_gfas_era5_real"):
+00235:         return (
+00236:             "THRESHOLD_DEFINED_AS_INDEXED_METHOD",
+00237:             f"route_selected={route_selected}; route_decision={route_decision}",
+00238:             route_selected,
+00239:         )
+00240:     if route_selected == "BLOCKED_DECODER_REQUIRED":
+00241:         return (
+00242:             "BLOCKED_DECODER_REQUIRED",
+00243:             f"route_selected={route_selected}; route_decision={route_decision}",
+00244:             route_selected,
+00245:         )
+00246:     if route_selected == "v0_parquet_proxy_degraded":
+00247:         return (
+00248:             "BLOCKED_SPATIAL_SMOKE_CLAIM",
+00249:             f"route_selected={route_selected}; route_decision={route_decision}",
+00250:             route_selected,
+00251:         )
+00252:     if route_selected == "NO-GO_SMOKE_ROUTE":
+00253:         return (
+00254:             "BLOCKED_NO_GO_SMOKE_ROUTE",
+00255:             f"route_selected={route_selected}; route_decision={route_decision}",
+00256:             route_selected,
+00257:         )
+00258:     return (
+00259:         "BLOCKED_FOR_REQUIRED_VARIABLE",
+00260:         f"unrecognized route_selected={route_selected}; route_decision={route_decision}",
+
+============================================================
+FIXED RANGE: scientific_gate_decision_rows_440_575
+============================================================
+# SOURCE: D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\01_REPO_COPY\pipeline\scientific_threshold_gate.py
+# TITLE: scientific_gate_decision_rows_440_575
+# LINES: 440-575
+
+00440:         add_gate(
+00441:             "REG-001",
+00442:             "Threshold register integration",
+00443:             str(threshold_register),
+00444:             "threshold register presence",
+00445:             "register missing",
+00446:             "Register must exist in canonical repo.",
+00447:             "SRC-CANON-REGISTER",
+00448:             "METHODOLOGICAL_GATE",
+00449:             "BLOCKED_FOR_THRESHOLD_DEFINITION",
+00450:             "None",
+00451:             "Scientific closure claim",
+00452:             "NO-GO_SCIENTIFIC_THRESHOLD",
+00453:         )
+00454: 
+00455:     route_status, route_obs, route_selected = evaluate_smoke_route_trace(inputs_json)
+00456:     add_gate(
+00457:         "SMOKE-ROUTE-001",
+00458:         "Smoke route selector priority",
+00459:         str(inputs_json),
+00460:         "meta.smoke_route_selected/meta.smoke_route_decision",
+00461:         route_obs,
+00462:         "priority=v1_moduleA_validated>v0_gfas_era5_real>BLOCKED_DECODER_REQUIRED>v0_parquet_proxy_degraded>NO-GO_SMOKE_ROUTE",
+00463:         "SRC-GATE-SMOKE-ROUTE",
+00464:         "METHODOLOGICAL_GATE",
+00465:         route_status,
+00466:         "Route-level traceability and explicit degraded/blocked state reporting.",
+00467:         "Scientific closure with degraded or blocked smoke route.",
+00468:         "NO-GO_SCIENTIFIC_THRESHOLD" if route_status.startswith("BLOCKED") else "NONE",
+00469:     )
+00470: 
+00471:     smoke_status, smoke_obs, smoke_unique = evaluate_smoke_spatial(smoke_csv)
+00472:     add_gate(
+00473:         "SMOKE-011",
+00474:         "Smoke spatial differentiation",
+00475:         str(smoke_csv),
+00476:         "smoke_days by unit/year",
+00477:         smoke_obs,
+00478:         "count_unique(smoke_days across units by year) must be > 1",
+00479:         "SRC-GATE-SMOKE-SPATIAL",
+00480:         "METHODOLOGICAL_GATE",
+00481:         smoke_status,
+00482:         "Smoke proxy can be used as common baseline when blocked.",
+00483:         "Spatially differentiated smoke exposure claim when n_unique<=1.",
+00484:         "NO-GO_SCIENTIFIC_THRESHOLD" if smoke_status.startswith("BLOCKED") else "NONE",
+00485:     )
+00486: 
+00487:     health_status, health_obs = evaluate_health_claim_support(smoke_csv)
+00488:     add_gate(
+00489:         "SMOKE-001",
+00490:         "Health exposure support",
+00491:         str(smoke_csv),
+00492:         "pollutant concentration columns",
+00493:         health_obs,
+00494:         "WHO/EPA/EU pollutant concentration threshold variables required.",
+00495:         "SRC-WHO-AQG-2021",
+00496:         "OFFICIAL_HEALTH_STANDARD",
+00497:         health_status,
+00498:         "Proxy-only smoke interpretation (non-health claim).",
+00499:         "Health/epidemiological exposure claims from proxy-only smoke data.",
+00500:         "NO-GO_SCIENTIFIC_THRESHOLD" if health_status.startswith("BLOCKED") else "NONE",
+00501:     )
+00502: 
+00503:     pop_cancel_status, pop_cancel_obs = evaluate_population_cancellation(iech_hist_csv)
+00504:     add_gate(
+00505:         "IECH-POP-001",
+00506:         "Population exposure cancellation check",
+00507:         str(iech_hist_csv),
+00508:         "IECH vs smoke_hours_equiv",
+00509:         pop_cancel_obs,
+00510:         "IECH must not collapse to smoke_hours_equiv for all rows when used for exposure claim.",
+00511:         "SRC-GATE-IECH-POP-CANCEL",
+00512:         "METHODOLOGICAL_GATE",
+00513:         pop_cancel_status,
+00514:         "Operational proxy interpretation with explicit limitation.",
+00515:         "Population exposure differentiation claim when IECH fully cancels to smoke_hours_equiv.",
+00516:         "NO-GO_SCIENTIFIC_THRESHOLD" if pop_cancel_status.startswith("BLOCKED") else "NONE",
+00517:     )
+00518: 
+00519:     warning_status, warning_obs, warning_blocked = evaluate_warning_inventory(warning_inventory)
+00520:     add_gate(
+00521:         "WARN-001",
+00522:         "Runtime warning classification gate",
+00523:         str(warning_inventory),
+00524:         "warning inventory status/explained",
+00525:         warning_obs,
+00526:         "No unexplained warning allowed in smoke route decoder evidence.",
+00527:         "SRC-GATE-WARNING-INVENTORY",
+00528:         "METHODOLOGICAL_GATE",
+00529:         warning_status,
+00530:         "Warnings may pass only if classified and reproducible values are verified.",
+00531:         "GO with unexplained warnings or silent suppression.",
+00532:         "NO-GO_SCIENTIFIC_THRESHOLD" if warning_status.startswith("BLOCKED") else "NONE",
+00533:     )
+00534: 
+00535:     iech_status, iech_obs, _iech_unique = evaluate_iech_ranking(iech_mean_csv)
+00536:     add_gate(
+00537:         "IECH-003",
+00538:         "IECH ranking validity",
+00539:         str(iech_mean_csv),
+00540:         "IECH_mean_2015_2024",
+00541:         iech_obs,
+00542:         "count_unique(IECH_mean_2015_2024 across units) must be > 1 for ranking claims.",
+00543:         "SRC-GATE-IECH-RANKING",
+00544:         "METHODOLOGICAL_GATE",
+00545:         iech_status,
+00546:         "IECH common baseline claim when ranking is blocked.",
+00547:         "Highest/high IECH territorial ranking when n_unique<=1.",
+00548:         "NO-GO_SCIENTIFIC_THRESHOLD" if iech_status.startswith("BLOCKED") else "NONE",
+00549:     )
+00550: 
+00551:     causal_status, causal_obs, causal_metrics = evaluate_causal_matrix(causal_csv)
+00552:     add_gate(
+00553:         "CAUSAL-001",
+00554:         "Causal matrix threshold contract",
+00555:         str(causal_csv),
+00556:         "qa_flag, missing_components, threshold_gate_status",
+00557:         causal_obs,
+00558:         "Causal matrix requires threshold_gate_status and no unresolved blocked rows.",
+00559:         "SRC-GATE-CAUSAL",
+00560:         "METHODOLOGICAL_GATE",
+00561:         causal_status,
+00562:         "Association/context wording with explicit limits.",
+00563:         "Causal closure claim while unresolved blocked drivers exist.",
+00564:         "NO-GO_SCIENTIFIC_THRESHOLD" if causal_status.startswith("BLOCKED") else "NONE",
+00565:     )
+00566: 
+00567:     active_blocks = sorted({r["gate_status"] for r in gate_rows if r["gate_status"].startswith("BLOCKED")})
+00568:     brief_hits = audit_brief_claims(brief_path, active_blocks)
+00569: 
+00570:     add_evidence("threshold_register", threshold_register)
+00571:     add_evidence("inputs_resolved", inputs_json)
+00572:     add_evidence("smoke_table", smoke_csv)
+00573:     add_evidence("iech_hist_table", iech_hist_csv)
+00574:     add_evidence("iech_mean_table", iech_mean_csv)
+00575:     add_evidence("causal_matrix_csv", causal_csv)
+
+============================================================
+FIXED RANGE: scientific_gate_final_decision_680_730
+============================================================
+# SOURCE: D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\01_REPO_COPY\pipeline\scientific_threshold_gate.py
+# TITLE: scientific_gate_final_decision_680_730
+# LINES: 680-730
+
+00680:         )
+00681:     if not blocked_claim_rows:
+00682:         blocked_claim_rows.append(["none", "NONE", "", "", "", "No blocked claim matches found."])
+00683:     write_tsv(
+00684:         qa_dir / "blocked_claims_register.tsv",
+00685:         ["claim_context", "gate_status", "matched_phrase_pattern", "source_file", "location", "recommended_rewrite"],
+00686:         blocked_claim_rows,
+00687:     )
+00688: 
+00689:     scientific_effects = [r["final_decision_effect"] for r in gate_rows]
+00690:     if "NO-GO_SCIENTIFIC_THRESHOLD" in scientific_effects:
+00691:         scientific_decision = "NO-GO_SCIENTIFIC_THRESHOLD"
+00692:     elif any(r["gate_status"].startswith("BLOCKED") for r in gate_rows):
+00693:         scientific_decision = "HOLD"
+00694:     else:
+00695:         scientific_decision = "GO"
+00696: 
+00697:     decision_lines = [
+00698:         "# Runtime Scientific Closure Decision",
+00699:         "",
+00700:         f"- timestamp: {now_iso()}",
+00701:         f"- output_root: \"{output_root}\"",
+00702:         f"- scientific_threshold_decision: **{scientific_decision}**",
+00703:         "",
+00704:         "## Active blocked states",
+00705:     ]
+00706:     if active_blocks:
+00707:         decision_lines.extend([f"- {b}" for b in active_blocks])
+00708:     else:
+00709:         decision_lines.append("- none")
+00710:     decision_lines.extend(
+00711:         [
+00712:             "",
+00713:             "## Contracts",
+00714:             "- scientific_validation_gate.tsv generated",
+00715:             "- scientific_claim_gate.tsv generated",
+00716:             "- scientific_threshold_evidence_register.tsv generated",
+00717:             "- blocked_claims_register.tsv generated",
+00718:             "- causal_matrix_scientific_gate_audit.tsv generated",
+00719:             "- brief_claim_scientific_gate_audit.tsv generated",
+00720:         ]
+00721:     )
+00722:     (deliver_dir / "runtime_scientific_closure_decision.md").write_text("\n".join(decision_lines) + "\n", encoding="utf-8")
+00723: 
+00724:     print(f"SCIENTIFIC_THRESHOLD_DECISION={scientific_decision}")
+00725:     # Decision may be NO-GO_SCIENTIFIC_THRESHOLD while operational closure remains analyzable.
+00726:     # Return non-zero only on execution failure, not on scientific decision state.
+00727:     return 0
+00728: 
+00729: 
+00730: if __name__ == "__main__":
+
+============================================================
+FIXED RANGE: objective_gate_oc09_80_110
+============================================================
+# SOURCE: D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\01_REPO_COPY\pipeline\validate_modulec_objectives_canon.py
+# TITLE: objective_gate_oc09_80_110
+# LINES: 80-110
+
+00080:     },
+00081:     {
+00082:         "objective_id": "OC-08",
+00083:         "objective_name": "WRB integrado como contexto",
+00084:         "required_database": "WRB_MostProbable_TM06.tif (+ lookup)",
+00085:         "required_output": ["tables/wrb_context_nuts3.csv", "tables/wrb_context_municipio.csv", "qa/wrb_integration_audit.tsv", "brief/wrb_summary_for_policy_brief.md"],
+00086:         "producer_script": "step7_matriz_causal.py",
+00087:         "validation_rule": "WRB con clases dominantes y sin missing generalizado.",
+00088:     },
+00089:     {
+00090:         "objective_id": "OC-09",
+00091:         "objective_name": "Matriz causal sustantiva",
+00092:         "required_database": "Outputs IECH/smoke/pop/recurrence/WRB/WUI",
+00093:         "required_output": [
+00094:             "brief/causal_matrix/causal_matrix_IECH_NUTS3.csv",
+00095:             "brief/causal_matrix/causal_matrix_IECH_NUTS3.json",
+00096:             "brief/causal_matrix/causal_matrix_IECH_NUTS3.txt",
+00097:             "brief/causal_matrix/causal_matrix_IECH_municipio.csv",
+00098:             "brief/causal_matrix/causal_matrix_audit.tsv",
+00099:             "brief/causal_matrix/causal_matrix_sha256_checkpoints.txt",
+00100:         ],
+00101:         "producer_script": "step7_matriz_causal.py",
+00102:         "validation_rule": "No qa_flag=HOLD y missing_components vacío para cierre GO.",
+00103:     },
+00104:     {
+00105:         "objective_id": "OC-10",
+00106:         "objective_name": "Escenarios S0/S1 2026-2030",
+00107:         "required_database": "GHSL 2025/2030 + supuestos S1",
+00108:         "required_output": [
+00109:             "tables/IECH_scenarios_2026_2030.csv",
+00110:             "tables/IECH_scenarios_unit_2026_2030_mean.csv",
+
+============================================================
+FIXED RANGE: objective_gate_oc09_check_270_370
+============================================================
+# SOURCE: D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\01_REPO_COPY\pipeline\validate_modulec_objectives_canon.py
+# TITLE: objective_gate_oc09_check_270_370
+# LINES: 270-370
+
+00270:     if not rows:
+00271:         return False, "territorial_context_nuts3.csv empty."
+00272:     n_total = len(rows)
+00273:     n_nonempty = 0
+00274:     for r in rows:
+00275:         if safe_float(r.get("wui_proxy")) is not None:
+00276:             n_nonempty += 1
+00277:     if n_nonempty <= 0:
+00278:         return False, "WUI proxy empty for all units."
+00279:     return True, f"WUI coverage OK: non-empty={n_nonempty}/{n_total}"
+00280: 
+00281: 
+00282: def _check_causal_quality(output_root: Path) -> Tuple[bool, str]:
+00283:     p = output_root / "brief" / "causal_matrix" / "causal_matrix_IECH_NUTS3.csv"
+00284:     if not p.exists():
+00285:         return False, "causal_matrix_IECH_NUTS3.csv missing."
+00286:     rows = read_csv_rows(p)
+00287:     if not rows:
+00288:         return False, "causal_matrix_IECH_NUTS3.csv empty."
+00289:     n_hold = 0
+00290:     n_missing_comp = 0
+00291:     for r in rows:
+00292:         if (r.get("qa_flag") or "").strip().upper() == "HOLD":
+00293:             n_hold += 1
+00294:         if (r.get("missing_components") or "").strip() != "":
+00295:             n_missing_comp += 1
+00296:     if n_hold > 0 or n_missing_comp > 0:
+00297:         return False, f"Causal matrix unresolved: qa_flag=HOLD {n_hold}, missing_components non-empty {n_missing_comp}"
+00298:     return True, "Causal matrix has no HOLD/missing_components."
+00299: 
+00300: 
+00301: def _check_brief_quality(output_root: Path) -> Tuple[bool, str]:
+00302:     p = output_root / "brief" / "Brief_Politica_IECH_2030.md"
+00303:     if not p.exists():
+00304:         return False, "Brief missing."
+00305:     text = p.read_text(encoding="utf-8-sig", errors="replace")
+00306:     if re.search(r"Line\s+\d{3}:\s+IECH pipeline v2 audit detail line", text, flags=re.IGNORECASE):
+00307:         return False, "Brief contains placeholder lines."
+00308:     if len(text.strip()) < 1200:
+00309:         return False, "Brief too short."
+00310:     return True, "Brief quality checks passed."
+00311: 
+00312: 
+00313: def _check_step9_zip_contents(output_root: Path) -> Tuple[bool, str]:
+00314:     p = output_root / "deliverables_step9" / "ModuleC_ALL_FINAL_deliverables.zip"
+00315:     if not p.exists():
+00316:         return False, "Final ZIP missing."
+00317:     required_member_tokens = [
+00318:         "qa/inputs_resolved.json",
+00319:         "qa/run_log.txt",
+00320:         "tables/IECH_unit_2015_2024.csv",
+00321:         "tables/IECH_municipio_2015_2024.csv",
+00322:         "tables/wrb_context_nuts3.csv",
+00323:         "tables/territorial_context_nuts3.csv",
+00324:         "brief/Brief_Politica_IECH_2030.md",
+00325:         "brief/causal_matrix/causal_matrix_IECH_NUTS3.csv",
+00326:         "maps/IECH_ModuleC_master.gpkg",
+00327:     ]
+00328:     with zipfile.ZipFile(p, "r") as zf:
+00329:         names = [n.replace("\\", "/") for n in zf.namelist()]
+00330:     missing = [tok for tok in required_member_tokens if not any(n.endswith(tok) for n in names)]
+00331:     if missing:
+00332:         return False, "Final ZIP missing direct members: " + ", ".join(missing)
+00333:     return True, "Final ZIP contains direct scientific outputs."
+00334: 
+00335: 
+00336: def objective_specific_check(obj_id: str, output_root: Path, inputs: Dict[str, object]) -> Tuple[bool, str]:
+00337:     if obj_id == "OC-03":
+00338:         ok, reason = _check_smoke_inputs_clean(inputs)
+00339:         if not ok:
+00340:             return ok, reason
+00341:         meta = inputs.get("meta", {}) if isinstance(inputs, dict) else {}
+00342:         if isinstance(meta, dict):
+00343:             route_selected = str(meta.get("smoke_route_selected") or meta.get("smoke_route_mode") or "").strip()
+00344:             route_decision = str(meta.get("smoke_route_decision") or "").strip()
+00345:             if route_selected in ("BLOCKED_DECODER_REQUIRED", "v0_parquet_proxy_degraded", "NO-GO_SMOKE_ROUTE"):
+00346:                 return False, f"smoke route blocked/degraded: route_selected={route_selected}; route_decision={route_decision}"
+00347:         smoke_unit = output_root / "tables" / "smoke_days_unit_2015_2024.csv"
+00348:         rows = read_csv_rows(smoke_unit) if smoke_unit.exists() else []
+00349:         vals = [safe_float(r.get("smoke_days")) for r in rows]
+00350:         vals = [v for v in vals if v is not None]
+00351:         if not vals:
+00352:             return False, "smoke_days table has no numeric values."
+00353:         if max(vals) <= 0:
+00354:             return False, "smoke_days table degenerate (max <= 0)."
+00355:         return True, reason
+00356:     if obj_id == "OC-07":
+00357:         return _check_wui_quality(output_root)
+00358:     if obj_id == "OC-08":
+00359:         return _check_wrb_quality(output_root)
+00360:     if obj_id == "OC-09":
+00361:         return _check_causal_quality(output_root)
+00362:     if obj_id == "OC-11":
+00363:         return _check_brief_quality(output_root)
+00364:     if obj_id == "OC-12":
+00365:         return _check_step9_zip_contents(output_root)
+00366:     return True, ""
+00367: 
+00368: 
+00369: def write_reports(qa_dir: Path, rows: List[Dict[str, str]], canon_path: Path, canon_sha: str) -> None:
+00370:     qa_dir.mkdir(parents=True, exist_ok=True)
+
+============================================================
+FUNCTION: _collect_primary_smoke_anchors
+============================================================
+# SOURCE: D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\01_REPO_COPY\pipeline\moduleC_pipeline_v2.py
+# TITLE: function _collect_primary_smoke_anchors
+# LINES: 839-921
+
+00839: 
+00840: 
+00841: def _collect_primary_smoke_anchors(modulec_datos: Path, report: Report) -> Dict[int, float]:
+00842:     from osgeo import ogr  # type: ignore
+00843: 
+00844:     parquet_zips = [modulec_datos / "ParquetFiles 2017.zip", modulec_datos / "ParquetFiles 2022.zip"]
+00845:     parquet_zips = [p for p in parquet_zips if p.exists()]
+00846:     if not parquet_zips:
+00847:         report.fail(f"Primary smoke source missing. Expected parquet zips in: {modulec_datos}")
+00848: 
+00849:     # station/year/day -> any(Value > 0). This preserves smoke-day signal from primary source.
+00850:     day_signal: Dict[Tuple[str, int, str], bool] = {}
+00851:     for zpath in parquet_zips:
+00852:         with zipfile.ZipFile(zpath, "r") as zf:
+00853:             entries = [n for n in zf.namelist() if n.lower().endswith(".parquet")]
+00854:         if not entries:
+00855:             report.fail(f"Primary smoke parquet zip has no parquet entries: {zpath}")
+00856: 
+00857:         for entry in entries:
+00858:             station = Path(entry).stem
+00859:             vpath = f"/vsizip/{zpath.as_posix()}/{entry}"
+00860:             ds = ogr.Open(vpath, 0)
+00861:             if ds is None:
+00862:                 report.fail(f"Cannot open primary smoke parquet: {vpath}")
+00863:             lyr = ds.GetLayer(0)
+00864:             if lyr is None:
+00865:                 report.fail(f"Primary smoke parquet has no layer: {vpath}")
+00866:             lyr.ResetReading()
+00867:             for ft in lyr:
+00868:                 start_val = ft.GetField("Start")
+00869:                 y = _extract_year_from_text(start_val)
+00870:                 if y is None or y not in YEARS_HIST:
+00871:                     continue
+00872:                 day = str(start_val)[:10]
+00873:                 if len(day) != 10:
+00874:                     continue
+00875:                 v = safe_float(ft.GetField("Value"))
+00876:                 gt0 = v is not None and v > 0.0
+00877:                 key = (station, y, day)
+00878:                 day_signal[key] = day_signal.get(key, False) or gt0
+00879: 
+00880:     if not day_signal:
+00881:         report.fail("Primary smoke parquet contains no usable day-level records for 2015-2024.")
+00882: 
+00883:     station_year_days_gt0: Dict[Tuple[str, int], int] = {}
+00884:     for (station, y, _day), flag in day_signal.items():
+00885:         if not flag:
+00886:             continue
+00887:         key = (station, y)
+00888:         station_year_days_gt0[key] = station_year_days_gt0.get(key, 0) + 1
+00889: 
+00890:     by_year: Dict[int, List[float]] = {}
+00891:     for (_station, y), days_gt0 in station_year_days_gt0.items():
+00892:         by_year.setdefault(y, []).append(float(days_gt0))
+00893: 
+00894:     if not by_year:
+00895:         report.fail("Primary smoke parquet has total absence of smoke signal (all days <= 0).")
+00896: 
+00897:     anchors = {y: _median(vals) for y, vals in by_year.items() if vals}
+00898:     if not anchors:
+00899:         report.fail("Primary smoke anchors could not be computed.")
+00900:     if sum(anchors.values()) <= 0.0:
+00901:         report.fail("Primary smoke anchors are degenerate: sum(smoke_days)==0.")
+00902:     if max(anchors.values()) <= 0.0:
+00903:         report.fail("Primary smoke anchors are degenerate: max(smoke_days)==0.")
+00904: 
+00905:     anchor_txt = ", ".join(f"{y}:{anchors[y]:.3f}" for y in sorted(anchors.keys()))
+00906:     report.log(f"Primary smoke anchors built from parquet: {anchor_txt}")
+00907:     return anchors
+00908: 
+00909: 
+00910: def _fill_smoke_year_series(anchors: Dict[int, float], report: Report) -> Tuple[Dict[int, float], Dict[int, str]]:
+00911:     years = sorted(anchors.keys())
+00912:     if not years:
+00913:         report.fail("No primary smoke anchors available for interpolation.")
+00914: 
+00915:     values: Dict[int, float] = {}
+00916:     methods: Dict[int, str] = {}
+00917: 
+00918:     if len(years) == 1:
+00919:         y0 = years[0]
+00920:         v0 = float(anchors[y0])
+00921:         for y in YEARS_HIST:
+
+============================================================
+FUNCTION: _fill_smoke_year_series
+============================================================
+# SOURCE: D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\01_REPO_COPY\pipeline\moduleC_pipeline_v2.py
+# TITLE: function _fill_smoke_year_series
+# LINES: 908-972
+
+00908: 
+00909: 
+00910: def _fill_smoke_year_series(anchors: Dict[int, float], report: Report) -> Tuple[Dict[int, float], Dict[int, str]]:
+00911:     years = sorted(anchors.keys())
+00912:     if not years:
+00913:         report.fail("No primary smoke anchors available for interpolation.")
+00914: 
+00915:     values: Dict[int, float] = {}
+00916:     methods: Dict[int, str] = {}
+00917: 
+00918:     if len(years) == 1:
+00919:         y0 = years[0]
+00920:         v0 = float(anchors[y0])
+00921:         for y in YEARS_HIST:
+00922:             values[y] = max(v0, 0.0)
+00923:             methods[y] = "primary_parquet_direct_year" if y == y0 else "primary_parquet_flat_single_anchor"
+00924:         return values, methods
+00925: 
+00926:     for y in YEARS_HIST:
+00927:         if y in anchors:
+00928:             values[y] = max(float(anchors[y]), 0.0)
+00929:             methods[y] = "primary_parquet_direct_year"
+00930:             continue
+00931: 
+00932:         if y < years[0]:
+00933:             y0, y1 = years[0], years[1]
+00934:             method = "primary_parquet_extrapolated_from_anchors"
+00935:         elif y > years[-1]:
+00936:             y0, y1 = years[-2], years[-1]
+00937:             method = "primary_parquet_extrapolated_from_anchors"
+00938:         else:
+00939:             y0, y1 = years[0], years[-1]
+00940:             for i in range(len(years) - 1):
+00941:                 a, b = years[i], years[i + 1]
+00942:                 if a <= y <= b:
+00943:                     y0, y1 = a, b
+00944:                     break
+00945:             method = "primary_parquet_interpolated_from_anchors"
+00946: 
+00947:         v0 = float(anchors[y0])
+00948:         v1 = float(anchors[y1])
+00949:         frac = 0.0 if y1 == y0 else (float(y - y0) / float(y1 - y0))
+00950:         vy = v0 + (v1 - v0) * frac
+00951:         values[y] = max(vy, 0.0)
+00952:         methods[y] = method
+00953: 
+00954:     if sum(values.values()) <= 0.0:
+00955:         report.fail("Smoke year series is degenerate after interpolation: sum(smoke_days)==0.")
+00956:     if max(values.values()) <= 0.0:
+00957:         report.fail("Smoke year series is degenerate after interpolation: max(smoke_days)==0.")
+00958:     return values, methods
+00959: 
+00960: 
+00961: def _fill_smoke_year_series_relaxed(anchors: Dict[int, float], method_prefix: str) -> Tuple[Dict[int, float], Dict[int, str]]:
+00962:     years = sorted(int(y) for y in anchors.keys())
+00963:     values: Dict[int, float] = {}
+00964:     methods: Dict[int, str] = {}
+00965:     if not years:
+00966:         return values, methods
+00967: 
+00968:     if len(years) == 1:
+00969:         y0 = years[0]
+00970:         v0 = max(float(anchors[y0]), 0.0)
+00971:         for y in YEARS_HIST:
+00972:             values[y] = v0
+
+============================================================
+FUNCTION: _fill_smoke_year_series_relaxed
+============================================================
+# SOURCE: D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\01_REPO_COPY\pipeline\moduleC_pipeline_v2.py
+# TITLE: function _fill_smoke_year_series_relaxed
+# LINES: 959-1014
+
+00959: 
+00960: 
+00961: def _fill_smoke_year_series_relaxed(anchors: Dict[int, float], method_prefix: str) -> Tuple[Dict[int, float], Dict[int, str]]:
+00962:     years = sorted(int(y) for y in anchors.keys())
+00963:     values: Dict[int, float] = {}
+00964:     methods: Dict[int, str] = {}
+00965:     if not years:
+00966:         return values, methods
+00967: 
+00968:     if len(years) == 1:
+00969:         y0 = years[0]
+00970:         v0 = max(float(anchors[y0]), 0.0)
+00971:         for y in YEARS_HIST:
+00972:             values[y] = v0
+00973:             methods[y] = f"{method_prefix}_direct_year" if y == y0 else f"{method_prefix}_flat_single_anchor"
+00974:         return values, methods
+00975: 
+00976:     for y in YEARS_HIST:
+00977:         if y in anchors:
+00978:             values[y] = max(float(anchors[y]), 0.0)
+00979:             methods[y] = f"{method_prefix}_direct_year"
+00980:             continue
+00981:         if y < years[0]:
+00982:             y0, y1 = years[0], years[1]
+00983:             method = f"{method_prefix}_extrapolated_from_anchors"
+00984:         elif y > years[-1]:
+00985:             y0, y1 = years[-2], years[-1]
+00986:             method = f"{method_prefix}_extrapolated_from_anchors"
+00987:         else:
+00988:             y0, y1 = years[0], years[-1]
+00989:             for i in range(len(years) - 1):
+00990:                 a, b = years[i], years[i + 1]
+00991:                 if a <= y <= b:
+00992:                     y0, y1 = a, b
+00993:                     break
+00994:             method = f"{method_prefix}_interpolated_from_anchors"
+00995:         v0 = float(anchors[y0])
+00996:         v1 = float(anchors[y1])
+00997:         frac = 0.0 if y1 == y0 else (float(y - y0) / float(y1 - y0))
+00998:         values[y] = max(v0 + (v1 - v0) * frac, 0.0)
+00999:         methods[y] = method
+01000:     return values, methods
+01001: 
+01002: 
+01003: def _derive_unit_anchor_scores_from_xyz(admin_layer, daily_rows: List[Dict[str, object]], report: Report) -> Dict[str, Dict[int, float]]:
+01004:     from qgis.core import (  # type: ignore
+01005:         QgsCoordinateReferenceSystem,
+01006:         QgsCoordinateTransform,
+01007:         QgsGeometry,
+01008:         QgsPointXY,
+01009:         QgsProject,
+01010:     )
+01011: 
+01012:     features = []
+01013:     for ft in admin_layer.getFeatures():
+01014:         uid = str(ft["NUTS_ID"]) if ft["NUTS_ID"] is not None else ""
+
+============================================================
+FUNCTION: _derive_unit_anchor_scores_from_xyz
+============================================================
+# SOURCE: D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\01_REPO_COPY\pipeline\moduleC_pipeline_v2.py
+# TITLE: function _derive_unit_anchor_scores_from_xyz
+# LINES: 1001-1082
+
+01001: 
+01002: 
+01003: def _derive_unit_anchor_scores_from_xyz(admin_layer, daily_rows: List[Dict[str, object]], report: Report) -> Dict[str, Dict[int, float]]:
+01004:     from qgis.core import (  # type: ignore
+01005:         QgsCoordinateReferenceSystem,
+01006:         QgsCoordinateTransform,
+01007:         QgsGeometry,
+01008:         QgsPointXY,
+01009:         QgsProject,
+01010:     )
+01011: 
+01012:     features = []
+01013:     for ft in admin_layer.getFeatures():
+01014:         uid = str(ft["NUTS_ID"]) if ft["NUTS_ID"] is not None else ""
+01015:         if not uid:
+01016:             continue
+01017:         geom = ft.geometry()
+01018:         if geom is None or geom.isEmpty():
+01019:             continue
+01020:         features.append((uid, geom, geom.boundingBox()))
+01021:     if not features:
+01022:         return {}
+01023: 
+01024:     src_crs = QgsCoordinateReferenceSystem("EPSG:4326")
+01025:     dst_crs = admin_layer.crs()
+01026:     transform = QgsCoordinateTransform(src_crs, dst_crs, QgsProject.instance())
+01027: 
+01028:     anchors_by_unit: Dict[str, Dict[int, float]] = {}
+01029:     for d in daily_rows:
+01030:         y = safe_float(d.get("year"))
+01031:         xyz_path_raw = str(d.get("xyz_path") or "").strip()
+01032:         if y is None or not xyz_path_raw:
+01033:             continue
+01034:         xyz_path = Path(xyz_path_raw)
+01035:         if not xyz_path.exists():
+01036:             continue
+01037:         year = int(y)
+01038:         stats = _parse_xyz_stats(xyz_path)
+01039:         per_unit_max: Dict[str, float] = {}
+01040: 
+01041:         for x, yv, vv in stats.get("triples", []):
+01042:             if vv is None:
+01043:                 continue
+01044:             try:
+01045:                 pt = transform.transform(QgsPointXY(float(x), float(yv)))
+01046:             except Exception:
+01047:                 continue
+01048:             pt_geom = QgsGeometry.fromPointXY(pt)
+01049:             for uid, geom, bbox in features:
+01050:                 try:
+01051:                     if not bbox.contains(pt):
+01052:                         continue
+01053:                     if not (geom.contains(pt_geom) or geom.intersects(pt_geom)):
+01054:                         continue
+01055:                 except Exception:
+01056:                     continue
+01057:                 prev = per_unit_max.get(uid)
+01058:                 if prev is None or vv > prev:
+01059:                     per_unit_max[uid] = vv
+01060:                 break
+01061: 
+01062:         for uid, mx in per_unit_max.items():
+01063:             anchors_by_unit.setdefault(uid, {})[year] = max(float(mx) * 1.0e11, 0.0)
+01064: 
+01065:     if anchors_by_unit:
+01066:         sampled_units = len(anchors_by_unit)
+01067:         report.log(f"GFAS XYZ unit anchor extraction complete: units_with_anchor={sampled_units}")
+01068:     return anchors_by_unit
+01069: 
+01070: 
+01071: def _load_modulea_smoke_year_series(smoke_catalog_path: Path, report: Report) -> Tuple[Dict[int, float], Dict[int, str]]:
+01072:     if not smoke_catalog_path.exists():
+01073:         report.fail(f"v1_moduleA smoke catalog not found: {smoke_catalog_path}")
+01074:     _header, rows, _delim = read_csv_rows(smoke_catalog_path)
+01075:     by_year: Dict[int, List[float]] = {}
+01076:     for r in rows:
+01077:         y = safe_float(r.get("year"))
+01078:         if y is None:
+01079:             continue
+01080:         val = safe_float(r.get("smoke_days"))
+01081:         if val is None:
+01082:             val = safe_float(r.get("smoke_hours"))
+
+============================================================
+FUNCTION: write_gfas_era5_presence_audit
+============================================================
+# SOURCE: D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\01_REPO_COPY\pipeline\moduleC_pipeline_v2.py
+# TITLE: function write_gfas_era5_presence_audit
+# LINES: 1385-1411
+
+01385: 
+01386: 
+01387: def write_gfas_era5_presence_audit(qa_dir: Path, sources: Dict[str, object]) -> None:
+01388:     ensure_dir(qa_dir)
+01389:     out_tsv = qa_dir / "gfas_era5_presence_audit.tsv"
+01390:     rows = [
+01391:         ["PRES-001", "PASS" if bool(sources.get("gfas_exists")) else "HOLD", str(sources.get("gfas_dir", "")), "GFAS directory path"],
+01392:         ["PRES-002", "PASS" if int(sources.get("gfas_grib_count") or 0) > 0 else "HOLD", int(sources.get("gfas_grib_count") or 0), "GFAS grib file count"],
+01393:         ["PRES-003", "PASS" if int(sources.get("gfas_total_bytes") or 0) > 0 else "HOLD", int(sources.get("gfas_total_bytes") or 0), "GFAS total bytes"],
+01394:         ["PRES-004", "PASS" if bool(sources.get("era5_exists")) else "HOLD", str(sources.get("era5_zip", "")), "ERA5 zip path"],
+01395:         ["PRES-005", "PASS" if int(sources.get("parquet_zip_count") or 0) > 0 else "HOLD", int(sources.get("parquet_zip_count") or 0), "Parquet proxy zip count"],
+01396:     ]
+01397:     write_tsv(out_tsv, ["check_id", "status", "value", "evidence"], rows)
+01398: 
+01399: 
+01400: def write_gfas_era5_decoder_audit(
+01401:     qa_dir: Path,
+01402:     sources: Dict[str, object],
+01403:     route_decision: Dict[str, object],
+01404:     decoder_available: bool = False,
+01405: ) -> None:
+01406:     ensure_dir(qa_dir)
+01407:     out_tsv = qa_dir / "gfas_era5_decoder_audit.tsv"
+01408:     decoder_required = str(route_decision.get("route_selected", "")) == "BLOCKED_DECODER_REQUIRED"
+01409:     selected_real = str(route_decision.get("route_selected", "")) == "v0_gfas_era5_real"
+01410:     rows = [
+01411:         ["decoder_available", 1 if decoder_available else 0, "PASS" if decoder_available else "HOLD", "GDAL-only decoder probe result"],
+
+============================================================
+FUNCTION: write_gfas_era5_decoder_audit
+============================================================
+# SOURCE: D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\01_REPO_COPY\pipeline\moduleC_pipeline_v2.py
+# TITLE: function write_gfas_era5_decoder_audit
+# LINES: 1398-1455
+
+01398: 
+01399: 
+01400: def write_gfas_era5_decoder_audit(
+01401:     qa_dir: Path,
+01402:     sources: Dict[str, object],
+01403:     route_decision: Dict[str, object],
+01404:     decoder_available: bool = False,
+01405: ) -> None:
+01406:     ensure_dir(qa_dir)
+01407:     out_tsv = qa_dir / "gfas_era5_decoder_audit.tsv"
+01408:     decoder_required = str(route_decision.get("route_selected", "")) == "BLOCKED_DECODER_REQUIRED"
+01409:     selected_real = str(route_decision.get("route_selected", "")) == "v0_gfas_era5_real"
+01410:     rows = [
+01411:         ["decoder_available", 1 if decoder_available else 0, "PASS" if decoder_available else "HOLD", "GDAL-only decoder probe result"],
+01412:         ["decoder_required", 1 if decoder_required else 0, "BLOCKED" if decoder_required else "PASS", str(route_decision.get("required_decoder", ""))],
+01413:         ["required_inputs", str(route_decision.get("required_inputs", "")), "PASS" if decoder_required or selected_real else "INFO", ""],
+01414:         ["gfas_grib_count", int(sources.get("gfas_grib_count") or 0), "PASS" if int(sources.get("gfas_grib_count") or 0) > 0 else "HOLD", ""],
+01415:         ["era5_exists", 1 if bool(sources.get("era5_exists")) else 0, "PASS" if bool(sources.get("era5_exists")) else "HOLD", ""],
+01416:         [
+01417:             "decoder_status",
+01418:             str(route_decision.get("smoke_route_decision", "")),
+01419:             "BLOCKED" if decoder_required else "PASS",
+01420:             str(route_decision.get("reason", "")),
+01421:         ],
+01422:     ]
+01423:     write_tsv(out_tsv, ["metric", "value", "status", "detail"], rows)
+01424:     checkpoints = qa_dir / "gfas_era5_decoder_checkpoints.tsv"
+01425:     cp_rows = [
+01426:         [
+01427:             "decoder_probe",
+01428:             "decoder_available",
+01429:             1 if decoder_available else 0,
+01430:             "GDAL-only GFAS decoder probe with Portugal negative-longitude crop.",
+01431:         ],
+01432:         ["gfas_probe", "gfas_grib_count", int(sources.get("gfas_grib_count") or 0), str(sources.get("gfas_dir", ""))],
+01433:         ["era5_probe", "era5_exists", 1 if bool(sources.get("era5_exists")) else 0, str(sources.get("era5_zip", ""))],
+01434:         [
+01435:             "route_decision",
+01436:             "route_selected",
+01437:             str(route_decision.get("route_selected", "")),
+01438:             str(route_decision.get("reason", "")),
+01439:         ],
+01440:     ]
+01441:     write_tsv(checkpoints, ["checkpoint", "metric", "value", "detail"], cp_rows)
+01442: 
+01443: 
+01444: def _resolve_gdal_tool(name: str) -> str:
+01445:     preferred = Path(r"C:\OSGeo4W64\bin") / name
+01446:     if preferred.exists():
+01447:         return str(preferred)
+01448:     return name
+01449: 
+01450: 
+01451: def _capture_warning_rows(tool_name: str, context: str, text: str) -> List[List[object]]:
+01452:     rows: List[List[object]] = []
+01453:     for raw in (text or "").splitlines():
+01454:         line = raw.strip()
+01455:         if not line:
+
+============================================================
+FUNCTION: write_smoke_route_source_trace_audit
+============================================================
+# SOURCE: D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\01_REPO_COPY\pipeline\moduleC_pipeline_v2.py
+# TITLE: function write_smoke_route_source_trace_audit
+# LINES: 1363-1398
+
+01363: 
+01364: 
+01365: def write_smoke_route_source_trace_audit(
+01366:     qa_dir: Path,
+01367:     inputs: Dict[str, object],
+01368:     sources: Dict[str, object],
+01369:     route_decision: Dict[str, object],
+01370: ) -> None:
+01371:     ensure_dir(qa_dir)
+01372:     out_tsv = qa_dir / "smoke_route_source_trace_audit.tsv"
+01373:     payload = json.dumps(inputs, ensure_ascii=False).lower()
+01374:     rows = [
+01375:         ["TRACE-001", "PASS" if str(sources.get("smoke_csv_input", "")) else "HOLD", str(sources.get("smoke_csv_input", "")), "inputs_resolved.paths.smoke_csv"],
+01376:         ["TRACE-002", "PASS" if bool(sources.get("modulea_validated")) else "HOLD", str(bool(sources.get("modulea_validated"))), "validated v1 moduleA smoke catalog"],
+01377:         ["TRACE-003", "PASS" if bool(sources.get("gfas_exists")) else "HOLD", str(bool(sources.get("gfas_exists"))), "GFAS directory physical presence"],
+01378:         ["TRACE-004", "PASS" if bool(sources.get("era5_exists")) else "HOLD", str(bool(sources.get("era5_exists"))), "ERA5 zip physical presence"],
+01379:         ["TRACE-005", "PASS" if "gfas" in payload else "HOLD", str("gfas" in payload), "inputs_resolved contains GFAS trace tokens"],
+01380:         ["TRACE-006", "PASS" if "era5" in payload else "HOLD", str("era5" in payload), "inputs_resolved contains ERA5 trace tokens"],
+01381:         ["TRACE-007", "PASS", str(route_decision.get("route_selected", "")), "selector route_selected"],
+01382:         ["TRACE-008", "PASS", str(route_decision.get("smoke_route_decision", "")), "selector smoke_route_decision"],
+01383:     ]
+01384:     write_tsv(out_tsv, ["check_id", "status", "value", "evidence"], rows)
+01385: 
+01386: 
+01387: def write_gfas_era5_presence_audit(qa_dir: Path, sources: Dict[str, object]) -> None:
+01388:     ensure_dir(qa_dir)
+01389:     out_tsv = qa_dir / "gfas_era5_presence_audit.tsv"
+01390:     rows = [
+01391:         ["PRES-001", "PASS" if bool(sources.get("gfas_exists")) else "HOLD", str(sources.get("gfas_dir", "")), "GFAS directory path"],
+01392:         ["PRES-002", "PASS" if int(sources.get("gfas_grib_count") or 0) > 0 else "HOLD", int(sources.get("gfas_grib_count") or 0), "GFAS grib file count"],
+01393:         ["PRES-003", "PASS" if int(sources.get("gfas_total_bytes") or 0) > 0 else "HOLD", int(sources.get("gfas_total_bytes") or 0), "GFAS total bytes"],
+01394:         ["PRES-004", "PASS" if bool(sources.get("era5_exists")) else "HOLD", str(sources.get("era5_zip", "")), "ERA5 zip path"],
+01395:         ["PRES-005", "PASS" if int(sources.get("parquet_zip_count") or 0) > 0 else "HOLD", int(sources.get("parquet_zip_count") or 0), "Parquet proxy zip count"],
+01396:     ]
+01397:     write_tsv(out_tsv, ["check_id", "status", "value", "evidence"], rows)
+01398: 
+
+============================================================
+FUNCTION: smoke_prepare
+============================================================
+# SOURCE: D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\01_REPO_COPY\pipeline\moduleC_pipeline_v2.py
+# TITLE: function smoke_prepare
+# LINES: 1871-2044
+
+01871: 
+01872: 
+01873: def smoke_prepare(
+01874:     inputs: Dict[str, object],
+01875:     admin_layer_path: Path,
+01876:     tables_dir: Path,
+01877:     modulec_datos: Path,
+01878:     route_decision: Dict[str, object],
+01879:     sources: Dict[str, object],
+01880:     report: Report,
+01881:     decoder_payload: Optional[Dict[str, object]] = None,
+01882: ) -> Path:
+01883:     smoke_path = Path(str(inputs["paths"].get("smoke_csv", "")))
+01884:     if smoke_path:
+01885:         if _is_forbidden_smoke_output_source(smoke_path):
+01886:             report.log(f"smoke_csv rejected (forbidden canonical source under 03_outputs\\tables): {smoke_path}")
+01887:         else:
+01888:             report.log(f"smoke_csv input registered: {smoke_path}")
+01889: 
+01890:     route_selected = str(route_decision.get("route_selected", "")).strip()
+01891:     unit_assignment = ""
+01892:     global_replicated_assignment = False
+01893:     if route_selected == "NO-GO_SMOKE_ROUTE":
+01894:         report.fail("NO-GO_SMOKE_ROUTE: no smoke route available.")
+01895: 
+01896:     if route_selected == "v1_moduleA_validated":
+01897:         modulea_path = Path(str(sources.get("modulea_catalog_path", "")))
+01898:         by_year, by_year_method = _load_modulea_smoke_year_series(modulea_path, report)
+01899:     elif route_selected in ("v0_parquet_proxy_degraded", "BLOCKED_DECODER_REQUIRED"):
+01900:         anchors = _collect_primary_smoke_anchors(modulec_datos, report)
+01901:         by_year, by_year_method = _fill_smoke_year_series(anchors, report)
+01902:         by_year_method = _degrade_smoke_methods(by_year_method, "proxy_degraded")
+01903:         if route_selected == "BLOCKED_DECODER_REQUIRED":
+01904:             report.log("BLOCKED_DECODER_REQUIRED: using v0_parquet_proxy_degraded for diagnostic output only.")
+01905:     elif route_selected == "v0_gfas_era5_real":
+01906:         payload = decoder_payload or {}
+01907:         if not bool(payload.get("decoder_available")):
+01908:             report.fail("v0_gfas_era5_real selected but decoder payload is unavailable.")
+01909:         by_year = {int(y): float(v) for y, v in dict(payload.get("by_year", {})).items()}
+01910:         by_year_method = {int(y): str(v) for y, v in dict(payload.get("by_year_method", {})).items()}
+01911:         unit_assignment = str(payload.get("unit_assignment", "")).strip()
+01912:         global_replicated_assignment = unit_assignment == "GLOBAL_PORTUGAL_REPLICATED_TO_NUTS3"
+01913:         if not by_year:
+01914:             report.fail("v0_gfas_era5_real selected but by_year decoder output is empty.")
+01915:     else:
+01916:         report.fail(f"Unknown smoke route_selected value: {route_selected}")
+01917: 
+01918:     from qgis.core import QgsVectorLayer  # type: ignore
+01919:     admin = QgsVectorLayer(str(admin_layer_path) + "|layername=admin_nuts3_2024", "admin", "ogr")
+01920:     if not admin.isValid():
+01921:         report.fail(f"Admin layer invalid: {admin_layer_path}")
+01922:     unit_ids = sorted({str(f["NUTS_ID"]) for f in admin.getFeatures() if f["NUTS_ID"] is not None})
+01923:     if not unit_ids:
+01924:         report.fail("Admin layer has no NUTS_ID values.")
+01925: 
+01926:     use_unit_series = False
+01927:     unit_year_values: Dict[str, Dict[int, float]] = {}
+01928:     unit_year_methods: Dict[str, Dict[int, str]] = {}
+01929:     if route_selected == "v0_gfas_era5_real" and global_replicated_assignment and decoder_payload:
+01930:         daily_seed = list(decoder_payload.get("daily_rows", []))
+01931:         anchors_by_unit = _derive_unit_anchor_scores_from_xyz(admin, daily_seed, report) if daily_seed else {}
+01932:         for uid in unit_ids:
+01933:             anchors = anchors_by_unit.get(uid, {})
+01934:             if not anchors:
+01935:                 continue
+01936:             vals_u, meth_u = _fill_smoke_year_series_relaxed(anchors, "gfas_pm2p5fire_gdal_unit")
+01937:             if vals_u:
+01938:                 unit_year_values[uid] = vals_u
+01939:                 unit_year_methods[uid] = meth_u
+01940:         has_spread = False
+01941:         if unit_year_values:
+01942:             for y in YEARS_HIST:
+01943:                 vals = []
+01944:                 for uid in unit_ids:
+01945:                     if uid in unit_year_values and y in unit_year_values[uid]:
+01946:                         vals.append(round(float(unit_year_values[uid][y]), 8))
+01947:                     else:
+01948:                         base = by_year.get(y, None)
+01949:                         if base is not None:
+01950:                             vals.append(round(float(base), 8))
+01951:                 if len(set(vals)) > 1:
+01952:                     has_spread = True
+01953:                     break
+01954:         if has_spread:
+01955:             use_unit_series = True
+01956:             unit_assignment = "UNIT_ZONAL_MAX_FROM_GFAS_XYZ_ANCHORS"
+01957:             report.log("GFAS smoke route upgraded to unit-level zonal anchors from XYZ.")
+01958:         else:
+01959:             report.log("GFAS XYZ unit anchors available but no spatial spread detected; keeping global replication.")
+01960: 
+01961:     out_path = tables_dir / "smoke_days_unit_2015_2024.csv"
+01962:     rows_out = []
+01963:     for uid in unit_ids:
+01964:         for y in YEARS_HIST:
+01965:             sd = None
+01966:             smoke_method = ""
+01967:             if use_unit_series and uid in unit_year_values:
+01968:                 sd = unit_year_values[uid].get(y, None)
+01969:                 smoke_method = unit_year_methods.get(uid, {}).get(y, "gfas_pm2p5fire_gdal_unit_unknown")
+01970:             if sd is None:
+01971:                 sd = by_year.get(y, None)
+01972:                 smoke_method = by_year_method.get(y, "primary_parquet_unknown")
+01973:             if sd is None:
+01974:                 report.fail(f"Primary smoke series missing required year: {y}")
+01975:             if route_selected == "v0_gfas_era5_real" and global_replicated_assignment:
+01976:                 if (not use_unit_series) and ("replicated_to_nuts3" not in smoke_method):
+01977:                     smoke_method = f"{smoke_method}_replicated_to_nuts3_from_portugal_global"
+01978:             rows_out.append([uid, y, sd, "", "", smoke_method, 0])
+01979: 
+01980:     write_csv(
+01981:         out_path,
+01982:         ["unit_id", "year", "smoke_days", "smoke_score_mean", "smoke_score_p80", "smoke_method", "smoke_missing_flag"],
+01983:         rows_out,
+01984:         delim=";",
+01985:     )
+01986: 
+01987:     # Alias required by route-v0 GFAS/ERA5 audits (same payload as canonical smoke table).
+01988:     alias_path = tables_dir / "smoke_days_nuts3_annual_2015_2024.csv"
+01989:     write_csv(
+01990:         alias_path,
+01991:         ["unit_id", "year", "smoke_days", "smoke_score_mean", "smoke_score_p80", "smoke_method", "smoke_missing_flag"],
+01992:         rows_out,
+01993:         delim=";",
+01994:     )
+01995: 
+01996:     # Optional daily proxy table generated when v0_gfas_era5_real decoder probe is available.
+01997:     if route_selected == "v0_gfas_era5_real" and decoder_payload:
+01998:         daily = list(decoder_payload.get("daily_rows", []))
+01999:         if daily:
+02000:             daily_out = tables_dir / "smoke_day_score_nuts3_daily.csv"
+02001:             daily_rows: List[List[object]] = []
+02002:             for uid in unit_ids:
+02003:                 for d in daily:
+02004:                     day_score = d.get("smoke_day_score", "")
+02005:                     day_method = d.get("method", "")
+02006:                     yv = safe_float(d.get("year"))
+02007:                     if use_unit_series and yv is not None:
+02008:                         y_int = int(yv)
+02009:                         unit_score = unit_year_values.get(uid, {}).get(y_int, None)
+02010:                         if unit_score is not None:
+02011:                             day_score = unit_score
+02012:                             day_method = "gfas_pm2p5fire_gdal_unit_negative_lon"
+02013:                     daily_rows.append(
+02014:                         [
+02015:                             uid,
+02016:                             d.get("date", ""),
+02017:                             d.get("year", ""),
+02018:                             day_score,
+02019:                             d.get("source_file", ""),
+02020:                             day_method,
+02021:                             unit_assignment or "UNKNOWN_ASSIGNMENT",
+02022:                         ]
+02023:                     )
+02024:             write_csv(
+02025:                 daily_out,
+02026:                 ["unit_id", "date", "year", "smoke_day_score", "source_file", "method", "spatial_assignment"],
+02027:                 daily_rows,
+02028:                 delim=";",
+02029:             )
+02030: 
+02031:     return out_path
+02032: 
+02033: def pop_prepare(inputs: Dict[str, object], admin_layer_path: Path, work_dir: Path, tables_dir: Path, report: Report) -> Path:
+02034:     from qgis.core import QgsVectorLayer  # type: ignore
+02035:     import processing  # type: ignore
+02036: 
+02037:     admin = QgsVectorLayer(str(admin_layer_path) + "|layername=admin_nuts3_2024", "admin", "ogr")
+02038:     if not admin.isValid():
+02039:         report.fail(f"Admin layer invalid: {admin_layer_path}")
+02040:     admin_extent = admin.extent()
+02041:     xmin = admin_extent.xMinimum()
+02042:     xmax = admin_extent.xMaximum()
+02043:     ymin = admin_extent.yMinimum()
+02044:     ymax = admin_extent.yMaximum()
+
+============================================================
+FUNCTION: iech_compute
+============================================================
+# SOURCE: D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\01_REPO_COPY\pipeline\moduleC_pipeline_v2.py
+# TITLE: function iech_compute
+# LINES: 2292-2372
+
+02292:     return p2025 + (p2030 - p2025) * ((year - 2025) / 5.0)
+02293: 
+02294: def iech_compute(tables_dir: Path, report: Report) -> Tuple[Path, Path]:
+02295:     pop_csv = tables_dir / "pop_unit_2015_2025_2030.csv"
+02296:     smoke_csv = tables_dir / "smoke_days_unit_2015_2024.csv"
+02297:     rec_csv = tables_dir / "recurrence_unit_2015_2024.csv"
+02298:     for p in (pop_csv, smoke_csv, rec_csv):
+02299:         if not p.exists():
+02300:             report.fail(f"Missing table: {p}")
+02301: 
+02302:     pop_rows = read_csv_rows(pop_csv)[1]
+02303:     smoke_rows = read_csv_rows(smoke_csv)[1]
+02304:     if has_missing_flag(pop_rows) or has_missing_flag(smoke_rows):
+02305:         report.fail("Placeholder detected (missing_flag=1). IECH will not be computed.")
+02306: 
+02307:     pop = {}
+02308:     for r in pop_rows:
+02309:         uid = r.get("unit_id", "")
+02310:         pop[uid] = (
+02311:             safe_float(r.get("pop_2015_sum")) or 0.0,
+02312:             safe_float(r.get("pop_2020_sum")) or 0.0,
+02313:             safe_float(r.get("pop_2025_sum")) or 0.0,
+02314:             safe_float(r.get("pop_2030_sum")) or 0.0,
+02315:         )
+02316: 
+02317:     smoke = {}
+02318:     for r in smoke_rows:
+02319:         uid = r.get("unit_id", "")
+02320:         y = safe_float(r.get("year"))
+02321:         sd = safe_float(r.get("smoke_days"))
+02322:         if not uid or y is None:
+02323:             continue
+02324:         smoke.setdefault(uid, {})[int(y)] = sd
+02325: 
+02326:     unit_ids = sorted(pop.keys())
+02327:     if not unit_ids:
+02328:         report.fail("No unit_ids found in pop table.")
+02329: 
+02330:     iech_hist_csv = tables_dir / "IECH_unit_2015_2024.csv"
+02331:     rows_out = []
+02332:     for uid in unit_ids:
+02333:         p2015, p2020, p2025, _p2030 = pop.get(uid, (0.0, 0.0, 0.0, 0.0))
+02334:         for y in YEARS_HIST:
+02335:             sd = smoke.get(uid, {}).get(y, None)
+02336:             if sd is None:
+02337:                 report.fail(f"Missing smoke_days for {uid} {y}")
+02338:             hours = sd * 24.0
+02339:             p = interpolate_pop(p2015, p2020, p2025, y)
+02340:             expo = hours * p if p > 0 else None
+02341:             iech = (expo / p) if expo is not None and p > 0 else None
+02342:             rows_out.append([uid, y, sd, hours, p, expo, iech, "IECH=smoke_days*24;pop=interp(2015,2020,2025)"])
+02343: 
+02344:     write_csv(iech_hist_csv, ["unit_id", "year", "smoke_days", "smoke_hours_equiv", "pop", "expo_person_hours", "IECH", "method_flags"], rows_out, delim=";")
+02345: 
+02346:     iech_mean_csv = tables_dir / "IECH_unit_2015_2024_mean.csv"
+02347:     acc: Dict[str, List[float]] = {}
+02348:     for r in rows_out:
+02349:         uid = r[0]
+02350:         iech = safe_float(r[6])
+02351:         if iech is not None:
+02352:             acc.setdefault(uid, []).append(iech)
+02353:     rows_mean = []
+02354:     for uid, vals in sorted(acc.items()):
+02355:         mean_val = sum(vals) / len(vals) if vals else 0.0
+02356:         rows_mean.append([uid, mean_val])
+02357:     write_csv(iech_mean_csv, ["unit_id", "IECH_mean_2015_2024"], rows_mean, delim=";")
+02358:     return iech_hist_csv, iech_mean_csv
+02359: 
+02360: 
+02361: def scenarios_compute(tables_dir: Path, report: Report) -> Tuple[Path, Path]:
+02362:     smoke_csv = tables_dir / "smoke_days_unit_2015_2024.csv"
+02363:     pop_csv = tables_dir / "pop_unit_2015_2025_2030.csv"
+02364:     if not smoke_csv.exists() or not pop_csv.exists():
+02365:         report.fail("Missing smoke or pop table for scenarios.")
+02366: 
+02367:     smoke_rows = read_csv_rows(smoke_csv)[1]
+02368:     if has_missing_flag(smoke_rows):
+02369:         report.fail("Placeholder detected (smoke missing_flag=1). Scenarios not computed.")
+02370: 
+02371:     smoke_by_unit: Dict[str, List[float]] = {}
+02372:     for r in smoke_rows:
+
+============================================================
+FUNCTION: scenario_project
+============================================================
+FUNCTION_NOT_FOUND: scenario_project
+SOURCE: D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\01_REPO_COPY\pipeline\moduleC_pipeline_v2.py
+
+============================================================
+FUNCTION: qa_gate_v2
+============================================================
+FUNCTION_NOT_FOUND: qa_gate_v2
+SOURCE: D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\01_REPO_COPY\pipeline\moduleC_pipeline_v2.py
+
+============================================================
+FUNCTION: main
+============================================================
+# SOURCE: D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\01_REPO_COPY\pipeline\moduleC_pipeline_v2.py
+# TITLE: function main
+# LINES: 2994-3197
+
+02994: # <<< MODULEC 10D6A5 PIPELINE SCIENTIFIC GATE INTEGRATION END
+02995: 
+02996: def main() -> int:
+02997:     ap = argparse.ArgumentParser()
+02998:     ap.add_argument("--gata-root", required=True)
+02999:     ap.add_argument("--modulec-datos", required=True)
+03000:     ap.add_argument("--inc-new", required=True)
+03001:     ap.add_argument("--output-root", required=False, default=None)
+03002:     ap.add_argument("--tabular-only", action="store_true")
+03003:     ap.add_argument("--bisect-stage", type=int, default=None)
+03004:     args = ap.parse_args()
+03005: 
+03006:     modulec_root = Path(args.modulec_datos).parent
+03007:     if args.output_root:
+03008:         out_dir = Path(args.output_root)
+03009:     else:
+03010:         out_dir = modulec_root / "03_outputs"
+03011:     qa_dir = out_dir / "qa"
+03012:     tables_dir = out_dir / "tables"
+03013:     maps_dir = out_dir / "maps"
+03014:     brief_dir = out_dir / "brief"
+03015:     work_dir = modulec_root / "02_work"
+03016:     deliver_dir = out_dir / "deliverables_step9"
+03017: 
+03018:     report_path = qa_dir / "report_auditoria_v2.txt"
+03019:     report = Report(report_path)
+03020:     report.log("START v2")
+03021:     report.log(f"MODULEC_ROOT={modulec_root}")
+03022:     report.log(f"OUTPUT_ROOT={out_dir}")
+03023: 
+03024:     inputs_path = qa_dir / "inputs_resolved.json"
+03025:     try:
+03026:         inputs = load_inputs(inputs_path, report)
+03027:         validate_inputs(inputs, report)
+03028:         preflight_path = write_preflight_report(qa_dir, inputs, modulec_root, out_dir)
+03029:         report.log(f"preflight_report generated: {preflight_path}")
+03030:         sources = detect_smoke_sources(Path(args.modulec_datos), inputs)
+03031:         route_decision = select_smoke_route(sources, decoder_available=False)
+03032:         decoder_payload: Dict[str, object] = {"decoder_available": False}
+03033:         if str(route_decision.get("route_selected", "")) == "BLOCKED_DECODER_REQUIRED":
+03034:             decoder_payload = decode_gfas_era5_gdal_proxy(Path(args.modulec_datos), qa_dir, report)
+03035:             if bool(decoder_payload.get("decoder_available")):
+03036:                 route_decision = select_smoke_route(sources, decoder_available=True)
+03037:         inputs = apply_route_meta(inputs, sources, route_decision)
+03038:         ensure_dir(inputs_path.parent)
+03039:         inputs_path.write_text(json.dumps(inputs, ensure_ascii=False, indent=2), encoding="utf-8")
+03040:         report.log(f"smoke route selected: {route_decision.get('route_selected')} ({route_decision.get('smoke_route_decision')})")
+03041:         write_smoke_route_source_trace_audit(qa_dir, inputs, sources, route_decision)
+03042:         write_gfas_era5_presence_audit(qa_dir, sources)
+03043:         write_gfas_era5_decoder_audit(
+03044:             qa_dir,
+03045:             sources,
+03046:             route_decision,
+03047:             decoder_available=bool(decoder_payload.get("decoder_available")),
+03048:         )
+03049: 
+03050:         qgs = None
+03051:         if args.tabular_only:
+03052:             report.fail("TABULAR_ONLY set but admin/pop/recurrence require QGIS. " + qgis_hint_text())
+03053:         qgs = init_qgis(report)
+03054: 
+03055:         if args.bisect_stage is not None:
+03056:             _bisect_admin_prepare(args.bisect_stage, inputs, maps_dir, report)
+03057:             qgs.exitQgis()
+03058:             report.log("END v2 PASS (bisect)")
+03059:             return 0
+03060: 
+03061:         report.log("MARK: after init_qgis (main)")
+03062:         report.log("MARK: after init_qgis (main)")
+03063:         admin_gpkg = admin_prepare(inputs, maps_dir, report)
+03064:         smoke_csv = smoke_prepare(
+03065:             inputs,
+03066:             admin_gpkg,
+03067:             tables_dir,
+03068:             Path(args.modulec_datos),
+03069:             route_decision,
+03070:             sources,
+03071:             report,
+03072:             decoder_payload=decoder_payload,
+03073:         )
+03074:         write_smoke_route_audit(qa_dir, smoke_csv, route_decision)
+03075:         pop_csv = pop_prepare(inputs, admin_gpkg, work_dir, tables_dir, report)
+03076:         rec_csv = recurrence_prepare(inputs, admin_gpkg, tables_dir, report)
+03077: 
+03078:         for p in (smoke_csv, pop_csv, rec_csv):
+03079:             if not p.exists():
+03080:                 report.fail(f"Expected table missing: {p}")
+03081: 
+03082:         smoke_rows = read_csv_rows(smoke_csv)[1]
+03083:         nan_count, total, ratio = count_nan_ratio(smoke_rows, "smoke_days")
+03084:         if ratio > 0.05:
+03085:             report.fail(f"smoke_days NaN ratio {ratio:.2%} ({nan_count}/{total}) exceeds 5%")
+03086:         if has_missing_flag(smoke_rows):
+03087:             report.fail("smoke_days has missing_flag=1; placeholder detected")
+03088:         smoke_vals = [safe_float(r.get("smoke_days")) for r in smoke_rows]
+03089:         smoke_vals = [v for v in smoke_vals if v is not None]
+03090:         if not smoke_vals:
+03091:             report.fail("smoke_days table has no numeric values.")
+03092:         if sum(smoke_vals) <= 0.0:
+03093:             report.fail("smoke_days degenerate: sum(smoke_days)==0.")
+03094:         if max(smoke_vals) <= 0.0:
+03095:             report.fail("smoke_days degenerate: max(smoke_days)==0.")
+03096:         smoke_methods = [(r.get("smoke_method") or "").strip().lower() for r in smoke_rows]
+03097:         if any(m == "proxy_fill_unit_mean" for m in smoke_methods):
+03098:             report.fail("Forbidden smoke_method detected: proxy_fill_unit_mean.")
+03099: 
+03100:         pop_rows = read_csv_rows(pop_csv)[1]
+03101:         for col in ("pop_2020_sum", "pop_2025_sum", "pop_2030_sum"):
+03102:             n0, t0, r0 = count_nan_ratio(pop_rows, col)
+03103:             if r0 > 0.0:
+03104:                 report.fail(f"{col} has missing values ({n0}/{t0})")
+03105:         if has_missing_flag(pop_rows):
+03106:             report.fail("pop table has missing_flag=1; placeholder detected")
+03107: 
+03108:         rec_rows = read_csv_rows(rec_csv)[1]
+03109:         if has_missing_flag(rec_rows):
+03110:             report.fail("recurrence table has missing_flag=1; placeholder detected")
+03111: 
+03112:         iech_hist, iech_mean = iech_compute(tables_dir, report)
+03113:         scen_csv, scen_mean = scenarios_compute(tables_dir, report)
+03114:         write_spatial_collapse_root_cause_audit(
+03115:             output_root=out_dir,
+03116:             smoke_annual_csv=smoke_csv,
+03117:             smoke_daily_csv=tables_dir / "smoke_day_score_nuts3_daily.csv",
+03118:             gfas_daily_summary_csv=qa_dir / "gfas_pm2p5fire_portugal_daily_summary.csv",
+03119:             iech_hist_csv=iech_hist,
+03120:         )
+03121: 
+03122:         iech_rows = read_csv_rows(iech_hist)[1]
+03123:         n_iech, t_iech, r_iech = count_nan_ratio(iech_rows, "IECH")
+03124:         if not iech_rows or r_iech > 0.05:
+03125:             report.fail(f"IECH NaN ratio {r_iech:.2%} ({n_iech}/{t_iech}) exceeds 5%")
+03126:         iech_vals = [safe_float(r.get("IECH")) for r in iech_rows]
+03127:         iech_vals = [v for v in iech_vals if v is not None]
+03128:         if not iech_vals:
+03129:             report.fail("IECH historical degenerate: all values are NaN.")
+03130:         if max(iech_vals) <= 0.0:
+03131:             report.fail("IECH historical degenerate: max(IECH)==0.")
+03132:         scen_rows = read_csv_rows(scen_csv)[1]
+03133:         if not scen_rows:
+03134:             report.fail("IECH_scenarios_2026_2030.csv has 0 rows")
+03135: 
+03136:         run_step7_extended(out_dir, Path(args.gata_root), report)
+03137:         brief_path = brief_dir / "Brief_Politica_IECH_2030.md"
+03138:         causal_csv = brief_dir / "causal_matrix" / "causal_matrix_IECH_NUTS3.csv"
+03139:         causal_txt = brief_dir / "causal_matrix" / "causal_matrix_IECH_NUTS3.txt"
+03140:         runtime_decision = write_runtime_closure_decision_from_current_runtime(out_dir, report)
+03141:         for p in (brief_path, causal_csv, causal_txt, runtime_decision):
+03142:             if not p.exists():
+03143:                 report.fail(f"STEP7 expected artifact missing: {p}")
+03144:         modulec_10d6a5_scientific_gate_audit = _modulec_10d6a5_run_scientific_threshold_gate(
+03145:             out_dir,
+03146:             _repo_root_from_script(),
+03147:             report,
+03148:         )
+03149:         run_qa_gate(tables_dir, brief_path, report)
+03150: 
+03151:         outputs = [
+03152:             smoke_csv,
+03153:             pop_csv,
+03154:             rec_csv,
+03155:             iech_hist,
+03156:             iech_mean,
+03157:             scen_csv,
+03158:             scen_mean,
+03159:             brief_path,
+03160:             causal_csv,
+03161:             causal_txt,
+03162:             runtime_decision,
+03163:             admin_gpkg,
+03164:             preflight_path,
+03165:             out_dir / "qa" / "inputs_resolved.json",
+03166:             out_dir / "qa" / "run_log.txt",
+03167:             out_dir / "qa" / "QA_checks.csv",
+03168:             out_dir / "qa" / "scientific_validation_gate.tsv",
+03169:             out_dir / "qa" / "scientific_threshold_evidence_register.tsv",
+03170:             out_dir / "qa" / "blocked_claims_register.tsv",
+03171:             out_dir / "brief" / "causal_matrix" / "causal_matrix_IECH_NUTS3.json",
+03172:             out_dir / "tables" / "IECH_municipio_2015_2024.csv",
+03173:             out_dir / "tables" / "wrb_context_nuts3.csv",
+03174:             out_dir / "tables" / "territorial_context_nuts3.csv",
+03175:         ]
+03176:         build_manifest_and_zip(outputs, deliver_dir, report, output_root=out_dir)
+03177:         report.log("END v2 PASS")
+03178:         if qgs:
+03179:             qgs.exitQgis()
+03180:         return 0
+03181:     except StageError:
+03182:         report.log("END v2 NO-GO")
+03183:         return 2
+03184:     except Exception as e:
+03185:         report.log("UNEXPECTED ERROR: " + str(e))
+03186:         report.log(traceback.format_exc())
+03187:         report.log("END v2 NO-GO")
+03188:         return 2
+03189: 
+03190: 
+03191: if __name__ == "__main__":
+03192:     sys.exit(main())
+03193: 
+03194: 
+03195: 
+03196: 
+03197: 

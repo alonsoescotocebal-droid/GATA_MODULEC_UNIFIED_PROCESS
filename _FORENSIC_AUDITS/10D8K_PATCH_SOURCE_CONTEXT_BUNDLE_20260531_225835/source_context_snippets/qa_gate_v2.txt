@@ -1,0 +1,2 @@
+﻿FUNCTION_NOT_FOUND: qa_gate_v2
+SOURCE: D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\01_REPO_COPY\pipeline\moduleC_pipeline_v2.py

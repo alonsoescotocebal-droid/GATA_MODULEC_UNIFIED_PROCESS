@@ -1,0 +1,160 @@
+﻿def smoke_prepare(
+    inputs: Dict[str, object],
+    admin_layer_path: Path,
+    tables_dir: Path,
+    modulec_datos: Path,
+    route_decision: Dict[str, object],
+    sources: Dict[str, object],
+    report: Report,
+    decoder_payload: Optional[Dict[str, object]] = None,
+) -> Path:
+    smoke_path = Path(str(inputs["paths"].get("smoke_csv", "")))
+    if smoke_path:
+        if _is_forbidden_smoke_output_source(smoke_path):
+            report.log(f"smoke_csv rejected (forbidden canonical source under 03_outputs\\tables): {smoke_path}")
+        else:
+            report.log(f"smoke_csv input registered: {smoke_path}")
+
+    route_selected = str(route_decision.get("route_selected", "")).strip()
+    unit_assignment = ""
+    global_replicated_assignment = False
+    if route_selected == "NO-GO_SMOKE_ROUTE":
+        report.fail("NO-GO_SMOKE_ROUTE: no smoke route available.")
+
+    if route_selected == "v1_moduleA_validated":
+        modulea_path = Path(str(sources.get("modulea_catalog_path", "")))
+        by_year, by_year_method = _load_modulea_smoke_year_series(modulea_path, report)
+    elif route_selected in ("v0_parquet_proxy_degraded", "BLOCKED_DECODER_REQUIRED"):
+        anchors = _collect_primary_smoke_anchors(modulec_datos, report)
+        by_year, by_year_method = _fill_smoke_year_series(anchors, report)
+        by_year_method = _degrade_smoke_methods(by_year_method, "proxy_degraded")
+        if route_selected == "BLOCKED_DECODER_REQUIRED":
+            report.log("BLOCKED_DECODER_REQUIRED: using v0_parquet_proxy_degraded for diagnostic output only.")
+    elif route_selected == "v0_gfas_era5_real":
+        payload = decoder_payload or {}
+        if not bool(payload.get("decoder_available")):
+            report.fail("v0_gfas_era5_real selected but decoder payload is unavailable.")
+        by_year = {int(y): float(v) for y, v in dict(payload.get("by_year", {})).items()}
+        by_year_method = {int(y): str(v) for y, v in dict(payload.get("by_year_method", {})).items()}
+        unit_assignment = str(payload.get("unit_assignment", "")).strip()
+        global_replicated_assignment = unit_assignment == "GLOBAL_PORTUGAL_REPLICATED_TO_NUTS3"
+        if not by_year:
+            report.fail("v0_gfas_era5_real selected but by_year decoder output is empty.")
+    else:
+        report.fail(f"Unknown smoke route_selected value: {route_selected}")
+
+    from qgis.core import QgsVectorLayer  # type: ignore
+    admin = QgsVectorLayer(str(admin_layer_path) + "|layername=admin_nuts3_2024", "admin", "ogr")
+    if not admin.isValid():
+        report.fail(f"Admin layer invalid: {admin_layer_path}")
+    unit_ids = sorted({str(f["NUTS_ID"]) for f in admin.getFeatures() if f["NUTS_ID"] is not None})
+    if not unit_ids:
+        report.fail("Admin layer has no NUTS_ID values.")
+
+    use_unit_series = False
+    unit_year_values: Dict[str, Dict[int, float]] = {}
+    unit_year_methods: Dict[str, Dict[int, str]] = {}
+    if route_selected == "v0_gfas_era5_real" and global_replicated_assignment and decoder_payload:
+        daily_seed = list(decoder_payload.get("daily_rows", []))
+        anchors_by_unit = _derive_unit_anchor_scores_from_xyz(admin, daily_seed, report) if daily_seed else {}
+        for uid in unit_ids:
+            anchors = anchors_by_unit.get(uid, {})
+            if not anchors:
+                continue
+            vals_u, meth_u = _fill_smoke_year_series_relaxed(anchors, "gfas_pm2p5fire_gdal_unit")
+            if vals_u:
+                unit_year_values[uid] = vals_u
+                unit_year_methods[uid] = meth_u
+        has_spread = False
+        if unit_year_values:
+            for y in YEARS_HIST:
+                vals = []
+                for uid in unit_ids:
+                    if uid in unit_year_values and y in unit_year_values[uid]:
+                        vals.append(round(float(unit_year_values[uid][y]), 8))
+                    else:
+                        base = by_year.get(y, None)
+                        if base is not None:
+                            vals.append(round(float(base), 8))
+                if len(set(vals)) > 1:
+                    has_spread = True
+                    break
+        if has_spread:
+            use_unit_series = True
+            unit_assignment = "UNIT_ZONAL_MAX_FROM_GFAS_XYZ_ANCHORS"
+            report.log("GFAS smoke route upgraded to unit-level zonal anchors from XYZ.")
+        else:
+            report.log("GFAS XYZ unit anchors available but no spatial spread detected; keeping global replication.")
+
+    out_path = tables_dir / "smoke_days_unit_2015_2024.csv"
+    rows_out = []
+    for uid in unit_ids:
+        for y in YEARS_HIST:
+            sd = None
+            smoke_method = ""
+            if use_unit_series and uid in unit_year_values:
+                sd = unit_year_values[uid].get(y, None)
+                smoke_method = unit_year_methods.get(uid, {}).get(y, "gfas_pm2p5fire_gdal_unit_unknown")
+            if sd is None:
+                sd = by_year.get(y, None)
+                smoke_method = by_year_method.get(y, "primary_parquet_unknown")
+            if sd is None:
+                report.fail(f"Primary smoke series missing required year: {y}")
+            if route_selected == "v0_gfas_era5_real" and global_replicated_assignment:
+                if (not use_unit_series) and ("replicated_to_nuts3" not in smoke_method):
+                    smoke_method = f"{smoke_method}_replicated_to_nuts3_from_portugal_global"
+            rows_out.append([uid, y, sd, "", "", smoke_method, 0])
+
+    write_csv(
+        out_path,
+        ["unit_id", "year", "smoke_days", "smoke_score_mean", "smoke_score_p80", "smoke_method", "smoke_missing_flag"],
+        rows_out,
+        delim=";",
+    )
+
+    # Alias required by route-v0 GFAS/ERA5 audits (same payload as canonical smoke table).
+    alias_path = tables_dir / "smoke_days_nuts3_annual_2015_2024.csv"
+    write_csv(
+        alias_path,
+        ["unit_id", "year", "smoke_days", "smoke_score_mean", "smoke_score_p80", "smoke_method", "smoke_missing_flag"],
+        rows_out,
+        delim=";",
+    )
+
+    # Optional daily proxy table generated when v0_gfas_era5_real decoder probe is available.
+    if route_selected == "v0_gfas_era5_real" and decoder_payload:
+        daily = list(decoder_payload.get("daily_rows", []))
+        if daily:
+            daily_out = tables_dir / "smoke_day_score_nuts3_daily.csv"
+            daily_rows: List[List[object]] = []
+            for uid in unit_ids:
+                for d in daily:
+                    day_score = d.get("smoke_day_score", "")
+                    day_method = d.get("method", "")
+                    yv = safe_float(d.get("year"))
+                    if use_unit_series and yv is not None:
+                        y_int = int(yv)
+                        unit_score = unit_year_values.get(uid, {}).get(y_int, None)
+                        if unit_score is not None:
+                            day_score = unit_score
+                            day_method = "gfas_pm2p5fire_gdal_unit_negative_lon"
+                    daily_rows.append(
+                        [
+                            uid,
+                            d.get("date", ""),
+                            d.get("year", ""),
+                            day_score,
+                            d.get("source_file", ""),
+                            day_method,
+                            unit_assignment or "UNKNOWN_ASSIGNMENT",
+                        ]
+                    )
+            write_csv(
+                daily_out,
+                ["unit_id", "date", "year", "smoke_day_score", "source_file", "method", "spatial_assignment"],
+                daily_rows,
+                delim=";",
+            )
+
+    return out_path
+

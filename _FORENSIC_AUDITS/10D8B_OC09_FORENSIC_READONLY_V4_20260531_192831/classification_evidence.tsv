@@ -1,0 +1,5 @@
+﻿"evidence"
+"OC09 matrix exists but all NUTS3 rows are HOLD."
+"OC09 matrix contains SMOKE_ROUTE_BLOCKED."
+"Gate files contain BLOCKED_FOR_CAUSAL_CLAIM and NO-GO_SCIENTIFIC_THRESHOLD."
+"Smoke profile indicates homogeneous or non-discriminating smoke metric in at least one checked yearly/table scope."

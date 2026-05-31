@@ -1,0 +1,8 @@
+﻿"evidence"
+"Output smoke tables contain ALL_ZERO values for 2023 and 2024."
+"Scientific gate still contains NO-GO_SCIENTIFIC_THRESHOLD."
+"OC09/gate artifacts contain SMOKE_ROUTE_BLOCKED."
+"OC09/gate artifacts contain BLOCKED_FOR_CAUSAL_CLAIM."
+"Selected smoke input signature: ZIP_OR_PARQUET_CONTAINER."
+"GFAS directory contains 11 raster/GRIB-like files, but no decoder was invoked."
+"ERA5 zip/container has 1 entries."

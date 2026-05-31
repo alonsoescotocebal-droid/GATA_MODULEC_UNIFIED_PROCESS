@@ -1,0 +1,44 @@
+﻿  1400: def write_gfas_era5_decoder_audit(
+  1401:     qa_dir: Path,
+  1402:     sources: Dict[str, object],
+  1403:     route_decision: Dict[str, object],
+  1404:     decoder_available: bool = False,
+  1405: ) -> None:
+  1406:     ensure_dir(qa_dir)
+  1407:     out_tsv = qa_dir / "gfas_era5_decoder_audit.tsv"
+  1408:     decoder_required = str(route_decision.get("route_selected", "")) == "BLOCKED_DECODER_REQUIRED"
+  1409:     selected_real = str(route_decision.get("route_selected", "")) == "v0_gfas_era5_real"
+  1410:     rows = [
+  1411:         ["decoder_available", 1 if decoder_available else 0, "PASS" if decoder_available else "HOLD", "GDAL-only decoder probe result"],
+  1412:         ["decoder_required", 1 if decoder_required else 0, "BLOCKED" if decoder_required else "PASS", str(route_decision.get("required_decoder", ""))],
+  1413:         ["required_inputs", str(route_decision.get("required_inputs", "")), "PASS" if decoder_required or selected_real else "INFO", ""],
+  1414:         ["gfas_grib_count", int(sources.get("gfas_grib_count") or 0), "PASS" if int(sources.get("gfas_grib_count") or 0) > 0 else "HOLD", ""],
+  1415:         ["era5_exists", 1 if bool(sources.get("era5_exists")) else 0, "PASS" if bool(sources.get("era5_exists")) else "HOLD", ""],
+  1416:         [
+  1417:             "decoder_status",
+  1418:             str(route_decision.get("smoke_route_decision", "")),
+  1419:             "BLOCKED" if decoder_required else "PASS",
+  1420:             str(route_decision.get("reason", "")),
+  1421:         ],
+  1422:     ]
+  1423:     write_tsv(out_tsv, ["metric", "value", "status", "detail"], rows)
+  1424:     checkpoints = qa_dir / "gfas_era5_decoder_checkpoints.tsv"
+  1425:     cp_rows = [
+  1426:         [
+  1427:             "decoder_probe",
+  1428:             "decoder_available",
+  1429:             1 if decoder_available else 0,
+  1430:             "GDAL-only GFAS decoder probe with Portugal negative-longitude crop.",
+  1431:         ],
+  1432:         ["gfas_probe", "gfas_grib_count", int(sources.get("gfas_grib_count") or 0), str(sources.get("gfas_dir", ""))],
+  1433:         ["era5_probe", "era5_exists", 1 if bool(sources.get("era5_exists")) else 0, str(sources.get("era5_zip", ""))],
+  1434:         [
+  1435:             "route_decision",
+  1436:             "route_selected",
+  1437:             str(route_decision.get("route_selected", "")),
+  1438:             str(route_decision.get("reason", "")),
+  1439:         ],
+  1440:     ]
+  1441:     write_tsv(checkpoints, ["checkpoint", "metric", "value", "detail"], cp_rows)
+  1442: 
+  1443: 

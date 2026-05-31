@@ -1,0 +1,2 @@
+﻿"artifact"	"path"	"exists"	"year"	"metric"	"rows"	"numeric_values"	"distinct_values"	"min"	"max"	"zero_count"	"nonzero_count"	"finding"
+"raw_smoke_csv"	"D:\Mestrado\GATA_2025_2026\Prueba_aislada\ISO_GATA_20260121_130505\Complementariedad de analisis\Module C\Datos\ParquetFiles 2022.zip"	"YES"	""	""	"1447"	"0"	"0"	""	""	""	""	"NO_NUMERIC_METRIC_DETECTED"

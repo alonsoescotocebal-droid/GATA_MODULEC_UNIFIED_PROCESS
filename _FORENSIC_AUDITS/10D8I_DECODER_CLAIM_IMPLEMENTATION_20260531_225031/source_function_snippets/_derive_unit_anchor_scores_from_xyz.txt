@@ -1,0 +1,68 @@
+﻿def _derive_unit_anchor_scores_from_xyz(admin_layer, daily_rows: List[Dict[str, object]], report: Report) -> Dict[str, Dict[int, float]]:
+    from qgis.core import (  # type: ignore
+        QgsCoordinateReferenceSystem,
+        QgsCoordinateTransform,
+        QgsGeometry,
+        QgsPointXY,
+        QgsProject,
+    )
+
+    features = []
+    for ft in admin_layer.getFeatures():
+        uid = str(ft["NUTS_ID"]) if ft["NUTS_ID"] is not None else ""
+        if not uid:
+            continue
+        geom = ft.geometry()
+        if geom is None or geom.isEmpty():
+            continue
+        features.append((uid, geom, geom.boundingBox()))
+    if not features:
+        return {}
+
+    src_crs = QgsCoordinateReferenceSystem("EPSG:4326")
+    dst_crs = admin_layer.crs()
+    transform = QgsCoordinateTransform(src_crs, dst_crs, QgsProject.instance())
+
+    anchors_by_unit: Dict[str, Dict[int, float]] = {}
+    for d in daily_rows:
+        y = safe_float(d.get("year"))
+        xyz_path_raw = str(d.get("xyz_path") or "").strip()
+        if y is None or not xyz_path_raw:
+            continue
+        xyz_path = Path(xyz_path_raw)
+        if not xyz_path.exists():
+            continue
+        year = int(y)
+        stats = _parse_xyz_stats(xyz_path)
+        per_unit_max: Dict[str, float] = {}
+
+        for x, yv, vv in stats.get("triples", []):
+            if vv is None:
+                continue
+            try:
+                pt = transform.transform(QgsPointXY(float(x), float(yv)))
+            except Exception:
+                continue
+            pt_geom = QgsGeometry.fromPointXY(pt)
+            for uid, geom, bbox in features:
+                try:
+                    if not bbox.contains(pt):
+                        continue
+                    if not (geom.contains(pt_geom) or geom.intersects(pt_geom)):
+                        continue
+                except Exception:
+                    continue
+                prev = per_unit_max.get(uid)
+                if prev is None or vv > prev:
+                    per_unit_max[uid] = vv
+                break
+
+        for uid, mx in per_unit_max.items():
+            anchors_by_unit.setdefault(uid, {})[year] = max(float(mx) * 1.0e11, 0.0)
+
+    if anchors_by_unit:
+        sampled_units = len(anchors_by_unit)
+        report.log(f"GFAS XYZ unit anchor extraction complete: units_with_anchor={sampled_units}")
+    return anchors_by_unit
+
+

@@ -1,0 +1,8 @@
+﻿"evidence"
+"SHA verified before post-patch static verification."
+"10D8M helper definition is present."
+"10D8M smoke_prepare call is present with locals(), route_decision, decoder_payload, report."
+"10D8M helper is defined before smoke_prepare and call is inside smoke_prepare."
+"scientific_threshold_gate.py NO-GO tokens are preserved; gate was not relaxed."
+"py_compile passed."
+"No commit, reset, clean, runtime, BAT, QGIS, or GRIB decode was executed."

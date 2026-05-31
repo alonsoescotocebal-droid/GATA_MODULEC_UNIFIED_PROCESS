@@ -1,0 +1,4 @@
+﻿"tool"	"path"	"available"
+"grib_ls"	""	"NO"
+"wgrib2"	""	"NO"
+"python_or_python_qgis"	"C:\OSGeo4W64\bin\python-qgis-ltr.bat"	"YES"

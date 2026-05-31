@@ -1,0 +1,59 @@
+﻿01397:     write_tsv(out_tsv, ["check_id", "status", "value", "evidence"], rows)
+01398: 
+01399: 
+01400: def write_gfas_era5_decoder_audit(
+01401:     qa_dir: Path,
+01402:     sources: Dict[str, object],
+01403:     route_decision: Dict[str, object],
+01404:     decoder_available: bool = False,
+01405: ) -> None:
+01406:     ensure_dir(qa_dir)
+01407:     out_tsv = qa_dir / "gfas_era5_decoder_audit.tsv"
+01408:     decoder_required = str(route_decision.get("route_selected", "")) == "BLOCKED_DECODER_REQUIRED"
+01409:     selected_real = str(route_decision.get("route_selected", "")) == "v0_gfas_era5_real"
+01410:     rows = [
+01411:         ["decoder_available", 1 if decoder_available else 0, "PASS" if decoder_available else "HOLD", "GDAL-only decoder probe result"],
+01412:         ["decoder_required", 1 if decoder_required else 0, "BLOCKED" if decoder_required else "PASS", str(route_decision.get("required_decoder", ""))],
+01413:         ["required_inputs", str(route_decision.get("required_inputs", "")), "PASS" if decoder_required or selected_real else "INFO", ""],
+01414:         ["gfas_grib_count", int(sources.get("gfas_grib_count") or 0), "PASS" if int(sources.get("gfas_grib_count") or 0) > 0 else "HOLD", ""],
+01415:         ["era5_exists", 1 if bool(sources.get("era5_exists")) else 0, "PASS" if bool(sources.get("era5_exists")) else "HOLD", ""],
+01416:         [
+01417:             "decoder_status",
+01418:             str(route_decision.get("smoke_route_decision", "")),
+01419:             "BLOCKED" if decoder_required else "PASS",
+01420:             str(route_decision.get("reason", "")),
+01421:         ],
+01422:     ]
+01423:     write_tsv(out_tsv, ["metric", "value", "status", "detail"], rows)
+01424:     checkpoints = qa_dir / "gfas_era5_decoder_checkpoints.tsv"
+01425:     cp_rows = [
+01426:         [
+01427:             "decoder_probe",
+01428:             "decoder_available",
+01429:             1 if decoder_available else 0,
+01430:             "GDAL-only GFAS decoder probe with Portugal negative-longitude crop.",
+01431:         ],
+01432:         ["gfas_probe", "gfas_grib_count", int(sources.get("gfas_grib_count") or 0), str(sources.get("gfas_dir", ""))],
+01433:         ["era5_probe", "era5_exists", 1 if bool(sources.get("era5_exists")) else 0, str(sources.get("era5_zip", ""))],
+01434:         [
+01435:             "route_decision",
+01436:             "route_selected",
+01437:             str(route_decision.get("route_selected", "")),
+01438:             str(route_decision.get("reason", "")),
+01439:         ],
+01440:     ]
+01441:     write_tsv(checkpoints, ["checkpoint", "metric", "value", "detail"], cp_rows)
+01442: 
+01443: 
+01444: def _resolve_gdal_tool(name: str) -> str:
+01445:     preferred = Path(r"C:\OSGeo4W64\bin") / name
+01446:     if preferred.exists():
+01447:         return str(preferred)
+01448:     return name
+01449: 
+01450: 
+01451: def _capture_warning_rows(tool_name: str, context: str, text: str) -> List[List[object]]:
+01452:     rows: List[List[object]] = []
+01453:     for raw in (text or "").splitlines():
+01454:         line = raw.strip()
+01455:         if not line:

@@ -1,0 +1,2 @@
+﻿"command"	"exit_code"	"stdout"	"stderr"
+"py -3 -m py_compile ""D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\01_REPO_COPY\pipeline\moduleC_pipeline_v2.py"""	"0"	"D:\GATA_MODULEC_UNIFIED_PROCESS\_FORENSIC_AUDITS\10D8N_V3_POST_PATCH_STATIC_VERIFY_20260531_231502\py_compile_stdout.txt"	"D:\GATA_MODULEC_UNIFIED_PROCESS\_FORENSIC_AUDITS\10D8N_V3_POST_PATCH_STATIC_VERIFY_20260531_231502\py_compile_stderr.txt"

@@ -1,0 +1,44 @@
+﻿def write_gfas_era5_decoder_audit(
+    qa_dir: Path,
+    sources: Dict[str, object],
+    route_decision: Dict[str, object],
+    decoder_available: bool = False,
+) -> None:
+    ensure_dir(qa_dir)
+    out_tsv = qa_dir / "gfas_era5_decoder_audit.tsv"
+    decoder_required = str(route_decision.get("route_selected", "")) == "BLOCKED_DECODER_REQUIRED"
+    selected_real = str(route_decision.get("route_selected", "")) == "v0_gfas_era5_real"
+    rows = [
+        ["decoder_available", 1 if decoder_available else 0, "PASS" if decoder_available else "HOLD", "GDAL-only decoder probe result"],
+        ["decoder_required", 1 if decoder_required else 0, "BLOCKED" if decoder_required else "PASS", str(route_decision.get("required_decoder", ""))],
+        ["required_inputs", str(route_decision.get("required_inputs", "")), "PASS" if decoder_required or selected_real else "INFO", ""],
+        ["gfas_grib_count", int(sources.get("gfas_grib_count") or 0), "PASS" if int(sources.get("gfas_grib_count") or 0) > 0 else "HOLD", ""],
+        ["era5_exists", 1 if bool(sources.get("era5_exists")) else 0, "PASS" if bool(sources.get("era5_exists")) else "HOLD", ""],
+        [
+            "decoder_status",
+            str(route_decision.get("smoke_route_decision", "")),
+            "BLOCKED" if decoder_required else "PASS",
+            str(route_decision.get("reason", "")),
+        ],
+    ]
+    write_tsv(out_tsv, ["metric", "value", "status", "detail"], rows)
+    checkpoints = qa_dir / "gfas_era5_decoder_checkpoints.tsv"
+    cp_rows = [
+        [
+            "decoder_probe",
+            "decoder_available",
+            1 if decoder_available else 0,
+            "GDAL-only GFAS decoder probe with Portugal negative-longitude crop.",
+        ],
+        ["gfas_probe", "gfas_grib_count", int(sources.get("gfas_grib_count") or 0), str(sources.get("gfas_dir", ""))],
+        ["era5_probe", "era5_exists", 1 if bool(sources.get("era5_exists")) else 0, str(sources.get("era5_zip", ""))],
+        [
+            "route_decision",
+            "route_selected",
+            str(route_decision.get("route_selected", "")),
+            str(route_decision.get("reason", "")),
+        ],
+    ]
+    write_tsv(checkpoints, ["checkpoint", "metric", "value", "detail"], cp_rows)
+
+

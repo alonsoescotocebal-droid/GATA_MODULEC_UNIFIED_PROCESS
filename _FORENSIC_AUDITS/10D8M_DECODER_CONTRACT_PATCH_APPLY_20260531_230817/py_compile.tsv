@@ -1,0 +1,2 @@
+﻿"command"	"exit_code"	"stdout"	"stderr"
+"not_run"	""	""	"Use -RunPyCompile to run py_compile"

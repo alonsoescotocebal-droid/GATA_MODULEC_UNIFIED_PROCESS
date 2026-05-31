@@ -1,0 +1,55 @@
+﻿# SOURCE: D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\01_REPO_COPY\pipeline\scientific_threshold_gate.py
+# TITLE: scientific_gate_final_decision_680_730
+# LINES: 680-730
+
+00680:         )
+00681:     if not blocked_claim_rows:
+00682:         blocked_claim_rows.append(["none", "NONE", "", "", "", "No blocked claim matches found."])
+00683:     write_tsv(
+00684:         qa_dir / "blocked_claims_register.tsv",
+00685:         ["claim_context", "gate_status", "matched_phrase_pattern", "source_file", "location", "recommended_rewrite"],
+00686:         blocked_claim_rows,
+00687:     )
+00688: 
+00689:     scientific_effects = [r["final_decision_effect"] for r in gate_rows]
+00690:     if "NO-GO_SCIENTIFIC_THRESHOLD" in scientific_effects:
+00691:         scientific_decision = "NO-GO_SCIENTIFIC_THRESHOLD"
+00692:     elif any(r["gate_status"].startswith("BLOCKED") for r in gate_rows):
+00693:         scientific_decision = "HOLD"
+00694:     else:
+00695:         scientific_decision = "GO"
+00696: 
+00697:     decision_lines = [
+00698:         "# Runtime Scientific Closure Decision",
+00699:         "",
+00700:         f"- timestamp: {now_iso()}",
+00701:         f"- output_root: \"{output_root}\"",
+00702:         f"- scientific_threshold_decision: **{scientific_decision}**",
+00703:         "",
+00704:         "## Active blocked states",
+00705:     ]
+00706:     if active_blocks:
+00707:         decision_lines.extend([f"- {b}" for b in active_blocks])
+00708:     else:
+00709:         decision_lines.append("- none")
+00710:     decision_lines.extend(
+00711:         [
+00712:             "",
+00713:             "## Contracts",
+00714:             "- scientific_validation_gate.tsv generated",
+00715:             "- scientific_claim_gate.tsv generated",
+00716:             "- scientific_threshold_evidence_register.tsv generated",
+00717:             "- blocked_claims_register.tsv generated",
+00718:             "- causal_matrix_scientific_gate_audit.tsv generated",
+00719:             "- brief_claim_scientific_gate_audit.tsv generated",
+00720:         ]
+00721:     )
+00722:     (deliver_dir / "runtime_scientific_closure_decision.md").write_text("\n".join(decision_lines) + "\n", encoding="utf-8")
+00723: 
+00724:     print(f"SCIENTIFIC_THRESHOLD_DECISION={scientific_decision}")
+00725:     # Decision may be NO-GO_SCIENTIFIC_THRESHOLD while operational closure remains analyzable.
+00726:     # Return non-zero only on execution failure, not on scientific decision state.
+00727:     return 0
+00728: 
+00729: 
+00730: if __name__ == "__main__":

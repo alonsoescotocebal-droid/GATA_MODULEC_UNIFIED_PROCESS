@@ -1,0 +1,35 @@
+﻿# SOURCE: D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\01_REPO_COPY\pipeline\validate_modulec_objectives_canon.py
+# TITLE: objective_gate_oc09_80_110
+# LINES: 80-110
+
+00080:     },
+00081:     {
+00082:         "objective_id": "OC-08",
+00083:         "objective_name": "WRB integrado como contexto",
+00084:         "required_database": "WRB_MostProbable_TM06.tif (+ lookup)",
+00085:         "required_output": ["tables/wrb_context_nuts3.csv", "tables/wrb_context_municipio.csv", "qa/wrb_integration_audit.tsv", "brief/wrb_summary_for_policy_brief.md"],
+00086:         "producer_script": "step7_matriz_causal.py",
+00087:         "validation_rule": "WRB con clases dominantes y sin missing generalizado.",
+00088:     },
+00089:     {
+00090:         "objective_id": "OC-09",
+00091:         "objective_name": "Matriz causal sustantiva",
+00092:         "required_database": "Outputs IECH/smoke/pop/recurrence/WRB/WUI",
+00093:         "required_output": [
+00094:             "brief/causal_matrix/causal_matrix_IECH_NUTS3.csv",
+00095:             "brief/causal_matrix/causal_matrix_IECH_NUTS3.json",
+00096:             "brief/causal_matrix/causal_matrix_IECH_NUTS3.txt",
+00097:             "brief/causal_matrix/causal_matrix_IECH_municipio.csv",
+00098:             "brief/causal_matrix/causal_matrix_audit.tsv",
+00099:             "brief/causal_matrix/causal_matrix_sha256_checkpoints.txt",
+00100:         ],
+00101:         "producer_script": "step7_matriz_causal.py",
+00102:         "validation_rule": "No qa_flag=HOLD y missing_components vacío para cierre GO.",
+00103:     },
+00104:     {
+00105:         "objective_id": "OC-10",
+00106:         "objective_name": "Escenarios S0/S1 2026-2030",
+00107:         "required_database": "GHSL 2025/2030 + supuestos S1",
+00108:         "required_output": [
+00109:             "tables/IECH_scenarios_2026_2030.csv",
+00110:             "tables/IECH_scenarios_unit_2026_2030_mean.csv",

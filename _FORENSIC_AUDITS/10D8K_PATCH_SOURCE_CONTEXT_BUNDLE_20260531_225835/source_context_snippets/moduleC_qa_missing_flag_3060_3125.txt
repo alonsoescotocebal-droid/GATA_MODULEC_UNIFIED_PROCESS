@@ -1,0 +1,70 @@
+﻿# SOURCE: D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\01_REPO_COPY\pipeline\moduleC_pipeline_v2.py
+# TITLE: moduleC_qa_missing_flag_3060_3125
+# LINES: 3060-3125
+
+03060: 
+03061:         report.log("MARK: after init_qgis (main)")
+03062:         report.log("MARK: after init_qgis (main)")
+03063:         admin_gpkg = admin_prepare(inputs, maps_dir, report)
+03064:         smoke_csv = smoke_prepare(
+03065:             inputs,
+03066:             admin_gpkg,
+03067:             tables_dir,
+03068:             Path(args.modulec_datos),
+03069:             route_decision,
+03070:             sources,
+03071:             report,
+03072:             decoder_payload=decoder_payload,
+03073:         )
+03074:         write_smoke_route_audit(qa_dir, smoke_csv, route_decision)
+03075:         pop_csv = pop_prepare(inputs, admin_gpkg, work_dir, tables_dir, report)
+03076:         rec_csv = recurrence_prepare(inputs, admin_gpkg, tables_dir, report)
+03077: 
+03078:         for p in (smoke_csv, pop_csv, rec_csv):
+03079:             if not p.exists():
+03080:                 report.fail(f"Expected table missing: {p}")
+03081: 
+03082:         smoke_rows = read_csv_rows(smoke_csv)[1]
+03083:         nan_count, total, ratio = count_nan_ratio(smoke_rows, "smoke_days")
+03084:         if ratio > 0.05:
+03085:             report.fail(f"smoke_days NaN ratio {ratio:.2%} ({nan_count}/{total}) exceeds 5%")
+03086:         if has_missing_flag(smoke_rows):
+03087:             report.fail("smoke_days has missing_flag=1; placeholder detected")
+03088:         smoke_vals = [safe_float(r.get("smoke_days")) for r in smoke_rows]
+03089:         smoke_vals = [v for v in smoke_vals if v is not None]
+03090:         if not smoke_vals:
+03091:             report.fail("smoke_days table has no numeric values.")
+03092:         if sum(smoke_vals) <= 0.0:
+03093:             report.fail("smoke_days degenerate: sum(smoke_days)==0.")
+03094:         if max(smoke_vals) <= 0.0:
+03095:             report.fail("smoke_days degenerate: max(smoke_days)==0.")
+03096:         smoke_methods = [(r.get("smoke_method") or "").strip().lower() for r in smoke_rows]
+03097:         if any(m == "proxy_fill_unit_mean" for m in smoke_methods):
+03098:             report.fail("Forbidden smoke_method detected: proxy_fill_unit_mean.")
+03099: 
+03100:         pop_rows = read_csv_rows(pop_csv)[1]
+03101:         for col in ("pop_2020_sum", "pop_2025_sum", "pop_2030_sum"):
+03102:             n0, t0, r0 = count_nan_ratio(pop_rows, col)
+03103:             if r0 > 0.0:
+03104:                 report.fail(f"{col} has missing values ({n0}/{t0})")
+03105:         if has_missing_flag(pop_rows):
+03106:             report.fail("pop table has missing_flag=1; placeholder detected")
+03107: 
+03108:         rec_rows = read_csv_rows(rec_csv)[1]
+03109:         if has_missing_flag(rec_rows):
+03110:             report.fail("recurrence table has missing_flag=1; placeholder detected")
+03111: 
+03112:         iech_hist, iech_mean = iech_compute(tables_dir, report)
+03113:         scen_csv, scen_mean = scenarios_compute(tables_dir, report)
+03114:         write_spatial_collapse_root_cause_audit(
+03115:             output_root=out_dir,
+03116:             smoke_annual_csv=smoke_csv,
+03117:             smoke_daily_csv=tables_dir / "smoke_day_score_nuts3_daily.csv",
+03118:             gfas_daily_summary_csv=qa_dir / "gfas_pm2p5fire_portugal_daily_summary.csv",
+03119:             iech_hist_csv=iech_hist,
+03120:         )
+03121: 
+03122:         iech_rows = read_csv_rows(iech_hist)[1]
+03123:         n_iech, t_iech, r_iech = count_nan_ratio(iech_rows, "IECH")
+03124:         if not iech_rows or r_iech > 0.05:
+03125:             report.fail(f"IECH NaN ratio {r_iech:.2%} ({n_iech}/{t_iech}) exceeds 5%")

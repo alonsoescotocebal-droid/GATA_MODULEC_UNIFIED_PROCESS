@@ -1,0 +1,140 @@
+﻿# SOURCE: D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\01_REPO_COPY\pipeline\scientific_threshold_gate.py
+# TITLE: scientific_gate_decision_rows_440_575
+# LINES: 440-575
+
+00440:         add_gate(
+00441:             "REG-001",
+00442:             "Threshold register integration",
+00443:             str(threshold_register),
+00444:             "threshold register presence",
+00445:             "register missing",
+00446:             "Register must exist in canonical repo.",
+00447:             "SRC-CANON-REGISTER",
+00448:             "METHODOLOGICAL_GATE",
+00449:             "BLOCKED_FOR_THRESHOLD_DEFINITION",
+00450:             "None",
+00451:             "Scientific closure claim",
+00452:             "NO-GO_SCIENTIFIC_THRESHOLD",
+00453:         )
+00454: 
+00455:     route_status, route_obs, route_selected = evaluate_smoke_route_trace(inputs_json)
+00456:     add_gate(
+00457:         "SMOKE-ROUTE-001",
+00458:         "Smoke route selector priority",
+00459:         str(inputs_json),
+00460:         "meta.smoke_route_selected/meta.smoke_route_decision",
+00461:         route_obs,
+00462:         "priority=v1_moduleA_validated>v0_gfas_era5_real>BLOCKED_DECODER_REQUIRED>v0_parquet_proxy_degraded>NO-GO_SMOKE_ROUTE",
+00463:         "SRC-GATE-SMOKE-ROUTE",
+00464:         "METHODOLOGICAL_GATE",
+00465:         route_status,
+00466:         "Route-level traceability and explicit degraded/blocked state reporting.",
+00467:         "Scientific closure with degraded or blocked smoke route.",
+00468:         "NO-GO_SCIENTIFIC_THRESHOLD" if route_status.startswith("BLOCKED") else "NONE",
+00469:     )
+00470: 
+00471:     smoke_status, smoke_obs, smoke_unique = evaluate_smoke_spatial(smoke_csv)
+00472:     add_gate(
+00473:         "SMOKE-011",
+00474:         "Smoke spatial differentiation",
+00475:         str(smoke_csv),
+00476:         "smoke_days by unit/year",
+00477:         smoke_obs,
+00478:         "count_unique(smoke_days across units by year) must be > 1",
+00479:         "SRC-GATE-SMOKE-SPATIAL",
+00480:         "METHODOLOGICAL_GATE",
+00481:         smoke_status,
+00482:         "Smoke proxy can be used as common baseline when blocked.",
+00483:         "Spatially differentiated smoke exposure claim when n_unique<=1.",
+00484:         "NO-GO_SCIENTIFIC_THRESHOLD" if smoke_status.startswith("BLOCKED") else "NONE",
+00485:     )
+00486: 
+00487:     health_status, health_obs = evaluate_health_claim_support(smoke_csv)
+00488:     add_gate(
+00489:         "SMOKE-001",
+00490:         "Health exposure support",
+00491:         str(smoke_csv),
+00492:         "pollutant concentration columns",
+00493:         health_obs,
+00494:         "WHO/EPA/EU pollutant concentration threshold variables required.",
+00495:         "SRC-WHO-AQG-2021",
+00496:         "OFFICIAL_HEALTH_STANDARD",
+00497:         health_status,
+00498:         "Proxy-only smoke interpretation (non-health claim).",
+00499:         "Health/epidemiological exposure claims from proxy-only smoke data.",
+00500:         "NO-GO_SCIENTIFIC_THRESHOLD" if health_status.startswith("BLOCKED") else "NONE",
+00501:     )
+00502: 
+00503:     pop_cancel_status, pop_cancel_obs = evaluate_population_cancellation(iech_hist_csv)
+00504:     add_gate(
+00505:         "IECH-POP-001",
+00506:         "Population exposure cancellation check",
+00507:         str(iech_hist_csv),
+00508:         "IECH vs smoke_hours_equiv",
+00509:         pop_cancel_obs,
+00510:         "IECH must not collapse to smoke_hours_equiv for all rows when used for exposure claim.",
+00511:         "SRC-GATE-IECH-POP-CANCEL",
+00512:         "METHODOLOGICAL_GATE",
+00513:         pop_cancel_status,
+00514:         "Operational proxy interpretation with explicit limitation.",
+00515:         "Population exposure differentiation claim when IECH fully cancels to smoke_hours_equiv.",
+00516:         "NO-GO_SCIENTIFIC_THRESHOLD" if pop_cancel_status.startswith("BLOCKED") else "NONE",
+00517:     )
+00518: 
+00519:     warning_status, warning_obs, warning_blocked = evaluate_warning_inventory(warning_inventory)
+00520:     add_gate(
+00521:         "WARN-001",
+00522:         "Runtime warning classification gate",
+00523:         str(warning_inventory),
+00524:         "warning inventory status/explained",
+00525:         warning_obs,
+00526:         "No unexplained warning allowed in smoke route decoder evidence.",
+00527:         "SRC-GATE-WARNING-INVENTORY",
+00528:         "METHODOLOGICAL_GATE",
+00529:         warning_status,
+00530:         "Warnings may pass only if classified and reproducible values are verified.",
+00531:         "GO with unexplained warnings or silent suppression.",
+00532:         "NO-GO_SCIENTIFIC_THRESHOLD" if warning_status.startswith("BLOCKED") else "NONE",
+00533:     )
+00534: 
+00535:     iech_status, iech_obs, _iech_unique = evaluate_iech_ranking(iech_mean_csv)
+00536:     add_gate(
+00537:         "IECH-003",
+00538:         "IECH ranking validity",
+00539:         str(iech_mean_csv),
+00540:         "IECH_mean_2015_2024",
+00541:         iech_obs,
+00542:         "count_unique(IECH_mean_2015_2024 across units) must be > 1 for ranking claims.",
+00543:         "SRC-GATE-IECH-RANKING",
+00544:         "METHODOLOGICAL_GATE",
+00545:         iech_status,
+00546:         "IECH common baseline claim when ranking is blocked.",
+00547:         "Highest/high IECH territorial ranking when n_unique<=1.",
+00548:         "NO-GO_SCIENTIFIC_THRESHOLD" if iech_status.startswith("BLOCKED") else "NONE",
+00549:     )
+00550: 
+00551:     causal_status, causal_obs, causal_metrics = evaluate_causal_matrix(causal_csv)
+00552:     add_gate(
+00553:         "CAUSAL-001",
+00554:         "Causal matrix threshold contract",
+00555:         str(causal_csv),
+00556:         "qa_flag, missing_components, threshold_gate_status",
+00557:         causal_obs,
+00558:         "Causal matrix requires threshold_gate_status and no unresolved blocked rows.",
+00559:         "SRC-GATE-CAUSAL",
+00560:         "METHODOLOGICAL_GATE",
+00561:         causal_status,
+00562:         "Association/context wording with explicit limits.",
+00563:         "Causal closure claim while unresolved blocked drivers exist.",
+00564:         "NO-GO_SCIENTIFIC_THRESHOLD" if causal_status.startswith("BLOCKED") else "NONE",
+00565:     )
+00566: 
+00567:     active_blocks = sorted({r["gate_status"] for r in gate_rows if r["gate_status"].startswith("BLOCKED")})
+00568:     brief_hits = audit_brief_claims(brief_path, active_blocks)
+00569: 
+00570:     add_evidence("threshold_register", threshold_register)
+00571:     add_evidence("inputs_resolved", inputs_json)
+00572:     add_evidence("smoke_table", smoke_csv)
+00573:     add_evidence("iech_hist_table", iech_hist_csv)
+00574:     add_evidence("iech_mean_table", iech_mean_csv)
+00575:     add_evidence("causal_matrix_csv", causal_csv)

@@ -1,0 +1,13 @@
+﻿def write_gfas_era5_presence_audit(qa_dir: Path, sources: Dict[str, object]) -> None:
+    ensure_dir(qa_dir)
+    out_tsv = qa_dir / "gfas_era5_presence_audit.tsv"
+    rows = [
+        ["PRES-001", "PASS" if bool(sources.get("gfas_exists")) else "HOLD", str(sources.get("gfas_dir", "")), "GFAS directory path"],
+        ["PRES-002", "PASS" if int(sources.get("gfas_grib_count") or 0) > 0 else "HOLD", int(sources.get("gfas_grib_count") or 0), "GFAS grib file count"],
+        ["PRES-003", "PASS" if int(sources.get("gfas_total_bytes") or 0) > 0 else "HOLD", int(sources.get("gfas_total_bytes") or 0), "GFAS total bytes"],
+        ["PRES-004", "PASS" if bool(sources.get("era5_exists")) else "HOLD", str(sources.get("era5_zip", "")), "ERA5 zip path"],
+        ["PRES-005", "PASS" if int(sources.get("parquet_zip_count") or 0) > 0 else "HOLD", int(sources.get("parquet_zip_count") or 0), "Parquet proxy zip count"],
+    ]
+    write_tsv(out_tsv, ["check_id", "status", "value", "evidence"], rows)
+
+

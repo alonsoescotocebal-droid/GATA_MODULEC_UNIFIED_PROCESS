@@ -1,0 +1,350 @@
+﻿# SOURCE: D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\01_REPO_COPY\pipeline\moduleC_pipeline_v2.py
+# TITLE: moduleC_grib_decoder_zone_1460_1805
+# LINES: 1460-1805
+
+01460:         status = "PASS"
+01461:         classification = "CLASSIFIED_WARNING"
+01462:         impact = "LOW"
+01463:         explained = "1"
+01464:         if "NUMPTS * (NUMBITS IN A GROUP)" in upper:
+01465:             classification = "GFAS_PACKING_WARNING_CLASSIFIED"
+01466:         elif "OUTSIDE RASTER EXTENT" in upper:
+01467:             classification = "WINDOW_OUTSIDE_RASTER_REJECTED"
+01468:         elif "WARNING" in upper:
+01469:             classification = "GENERIC_WARNING_UNCLASSIFIED"
+01470:             status = "BLOCKED"
+01471:             explained = "0"
+01472:             impact = "UNKNOWN"
+01473:         rows.append([tool_name, context, classification, explained, impact, status, line])
+01474:     return rows
+01475: 
+01476: 
+01477: def _extract_first_message_by_next_grib(src: Path, dst: Path, max_scan_bytes: int = 64 * 1024 * 1024) -> Tuple[int, int]:
+01478:     if not src.exists():
+01479:         raise FileNotFoundError(f"GFAS source GRIB missing: {src}")
+01480:     chunk_size = 4 * 1024 * 1024
+01481:     buf = bytearray()
+01482:     with src.open("rb") as f:
+01483:         while len(buf) < max_scan_bytes:
+01484:             to_read = min(chunk_size, max_scan_bytes - len(buf))
+01485:             part = f.read(to_read)
+01486:             if not part:
+01487:                 break
+01488:             buf.extend(part)
+01489:             if len(buf) >= 8 and buf[:4] == b"GRIB":
+01490:                 next_idx = bytes(buf).find(b"GRIB", 4)
+01491:                 if next_idx > 0:
+01492:                     payload = bytes(buf[:next_idx])
+01493:                     ensure_dir(dst.parent)
+01494:                     dst.write_bytes(payload)
+01495:                     return next_idx, len(payload)
+01496:     raise RuntimeError(f"Could not delimit first GRIB message using next GRIB within {max_scan_bytes} bytes for {src}")
+01497: 
+01498: 
+01499: def _parse_xyz_stats(path: Path) -> Dict[str, object]:
+01500:     rows = 0
+01501:     numeric = 0
+01502:     zeros = 0
+01503:     nonzero = 0
+01504:     vmin: Optional[float] = None
+01505:     vmax: Optional[float] = None
+01506:     vsum = 0.0
+01507:     triples: List[Tuple[float, float, float]] = []
+01508:     with path.open("r", encoding="utf-8", errors="replace") as f:
+01509:         for line in f:
+01510:             s = line.strip()
+01511:             if not s:
+01512:                 continue
+01513:             rows += 1
+01514:             parts = s.split()
+01515:             if len(parts) < 3:
+01516:                 continue
+01517:             x = safe_float(parts[0])
+01518:             y = safe_float(parts[1])
+01519:             v = safe_float(parts[2])
+01520:             if x is None or y is None or v is None:
+01521:                 continue
+01522:             triples.append((x, y, v))
+01523:             numeric += 1
+01524:             if abs(v) <= 1e-15:
+01525:                 zeros += 1
+01526:             else:
+01527:                 nonzero += 1
+01528:             vsum += v
+01529:             if vmin is None or v < vmin:
+01530:                 vmin = v
+01531:             if vmax is None or v > vmax:
+01532:                 vmax = v
+01533:     mean = (vsum / float(numeric)) if numeric > 0 else None
+01534:     return {
+01535:         "rows": rows,
+01536:         "numeric": numeric,
+01537:         "zero": zeros,
+01538:         "nonzero": nonzero,
+01539:         "min": vmin,
+01540:         "max": vmax,
+01541:         "mean": mean,
+01542:         "triples": triples,
+01543:     }
+01544: 
+01545: 
+01546: def _run_external(cmd: List[str], timeout_sec: int = 600) -> Tuple[int, str, str]:
+01547:     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
+01548:     return proc.returncode, proc.stdout or "", proc.stderr or ""
+01549: 
+01550: 
+01551: def _yyyymmdd_to_iso(v: str) -> str:
+01552:     s = (v or "").strip()
+01553:     if len(s) == 8 and s.isdigit():
+01554:         return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
+01555:     return s
+01556: 
+01557: 
+01558: def _smoke_route_v0_audit_rows(unexplained_warnings_count: int, failed: bool, detail: str) -> List[List[object]]:
+01559:     if not failed:
+01560:         return [
+01561:             ["backend_gfas", "GDAL", "PASS", "GFAS decoded through GDAL-only message extraction path."],
+01562:             ["backend_era5", "GDAL", "PASS", "ERA5 10U/10V validated through GDAL."],
+01563:             ["eccodes_for_gfas", "REJECTED_OR_FORBIDDEN", "PASS", "ecCodes is not used as GFAS decoder backend."],
+01564:             ["smoke_claim_level", "OPERATIONAL_PROXY", "PASS", "Atmospheric proxy only (non-health validated)."],
+01565:             ["health_exposure_claim", "BLOCKED_UNLESS_VALIDATED", "BLOCKED", "No official pollutant threshold validation in this v0 route."],
+01566:             ["portugal_crop_convention", "NEGATIVE_LONGITUDE", "PASS", "Main crop: -projwin -10.0 43.0 -6.0 36.5"],
+01567:             ["unexplained_warnings_count", unexplained_warnings_count, "PASS" if unexplained_warnings_count == 0 else "BLOCKED", detail],
+01568:         ]
+01569:     return [
+01570:         ["backend_gfas", "GDAL", "HOLD", "GFAS GDAL path failed during probe."],
+01571:         ["backend_era5", "GDAL", "HOLD", "ERA5 GDAL probe not completed."],
+01572:         ["eccodes_for_gfas", "REJECTED_OR_FORBIDDEN", "PASS", "ecCodes is not used as GFAS decoder backend."],
+01573:         ["smoke_claim_level", "OPERATIONAL_PROXY", "HOLD", "Proxy route blocked until decoder probe succeeds."],
+01574:         ["health_exposure_claim", "BLOCKED_UNLESS_VALIDATED", "BLOCKED", "Health claim remains blocked."],
+01575:         ["portugal_crop_convention", "NEGATIVE_LONGITUDE", "HOLD", "Not validated in this run."],
+01576:         ["unexplained_warnings_count", unexplained_warnings_count, "BLOCKED", detail],
+01577:     ]
+01578: 
+01579: 
+01580: def decode_gfas_era5_gdal_proxy(modulec_datos: Path, qa_dir: Path, report: Report) -> Dict[str, object]:
+01581:     ensure_dir(qa_dir)
+01582:     gdal_translate = _resolve_gdal_tool("gdal_translate.exe")
+01583:     gdalinfo = _resolve_gdal_tool("gdalinfo.exe")
+01584:     result: Dict[str, object] = {
+01585:         "decoder_available": False,
+01586:         "by_year": {},
+01587:         "by_year_method": {},
+01588:         "daily_rows": [],
+01589:         "spatial_scope": "UNKNOWN",
+01590:         "unit_assignment": "UNKNOWN",
+01591:         "warning_inventory_path": str(qa_dir / "warning_inventory.tsv"),
+01592:         "reason": "",
+01593:     }
+01594:     warning_rows: List[List[object]] = []
+01595: 
+01596:     def _write_warning_inventory() -> int:
+01597:         out = qa_dir / "warning_inventory.tsv"
+01598:         if not warning_rows:
+01599:             warning_rows.append(
+01600:                 ["runtime", "none", "NO_WARNINGS", "1", "NONE", "PASS", "No warning captured in GFAS/ERA5 GDAL decoder path."]
+01601:             )
+01602:         write_tsv(
+01603:             out,
+01604:             ["tool", "context", "classification", "explained", "impact", "status", "warning_text"],
+01605:             warning_rows,
+01606:         )
+01607:         return sum(1 for r in warning_rows if str(r[5]).upper() == "BLOCKED")
+01608: 
+01609:     try:
+01610:         gfas_dir = modulec_datos / "CAM-GFAS (ADS)"
+01611:         edge_summary = gfas_dir / "_grib_edge_summary.csv"
+01612:         if not edge_summary.exists():
+01613:             raise FileNotFoundError(f"GFAS edge summary not found: {edge_summary}")
+01614:         _hdr, edge_rows, _delim = read_csv_rows(edge_summary)
+01615:         pm_rows: List[Dict[str, str]] = []
+01616:         for r in edge_rows:
+01617:             s1 = (r.get("shortName_1") or "").strip().lower()
+01618:             sl = (r.get("shortName_L") or "").strip().lower()
+01619:             if "pm2p5fire" in s1 or "pm2p5fire" in sl:
+01620:                 pm_rows.append(r)
+01621:         if not pm_rows:
+01622:             raise RuntimeError("No PM2P5FIRE candidate rows found in _grib_edge_summary.csv")
+01623: 
+01624:         inv_rows: List[List[object]] = []
+01625:         gfas_xyz_rows: List[List[object]] = []
+01626:         daily_summary_rows: List[List[object]] = []
+01627:         daily_rows: List[Dict[str, object]] = []
+01628:         anchors: Dict[int, float] = {}
+01629:         methods: Dict[int, str] = {}
+01630: 
+01631:         for r in pm_rows:
+01632:             file_name = (r.get("file") or "").strip()
+01633:             if not file_name:
+01634:                 continue
+01635:             src_grib = gfas_dir / file_name
+01636:             if not src_grib.exists():
+01637:                 continue
+01638:             date_raw = (r.get("validityDate_1") or r.get("dataDate_1") or "").strip()
+01639:             year_hint = safe_float((date_raw[:4] if len(date_raw) >= 4 else ""))
+01640:             year_int = int(year_hint) if year_hint is not None else None
+01641:             if year_int is None:
+01642:                 continue
+01643:             if year_int < min(YEARS_HIST) or year_int > max(YEARS_HIST):
+01644:                 continue
+01645: 
+01646:             extracted_msg = qa_dir / f"gfas_pm2p5fire_{year_int}_message1.grib"
+01647:             next_idx, payload_bytes = _extract_first_message_by_next_grib(src_grib, extracted_msg)
+01648: 
+01649:             xyz_path = qa_dir / f"gfas_pm2p5fire_{year_int}_portugal.xyz"
+01650:             cmd = [
+01651:                 gdal_translate,
+01652:                 "-of",
+01653:                 "XYZ",
+01654:                 "-projwin",
+01655:                 "-10.0",
+01656:                 "43.0",
+01657:                 "-6.0",
+01658:                 "36.5",
+01659:                 str(extracted_msg),
+01660:                 str(xyz_path),
+01661:             ]
+01662:             rc, stdout, stderr = _run_external(cmd, timeout_sec=900)
+01663:             warning_rows.extend(_capture_warning_rows("gdal_translate", f"GFAS_PM2P5_{year_int}", stdout + "\n" + stderr))
+01664:             if rc != 0:
+01665:                 raise RuntimeError(f"gdal_translate failed for {file_name} year={year_int}; rc={rc}")
+01666:             if not xyz_path.exists():
+01667:                 raise RuntimeError(f"gdal_translate output missing: {xyz_path}")
+01668: 
+01669:             stats = _parse_xyz_stats(xyz_path)
+01670:             max_val = safe_float(stats.get("max"))
+01671:             daily_score = (max_val * 1.0e11) if max_val is not None else 0.0
+01672:             if daily_score < 0:
+01673:                 daily_score = 0.0
+01674:             anchors[year_int] = daily_score
+01675:             methods[year_int] = "gfas_pm2p5fire_gdal_message1_negative_lon_proxy"
+01676: 
+01677:             date_iso = _yyyymmdd_to_iso(date_raw)
+01678:             inv_rows.append(
+01679:                 [
+01680:                     file_name,
+01681:                     year_int,
+01682:                     str(src_grib),
+01683:                     str(extracted_msg),
+01684:                     payload_bytes,
+01685:                     next_idx,
+01686:                     (r.get("shortName_1") or ""),
+01687:                     (r.get("units_1") or ""),
+01688:                     date_raw,
+01689:                     "PASS",
+01690:                 ]
+01691:             )
+01692:             daily_summary_rows.append(
+01693:                 [
+01694:                     date_iso,
+01695:                     year_int,
+01696:                     file_name,
+01697:                     stats.get("rows", 0),
+01698:                     stats.get("numeric", 0),
+01699:                     stats.get("zero", 0),
+01700:                     stats.get("nonzero", 0),
+01701:                     stats.get("min", ""),
+01702:                     stats.get("max", ""),
+01703:                     stats.get("mean", ""),
+01704:                     daily_score,
+01705:                 ]
+01706:             )
+01707:             daily_rows.append(
+01708:                 {
+01709:                     "date": date_iso,
+01710:                     "year": year_int,
+01711:                     "smoke_day_score": daily_score,
+01712:                     "source_file": file_name,
+01713:                     "method": "gfas_pm2p5fire_gdal_negative_lon",
+01714:                     "xyz_path": str(xyz_path),
+01715:                 }
+01716:             )
+01717: 
+01718:             for x, y, v in stats.get("triples", []):
+01719:                 gfas_xyz_rows.append([file_name, date_iso, x, y, v])
+01720: 
+01721:         if not anchors:
+01722:             raise RuntimeError("PM2P5FIRE decoder produced no annual anchors within 2015-2024.")
+01723: 
+01724:         filled_vals, filled_methods = _fill_smoke_year_series(anchors, report)
+01725:         by_year: Dict[int, float] = {}
+01726:         by_year_method: Dict[int, str] = {}
+01727:         for y in YEARS_HIST:
+01728:             by_year[y] = float(filled_vals.get(y, 0.0))
+01729:             src_method = methods.get(y)
+01730:             if src_method is None:
+01731:                 fallback_method = str(filled_methods.get(y, "gfas_pm2p5fire_unknown"))
+01732:                 if fallback_method.startswith("primary_parquet_"):
+01733:                     fallback_method = "gfas_pm2p5fire_" + fallback_method[len("primary_parquet_") :]
+01734:                 src_method = fallback_method
+01735:             by_year_method[y] = src_method
+01736: 
+01737:         write_tsv(
+01738:             qa_dir / "gfas_pm2p5fire_message_inventory.tsv",
+01739:             [
+01740:                 "source_file",
+01741:                 "year_hint",
+01742:                 "source_grib_path",
+01743:                 "extracted_message_path",
+01744:                 "extracted_message_bytes",
+01745:                 "next_grib_offset",
+01746:                 "shortName_1",
+01747:                 "units_1",
+01748:                 "validityDate_1",
+01749:                 "status",
+01750:             ],
+01751:             inv_rows,
+01752:         )
+01753:         write_csv(
+01754:             qa_dir / "gfas_pm2p5fire_portugal_xyz.csv",
+01755:             ["source_file", "date", "x", "y", "value"],
+01756:             gfas_xyz_rows,
+01757:             delim=";",
+01758:         )
+01759:         write_csv(
+01760:             qa_dir / "gfas_pm2p5fire_portugal_daily_summary.csv",
+01761:             [
+01762:                 "date",
+01763:                 "year",
+01764:                 "source_file",
+01765:                 "rows",
+01766:                 "numeric",
+01767:                 "zero",
+01768:                 "nonzero",
+01769:                 "min",
+01770:                 "max",
+01771:                 "mean",
+01772:                 "smoke_day_score",
+01773:             ],
+01774:             daily_summary_rows,
+01775:             delim=";",
+01776:         )
+01777: 
+01778:         era5_candidates = sorted(modulec_datos.glob("*ERA5*.zip"))
+01779:         era5_zip = era5_candidates[0] if era5_candidates else None
+01780:         if era5_zip is None or not era5_zip.exists():
+01781:             raise FileNotFoundError("ERA5 zip not found for decoder probe.")
+01782:         era5_vsi = f"/vsizip/{era5_zip.as_posix()}/data.grib"
+01783:         rc_i, out_i, err_i = _run_external([gdalinfo, era5_vsi], timeout_sec=180)
+01784:         warning_rows.extend(_capture_warning_rows("gdalinfo", "ERA5_INFO", out_i + "\n" + err_i))
+01785:         if rc_i != 0:
+01786:             raise RuntimeError(f"gdalinfo failed for ERA5: rc={rc_i}")
+01787:         low_info = (out_i + "\n" + err_i).lower()
+01788:         has_10u = ("10 metre u wind component" in low_info) or ("grib_element=10u" in low_info)
+01789:         has_10v = ("10 metre v wind component" in low_info) or ("grib_element=10v" in low_info)
+01790:         if not (has_10u and has_10v):
+01791:             raise RuntimeError("ERA5 10U/10V not detected in GDAL probe.")
+01792: 
+01793:         era5_u_xyz = qa_dir / "era5_10u_portugal.xyz"
+01794:         era5_v_xyz = qa_dir / "era5_10v_portugal.xyz"
+01795:         rc_u, out_u, err_u = _run_external([gdal_translate, "-of", "XYZ", "-b", "1", era5_vsi, str(era5_u_xyz)], timeout_sec=240)
+01796:         warning_rows.extend(_capture_warning_rows("gdal_translate", "ERA5_10U_XYZ", out_u + "\n" + err_u))
+01797:         if rc_u != 0:
+01798:             raise RuntimeError(f"gdal_translate ERA5 band1 failed rc={rc_u}")
+01799:         rc_v, out_v, err_v = _run_external([gdal_translate, "-of", "XYZ", "-b", "2", era5_vsi, str(era5_v_xyz)], timeout_sec=240)
+01800:         warning_rows.extend(_capture_warning_rows("gdal_translate", "ERA5_10V_XYZ", out_v + "\n" + err_v))
+01801:         if rc_v != 0:
+01802:             raise RuntimeError(f"gdal_translate ERA5 band2 failed rc={rc_v}")
+01803: 
+01804:         u_stats = _parse_xyz_stats(era5_u_xyz)
+01805:         v_stats = _parse_xyz_stats(era5_v_xyz)

@@ -1,0 +1,6 @@
+﻿"priority"	"file"	"target"	"action"
+"1"	"pipeline\moduleC_pipeline_v2.py"	"write_gfas_era5_decoder_audit"	"Change decoder-available wording to require direct decoder evidence, non-empty required_decoder, and non-missing direct-year coverage."
+"2"	"pipeline\moduleC_pipeline_v2.py"	"smoke_prepare"	"Propagate 2023/2024 extrapolated missing branch into route status/reason and audit columns before writing smoke outputs."
+"3"	"pipeline\moduleC_pipeline_v2.py"	"_fill_smoke_year_series / _fill_smoke_year_series_relaxed"	"Separate direct, interpolated, extrapolated, and missing branches; prevent extrapolated missing years from being labeled as real coverage."
+"4"	"pipeline\moduleC_pipeline_v2.py"	"_derive_unit_anchor_scores_from_xyz / GRIB helper zone"	"Expose proof columns showing whether values are decoded from GRIB/ERA5 or synthetic anchors."
+"5"	"pipeline\scientific_threshold_gate.py"	"smoke/causal gate rules"	"Do not relax blocking logic; only align messages after route declaration is corrected."

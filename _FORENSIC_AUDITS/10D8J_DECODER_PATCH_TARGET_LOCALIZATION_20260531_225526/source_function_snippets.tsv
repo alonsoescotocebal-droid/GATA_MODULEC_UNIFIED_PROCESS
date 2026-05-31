@@ -1,0 +1,8 @@
+﻿"function"	"found"	"start_line"	"end_line"	"snippet_path"
+"_collect_primary_smoke_anchors"	"YES"	"841"	"909"	"D:\GATA_MODULEC_UNIFIED_PROCESS\_FORENSIC_AUDITS\10D8J_DECODER_PATCH_TARGET_LOCALIZATION_20260531_225526\source_function_snippets\_collect_primary_smoke_anchors.txt"
+"_fill_smoke_year_series"	"YES"	"910"	"960"	"D:\GATA_MODULEC_UNIFIED_PROCESS\_FORENSIC_AUDITS\10D8J_DECODER_PATCH_TARGET_LOCALIZATION_20260531_225526\source_function_snippets\_fill_smoke_year_series.txt"
+"_derive_unit_anchor_scores_from_xyz"	"YES"	"1003"	"1070"	"D:\GATA_MODULEC_UNIFIED_PROCESS\_FORENSIC_AUDITS\10D8J_DECODER_PATCH_TARGET_LOCALIZATION_20260531_225526\source_function_snippets\_derive_unit_anchor_scores_from_xyz.txt"
+"write_gfas_era5_presence_audit"	"YES"	"1387"	"1399"	"D:\GATA_MODULEC_UNIFIED_PROCESS\_FORENSIC_AUDITS\10D8J_DECODER_PATCH_TARGET_LOCALIZATION_20260531_225526\source_function_snippets\write_gfas_era5_presence_audit.txt"
+"write_gfas_era5_decoder_audit"	"YES"	"1400"	"1443"	"D:\GATA_MODULEC_UNIFIED_PROCESS\_FORENSIC_AUDITS\10D8J_DECODER_PATCH_TARGET_LOCALIZATION_20260531_225526\source_function_snippets\write_gfas_era5_decoder_audit.txt"
+"write_smoke_route_source_trace_audit"	"YES"	"1365"	"1386"	"D:\GATA_MODULEC_UNIFIED_PROCESS\_FORENSIC_AUDITS\10D8J_DECODER_PATCH_TARGET_LOCALIZATION_20260531_225526\source_function_snippets\write_smoke_route_source_trace_audit.txt"
+"smoke_prepare"	"YES"	"1873"	"2032"	"D:\GATA_MODULEC_UNIFIED_PROCESS\_FORENSIC_AUDITS\10D8J_DECODER_PATCH_TARGET_LOCALIZATION_20260531_225526\source_function_snippets\smoke_prepare.txt"

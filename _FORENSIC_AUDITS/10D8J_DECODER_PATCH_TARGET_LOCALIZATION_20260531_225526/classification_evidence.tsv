@@ -1,0 +1,6 @@
+﻿"evidence"
+"Outputs are all-zero for 2023 and 2024 across NUTS3 and municipio smoke tables."
+"inputs_resolved declares SCIENTIFIC_PRIMARY_REAL and decoder-available route."
+"Source scan did not find direct decoder calls for GDAL/Parquet/GRIB read execution."
+"smoke_route_audit marks 2023 and 2024 as extrapolated_from_anchors with missing flag."
+"inputs_resolved shows required_decoder as empty string."

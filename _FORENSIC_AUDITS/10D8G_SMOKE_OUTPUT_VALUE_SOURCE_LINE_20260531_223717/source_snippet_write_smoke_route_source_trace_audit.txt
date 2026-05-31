@@ -1,0 +1,22 @@
+01365: def write_smoke_route_source_trace_audit(
+01366:     qa_dir: Path,
+01367:     inputs: Dict[str, object],
+01368:     sources: Dict[str, object],
+01369:     route_decision: Dict[str, object],
+01370: ) -> None:
+01371:     ensure_dir(qa_dir)
+01372:     out_tsv = qa_dir / "smoke_route_source_trace_audit.tsv"
+01373:     payload = json.dumps(inputs, ensure_ascii=False).lower()
+01374:     rows = [
+01375:         ["TRACE-001", "PASS" if str(sources.get("smoke_csv_input", "")) else "HOLD", str(sources.get("smoke_csv_input", "")), "inputs_resolved.paths.smoke_csv"],
+01376:         ["TRACE-002", "PASS" if bool(sources.get("modulea_validated")) else "HOLD", str(bool(sources.get("modulea_validated"))), "validated v1 moduleA smoke catalog"],
+01377:         ["TRACE-003", "PASS" if bool(sources.get("gfas_exists")) else "HOLD", str(bool(sources.get("gfas_exists"))), "GFAS directory physical presence"],
+01378:         ["TRACE-004", "PASS" if bool(sources.get("era5_exists")) else "HOLD", str(bool(sources.get("era5_exists"))), "ERA5 zip physical presence"],
+01379:         ["TRACE-005", "PASS" if "gfas" in payload else "HOLD", str("gfas" in payload), "inputs_resolved contains GFAS trace tokens"],
+01380:         ["TRACE-006", "PASS" if "era5" in payload else "HOLD", str("era5" in payload), "inputs_resolved contains ERA5 trace tokens"],
+01381:         ["TRACE-007", "PASS", str(route_decision.get("route_selected", "")), "selector route_selected"],
+01382:         ["TRACE-008", "PASS", str(route_decision.get("smoke_route_decision", "")), "selector smoke_route_decision"],
+01383:     ]
+01384:     write_tsv(out_tsv, ["check_id", "status", "value", "evidence"], rows)
+01385: 
+01386: 

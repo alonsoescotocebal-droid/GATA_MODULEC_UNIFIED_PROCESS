@@ -1,0 +1,42 @@
+﻿   961: def _fill_smoke_year_series_relaxed(anchors: Dict[int, float], method_prefix: str) -> Tuple[Dict[int, float], Dict[int, str]]:
+   962:     years = sorted(int(y) for y in anchors.keys())
+   963:     values: Dict[int, float] = {}
+   964:     methods: Dict[int, str] = {}
+   965:     if not years:
+   966:         return values, methods
+   967: 
+   968:     if len(years) == 1:
+   969:         y0 = years[0]
+   970:         v0 = max(float(anchors[y0]), 0.0)
+   971:         for y in YEARS_HIST:
+   972:             values[y] = v0
+   973:             methods[y] = f"{method_prefix}_direct_year" if y == y0 else f"{method_prefix}_flat_single_anchor"
+   974:         return values, methods
+   975: 
+   976:     for y in YEARS_HIST:
+   977:         if y in anchors:
+   978:             values[y] = max(float(anchors[y]), 0.0)
+   979:             methods[y] = f"{method_prefix}_direct_year"
+   980:             continue
+   981:         if y < years[0]:
+   982:             y0, y1 = years[0], years[1]
+   983:             method = f"{method_prefix}_extrapolated_from_anchors"
+   984:         elif y > years[-1]:
+   985:             y0, y1 = years[-2], years[-1]
+   986:             method = f"{method_prefix}_extrapolated_from_anchors"
+   987:         else:
+   988:             y0, y1 = years[0], years[-1]
+   989:             for i in range(len(years) - 1):
+   990:                 a, b = years[i], years[i + 1]
+   991:                 if a <= y <= b:
+   992:                     y0, y1 = a, b
+   993:                     break
+   994:             method = f"{method_prefix}_interpolated_from_anchors"
+   995:         v0 = float(anchors[y0])
+   996:         v1 = float(anchors[y1])
+   997:         frac = 0.0 if y1 == y0 else (float(y - y0) / float(y1 - y0))
+   998:         values[y] = max(v0 + (v1 - v0) * frac, 0.0)
+   999:         methods[y] = method
+  1000:     return values, methods
+  1001: 
+  1002: 

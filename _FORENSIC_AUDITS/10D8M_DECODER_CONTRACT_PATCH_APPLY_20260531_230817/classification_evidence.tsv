@@ -1,0 +1,6 @@
+﻿"evidence"
+"SHA verified before patch."
+"moduleC_pipeline_v2.py backed up before write."
+"Patch derives OutputRoot from smoke_prepare locals and only changes route metadata correction after smoke output evidence is generated."
+"Patch does not fabricate smoke values and does not relax scientific_threshold_gate.py."
+"No commit, reset, clean, runtime, BAT, QGIS, or GRIB decode was executed."

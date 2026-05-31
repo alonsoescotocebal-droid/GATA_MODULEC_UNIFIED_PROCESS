@@ -1,0 +1,45 @@
+﻿# SOURCE: D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\01_REPO_COPY\pipeline\scientific_threshold_gate.py
+# TITLE: scientific_gate_smoke_rules_220_260
+# LINES: 220-260
+
+00220:     try:
+00221:         payload = json.loads(inputs_json.read_text(encoding="utf-8-sig"))
+00222:     except Exception as exc:
+00223:         return "BLOCKED_FOR_REQUIRED_VARIABLE", f"inputs_resolved.json parse error: {exc}", ""
+00224:     if not isinstance(payload, dict):
+00225:         return "BLOCKED_FOR_REQUIRED_VARIABLE", "inputs_resolved.json is not an object", ""
+00226:     meta = payload.get("meta", {})
+00227:     if not isinstance(meta, dict):
+00228:         meta = {}
+00229:     route_selected = str(meta.get("smoke_route_selected") or meta.get("smoke_route_mode") or "").strip()
+00230:     route_decision = str(meta.get("smoke_route_decision") or "").strip()
+00231:     if not route_selected:
+00232:         return "BLOCKED_FOR_REQUIRED_VARIABLE", "smoke_route_selected missing in inputs_resolved meta", ""
+00233: 
+00234:     if route_selected in ("v1_moduleA_validated", "v0_gfas_era5_real"):
+00235:         return (
+00236:             "THRESHOLD_DEFINED_AS_INDEXED_METHOD",
+00237:             f"route_selected={route_selected}; route_decision={route_decision}",
+00238:             route_selected,
+00239:         )
+00240:     if route_selected == "BLOCKED_DECODER_REQUIRED":
+00241:         return (
+00242:             "BLOCKED_DECODER_REQUIRED",
+00243:             f"route_selected={route_selected}; route_decision={route_decision}",
+00244:             route_selected,
+00245:         )
+00246:     if route_selected == "v0_parquet_proxy_degraded":
+00247:         return (
+00248:             "BLOCKED_SPATIAL_SMOKE_CLAIM",
+00249:             f"route_selected={route_selected}; route_decision={route_decision}",
+00250:             route_selected,
+00251:         )
+00252:     if route_selected == "NO-GO_SMOKE_ROUTE":
+00253:         return (
+00254:             "BLOCKED_NO_GO_SMOKE_ROUTE",
+00255:             f"route_selected={route_selected}; route_decision={route_decision}",
+00256:             route_selected,
+00257:         )
+00258:     return (
+00259:         "BLOCKED_FOR_REQUIRED_VARIABLE",
+00260:         f"unrecognized route_selected={route_selected}; route_decision={route_decision}",

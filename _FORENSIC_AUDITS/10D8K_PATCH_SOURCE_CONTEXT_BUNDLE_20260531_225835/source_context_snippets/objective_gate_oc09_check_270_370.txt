@@ -1,0 +1,105 @@
+﻿# SOURCE: D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\01_REPO_COPY\pipeline\validate_modulec_objectives_canon.py
+# TITLE: objective_gate_oc09_check_270_370
+# LINES: 270-370
+
+00270:     if not rows:
+00271:         return False, "territorial_context_nuts3.csv empty."
+00272:     n_total = len(rows)
+00273:     n_nonempty = 0
+00274:     for r in rows:
+00275:         if safe_float(r.get("wui_proxy")) is not None:
+00276:             n_nonempty += 1
+00277:     if n_nonempty <= 0:
+00278:         return False, "WUI proxy empty for all units."
+00279:     return True, f"WUI coverage OK: non-empty={n_nonempty}/{n_total}"
+00280: 
+00281: 
+00282: def _check_causal_quality(output_root: Path) -> Tuple[bool, str]:
+00283:     p = output_root / "brief" / "causal_matrix" / "causal_matrix_IECH_NUTS3.csv"
+00284:     if not p.exists():
+00285:         return False, "causal_matrix_IECH_NUTS3.csv missing."
+00286:     rows = read_csv_rows(p)
+00287:     if not rows:
+00288:         return False, "causal_matrix_IECH_NUTS3.csv empty."
+00289:     n_hold = 0
+00290:     n_missing_comp = 0
+00291:     for r in rows:
+00292:         if (r.get("qa_flag") or "").strip().upper() == "HOLD":
+00293:             n_hold += 1
+00294:         if (r.get("missing_components") or "").strip() != "":
+00295:             n_missing_comp += 1
+00296:     if n_hold > 0 or n_missing_comp > 0:
+00297:         return False, f"Causal matrix unresolved: qa_flag=HOLD {n_hold}, missing_components non-empty {n_missing_comp}"
+00298:     return True, "Causal matrix has no HOLD/missing_components."
+00299: 
+00300: 
+00301: def _check_brief_quality(output_root: Path) -> Tuple[bool, str]:
+00302:     p = output_root / "brief" / "Brief_Politica_IECH_2030.md"
+00303:     if not p.exists():
+00304:         return False, "Brief missing."
+00305:     text = p.read_text(encoding="utf-8-sig", errors="replace")
+00306:     if re.search(r"Line\s+\d{3}:\s+IECH pipeline v2 audit detail line", text, flags=re.IGNORECASE):
+00307:         return False, "Brief contains placeholder lines."
+00308:     if len(text.strip()) < 1200:
+00309:         return False, "Brief too short."
+00310:     return True, "Brief quality checks passed."
+00311: 
+00312: 
+00313: def _check_step9_zip_contents(output_root: Path) -> Tuple[bool, str]:
+00314:     p = output_root / "deliverables_step9" / "ModuleC_ALL_FINAL_deliverables.zip"
+00315:     if not p.exists():
+00316:         return False, "Final ZIP missing."
+00317:     required_member_tokens = [
+00318:         "qa/inputs_resolved.json",
+00319:         "qa/run_log.txt",
+00320:         "tables/IECH_unit_2015_2024.csv",
+00321:         "tables/IECH_municipio_2015_2024.csv",
+00322:         "tables/wrb_context_nuts3.csv",
+00323:         "tables/territorial_context_nuts3.csv",
+00324:         "brief/Brief_Politica_IECH_2030.md",
+00325:         "brief/causal_matrix/causal_matrix_IECH_NUTS3.csv",
+00326:         "maps/IECH_ModuleC_master.gpkg",
+00327:     ]
+00328:     with zipfile.ZipFile(p, "r") as zf:
+00329:         names = [n.replace("\\", "/") for n in zf.namelist()]
+00330:     missing = [tok for tok in required_member_tokens if not any(n.endswith(tok) for n in names)]
+00331:     if missing:
+00332:         return False, "Final ZIP missing direct members: " + ", ".join(missing)
+00333:     return True, "Final ZIP contains direct scientific outputs."
+00334: 
+00335: 
+00336: def objective_specific_check(obj_id: str, output_root: Path, inputs: Dict[str, object]) -> Tuple[bool, str]:
+00337:     if obj_id == "OC-03":
+00338:         ok, reason = _check_smoke_inputs_clean(inputs)
+00339:         if not ok:
+00340:             return ok, reason
+00341:         meta = inputs.get("meta", {}) if isinstance(inputs, dict) else {}
+00342:         if isinstance(meta, dict):
+00343:             route_selected = str(meta.get("smoke_route_selected") or meta.get("smoke_route_mode") or "").strip()
+00344:             route_decision = str(meta.get("smoke_route_decision") or "").strip()
+00345:             if route_selected in ("BLOCKED_DECODER_REQUIRED", "v0_parquet_proxy_degraded", "NO-GO_SMOKE_ROUTE"):
+00346:                 return False, f"smoke route blocked/degraded: route_selected={route_selected}; route_decision={route_decision}"
+00347:         smoke_unit = output_root / "tables" / "smoke_days_unit_2015_2024.csv"
+00348:         rows = read_csv_rows(smoke_unit) if smoke_unit.exists() else []
+00349:         vals = [safe_float(r.get("smoke_days")) for r in rows]
+00350:         vals = [v for v in vals if v is not None]
+00351:         if not vals:
+00352:             return False, "smoke_days table has no numeric values."
+00353:         if max(vals) <= 0:
+00354:             return False, "smoke_days table degenerate (max <= 0)."
+00355:         return True, reason
+00356:     if obj_id == "OC-07":
+00357:         return _check_wui_quality(output_root)
+00358:     if obj_id == "OC-08":
+00359:         return _check_wrb_quality(output_root)
+00360:     if obj_id == "OC-09":
+00361:         return _check_causal_quality(output_root)
+00362:     if obj_id == "OC-11":
+00363:         return _check_brief_quality(output_root)
+00364:     if obj_id == "OC-12":
+00365:         return _check_step9_zip_contents(output_root)
+00366:     return True, ""
+00367: 
+00368: 
+00369: def write_reports(qa_dir: Path, rows: List[Dict[str, str]], canon_path: Path, canon_sha: str) -> None:
+00370:     qa_dir.mkdir(parents=True, exist_ok=True)

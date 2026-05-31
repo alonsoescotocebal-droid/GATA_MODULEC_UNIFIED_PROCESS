@@ -1,0 +1,120 @@
+﻿# SOURCE: D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\01_REPO_COPY\pipeline\moduleC_pipeline_v2.py
+# TITLE: moduleC_iech_scenario_missing_flag_2280_2395
+# LINES: 2280-2395
+
+02280: 
+02281:     write_csv(out_path, ["unit_id", "total_burn_ha_2015_2024", "years_area_gt_p75", "n_events_gt_1000ha", "recurrence_class", "recurrence_missing_flag"], rows_out, delim=";")
+02282:     return out_path
+02283: 
+02284: 
+02285: def interpolate_pop(p2015: float, p2020: float, p2025: float, year: int) -> float:
+02286:     if year <= 2020:
+02287:         return p2015 + (p2020 - p2015) * ((year - 2015) / 5.0)
+02288:     return p2020 + (p2025 - p2020) * ((year - 2020) / 5.0)
+02289: 
+02290: 
+02291: def interpolate_pop_scen(p2025: float, p2030: float, year: int) -> float:
+02292:     return p2025 + (p2030 - p2025) * ((year - 2025) / 5.0)
+02293: 
+02294: def iech_compute(tables_dir: Path, report: Report) -> Tuple[Path, Path]:
+02295:     pop_csv = tables_dir / "pop_unit_2015_2025_2030.csv"
+02296:     smoke_csv = tables_dir / "smoke_days_unit_2015_2024.csv"
+02297:     rec_csv = tables_dir / "recurrence_unit_2015_2024.csv"
+02298:     for p in (pop_csv, smoke_csv, rec_csv):
+02299:         if not p.exists():
+02300:             report.fail(f"Missing table: {p}")
+02301: 
+02302:     pop_rows = read_csv_rows(pop_csv)[1]
+02303:     smoke_rows = read_csv_rows(smoke_csv)[1]
+02304:     if has_missing_flag(pop_rows) or has_missing_flag(smoke_rows):
+02305:         report.fail("Placeholder detected (missing_flag=1). IECH will not be computed.")
+02306: 
+02307:     pop = {}
+02308:     for r in pop_rows:
+02309:         uid = r.get("unit_id", "")
+02310:         pop[uid] = (
+02311:             safe_float(r.get("pop_2015_sum")) or 0.0,
+02312:             safe_float(r.get("pop_2020_sum")) or 0.0,
+02313:             safe_float(r.get("pop_2025_sum")) or 0.0,
+02314:             safe_float(r.get("pop_2030_sum")) or 0.0,
+02315:         )
+02316: 
+02317:     smoke = {}
+02318:     for r in smoke_rows:
+02319:         uid = r.get("unit_id", "")
+02320:         y = safe_float(r.get("year"))
+02321:         sd = safe_float(r.get("smoke_days"))
+02322:         if not uid or y is None:
+02323:             continue
+02324:         smoke.setdefault(uid, {})[int(y)] = sd
+02325: 
+02326:     unit_ids = sorted(pop.keys())
+02327:     if not unit_ids:
+02328:         report.fail("No unit_ids found in pop table.")
+02329: 
+02330:     iech_hist_csv = tables_dir / "IECH_unit_2015_2024.csv"
+02331:     rows_out = []
+02332:     for uid in unit_ids:
+02333:         p2015, p2020, p2025, _p2030 = pop.get(uid, (0.0, 0.0, 0.0, 0.0))
+02334:         for y in YEARS_HIST:
+02335:             sd = smoke.get(uid, {}).get(y, None)
+02336:             if sd is None:
+02337:                 report.fail(f"Missing smoke_days for {uid} {y}")
+02338:             hours = sd * 24.0
+02339:             p = interpolate_pop(p2015, p2020, p2025, y)
+02340:             expo = hours * p if p > 0 else None
+02341:             iech = (expo / p) if expo is not None and p > 0 else None
+02342:             rows_out.append([uid, y, sd, hours, p, expo, iech, "IECH=smoke_days*24;pop=interp(2015,2020,2025)"])
+02343: 
+02344:     write_csv(iech_hist_csv, ["unit_id", "year", "smoke_days", "smoke_hours_equiv", "pop", "expo_person_hours", "IECH", "method_flags"], rows_out, delim=";")
+02345: 
+02346:     iech_mean_csv = tables_dir / "IECH_unit_2015_2024_mean.csv"
+02347:     acc: Dict[str, List[float]] = {}
+02348:     for r in rows_out:
+02349:         uid = r[0]
+02350:         iech = safe_float(r[6])
+02351:         if iech is not None:
+02352:             acc.setdefault(uid, []).append(iech)
+02353:     rows_mean = []
+02354:     for uid, vals in sorted(acc.items()):
+02355:         mean_val = sum(vals) / len(vals) if vals else 0.0
+02356:         rows_mean.append([uid, mean_val])
+02357:     write_csv(iech_mean_csv, ["unit_id", "IECH_mean_2015_2024"], rows_mean, delim=";")
+02358:     return iech_hist_csv, iech_mean_csv
+02359: 
+02360: 
+02361: def scenarios_compute(tables_dir: Path, report: Report) -> Tuple[Path, Path]:
+02362:     smoke_csv = tables_dir / "smoke_days_unit_2015_2024.csv"
+02363:     pop_csv = tables_dir / "pop_unit_2015_2025_2030.csv"
+02364:     if not smoke_csv.exists() or not pop_csv.exists():
+02365:         report.fail("Missing smoke or pop table for scenarios.")
+02366: 
+02367:     smoke_rows = read_csv_rows(smoke_csv)[1]
+02368:     if has_missing_flag(smoke_rows):
+02369:         report.fail("Placeholder detected (smoke missing_flag=1). Scenarios not computed.")
+02370: 
+02371:     smoke_by_unit: Dict[str, List[float]] = {}
+02372:     for r in smoke_rows:
+02373:         uid = r.get("unit_id", "")
+02374:         sd = safe_float(r.get("smoke_days"))
+02375:         if uid and sd is not None:
+02376:             smoke_by_unit.setdefault(uid, []).append(sd)
+02377: 
+02378:     if not smoke_by_unit:
+02379:         report.fail("No smoke data to compute scenarios.")
+02380: 
+02381:     baseline = {u: (sum(vs) / len(vs)) for u, vs in smoke_by_unit.items() if vs}
+02382:     baseline_vals = sorted(baseline.values())
+02383:     thr80 = baseline_vals[int(0.80 * (len(baseline_vals) - 1))] if baseline_vals else None
+02384:     target = {u for u, v in baseline.items() if thr80 is not None and v >= thr80}
+02385: 
+02386:     pop_rows = read_csv_rows(pop_csv)[1]
+02387:     if has_missing_flag(pop_rows):
+02388:         report.fail("Placeholder detected (pop missing_flag=1). Scenarios not computed.")
+02389: 
+02390:     pop_anchor = {}
+02391:     for r in pop_rows:
+02392:         uid = r.get("unit_id", "")
+02393:         p2025 = safe_float(r.get("pop_2025_sum"))
+02394:         p2030 = safe_float(r.get("pop_2030_sum"))
+02395:         if uid and p2025 is not None and p2030 is not None:

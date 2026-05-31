@@ -1,0 +1,208 @@
+﻿# SOURCE: D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\01_REPO_COPY\pipeline\moduleC_pipeline_v2.py
+# TITLE: function main
+# LINES: 2994-3197
+
+02994: # <<< MODULEC 10D6A5 PIPELINE SCIENTIFIC GATE INTEGRATION END
+02995: 
+02996: def main() -> int:
+02997:     ap = argparse.ArgumentParser()
+02998:     ap.add_argument("--gata-root", required=True)
+02999:     ap.add_argument("--modulec-datos", required=True)
+03000:     ap.add_argument("--inc-new", required=True)
+03001:     ap.add_argument("--output-root", required=False, default=None)
+03002:     ap.add_argument("--tabular-only", action="store_true")
+03003:     ap.add_argument("--bisect-stage", type=int, default=None)
+03004:     args = ap.parse_args()
+03005: 
+03006:     modulec_root = Path(args.modulec_datos).parent
+03007:     if args.output_root:
+03008:         out_dir = Path(args.output_root)
+03009:     else:
+03010:         out_dir = modulec_root / "03_outputs"
+03011:     qa_dir = out_dir / "qa"
+03012:     tables_dir = out_dir / "tables"
+03013:     maps_dir = out_dir / "maps"
+03014:     brief_dir = out_dir / "brief"
+03015:     work_dir = modulec_root / "02_work"
+03016:     deliver_dir = out_dir / "deliverables_step9"
+03017: 
+03018:     report_path = qa_dir / "report_auditoria_v2.txt"
+03019:     report = Report(report_path)
+03020:     report.log("START v2")
+03021:     report.log(f"MODULEC_ROOT={modulec_root}")
+03022:     report.log(f"OUTPUT_ROOT={out_dir}")
+03023: 
+03024:     inputs_path = qa_dir / "inputs_resolved.json"
+03025:     try:
+03026:         inputs = load_inputs(inputs_path, report)
+03027:         validate_inputs(inputs, report)
+03028:         preflight_path = write_preflight_report(qa_dir, inputs, modulec_root, out_dir)
+03029:         report.log(f"preflight_report generated: {preflight_path}")
+03030:         sources = detect_smoke_sources(Path(args.modulec_datos), inputs)
+03031:         route_decision = select_smoke_route(sources, decoder_available=False)
+03032:         decoder_payload: Dict[str, object] = {"decoder_available": False}
+03033:         if str(route_decision.get("route_selected", "")) == "BLOCKED_DECODER_REQUIRED":
+03034:             decoder_payload = decode_gfas_era5_gdal_proxy(Path(args.modulec_datos), qa_dir, report)
+03035:             if bool(decoder_payload.get("decoder_available")):
+03036:                 route_decision = select_smoke_route(sources, decoder_available=True)
+03037:         inputs = apply_route_meta(inputs, sources, route_decision)
+03038:         ensure_dir(inputs_path.parent)
+03039:         inputs_path.write_text(json.dumps(inputs, ensure_ascii=False, indent=2), encoding="utf-8")
+03040:         report.log(f"smoke route selected: {route_decision.get('route_selected')} ({route_decision.get('smoke_route_decision')})")
+03041:         write_smoke_route_source_trace_audit(qa_dir, inputs, sources, route_decision)
+03042:         write_gfas_era5_presence_audit(qa_dir, sources)
+03043:         write_gfas_era5_decoder_audit(
+03044:             qa_dir,
+03045:             sources,
+03046:             route_decision,
+03047:             decoder_available=bool(decoder_payload.get("decoder_available")),
+03048:         )
+03049: 
+03050:         qgs = None
+03051:         if args.tabular_only:
+03052:             report.fail("TABULAR_ONLY set but admin/pop/recurrence require QGIS. " + qgis_hint_text())
+03053:         qgs = init_qgis(report)
+03054: 
+03055:         if args.bisect_stage is not None:
+03056:             _bisect_admin_prepare(args.bisect_stage, inputs, maps_dir, report)
+03057:             qgs.exitQgis()
+03058:             report.log("END v2 PASS (bisect)")
+03059:             return 0
+03060: 
+03061:         report.log("MARK: after init_qgis (main)")
+03062:         report.log("MARK: after init_qgis (main)")
+03063:         admin_gpkg = admin_prepare(inputs, maps_dir, report)
+03064:         smoke_csv = smoke_prepare(
+03065:             inputs,
+03066:             admin_gpkg,
+03067:             tables_dir,
+03068:             Path(args.modulec_datos),
+03069:             route_decision,
+03070:             sources,
+03071:             report,
+03072:             decoder_payload=decoder_payload,
+03073:         )
+03074:         write_smoke_route_audit(qa_dir, smoke_csv, route_decision)
+03075:         pop_csv = pop_prepare(inputs, admin_gpkg, work_dir, tables_dir, report)
+03076:         rec_csv = recurrence_prepare(inputs, admin_gpkg, tables_dir, report)
+03077: 
+03078:         for p in (smoke_csv, pop_csv, rec_csv):
+03079:             if not p.exists():
+03080:                 report.fail(f"Expected table missing: {p}")
+03081: 
+03082:         smoke_rows = read_csv_rows(smoke_csv)[1]
+03083:         nan_count, total, ratio = count_nan_ratio(smoke_rows, "smoke_days")
+03084:         if ratio > 0.05:
+03085:             report.fail(f"smoke_days NaN ratio {ratio:.2%} ({nan_count}/{total}) exceeds 5%")
+03086:         if has_missing_flag(smoke_rows):
+03087:             report.fail("smoke_days has missing_flag=1; placeholder detected")
+03088:         smoke_vals = [safe_float(r.get("smoke_days")) for r in smoke_rows]
+03089:         smoke_vals = [v for v in smoke_vals if v is not None]
+03090:         if not smoke_vals:
+03091:             report.fail("smoke_days table has no numeric values.")
+03092:         if sum(smoke_vals) <= 0.0:
+03093:             report.fail("smoke_days degenerate: sum(smoke_days)==0.")
+03094:         if max(smoke_vals) <= 0.0:
+03095:             report.fail("smoke_days degenerate: max(smoke_days)==0.")
+03096:         smoke_methods = [(r.get("smoke_method") or "").strip().lower() for r in smoke_rows]
+03097:         if any(m == "proxy_fill_unit_mean" for m in smoke_methods):
+03098:             report.fail("Forbidden smoke_method detected: proxy_fill_unit_mean.")
+03099: 
+03100:         pop_rows = read_csv_rows(pop_csv)[1]
+03101:         for col in ("pop_2020_sum", "pop_2025_sum", "pop_2030_sum"):
+03102:             n0, t0, r0 = count_nan_ratio(pop_rows, col)
+03103:             if r0 > 0.0:
+03104:                 report.fail(f"{col} has missing values ({n0}/{t0})")
+03105:         if has_missing_flag(pop_rows):
+03106:             report.fail("pop table has missing_flag=1; placeholder detected")
+03107: 
+03108:         rec_rows = read_csv_rows(rec_csv)[1]
+03109:         if has_missing_flag(rec_rows):
+03110:             report.fail("recurrence table has missing_flag=1; placeholder detected")
+03111: 
+03112:         iech_hist, iech_mean = iech_compute(tables_dir, report)
+03113:         scen_csv, scen_mean = scenarios_compute(tables_dir, report)
+03114:         write_spatial_collapse_root_cause_audit(
+03115:             output_root=out_dir,
+03116:             smoke_annual_csv=smoke_csv,
+03117:             smoke_daily_csv=tables_dir / "smoke_day_score_nuts3_daily.csv",
+03118:             gfas_daily_summary_csv=qa_dir / "gfas_pm2p5fire_portugal_daily_summary.csv",
+03119:             iech_hist_csv=iech_hist,
+03120:         )
+03121: 
+03122:         iech_rows = read_csv_rows(iech_hist)[1]
+03123:         n_iech, t_iech, r_iech = count_nan_ratio(iech_rows, "IECH")
+03124:         if not iech_rows or r_iech > 0.05:
+03125:             report.fail(f"IECH NaN ratio {r_iech:.2%} ({n_iech}/{t_iech}) exceeds 5%")
+03126:         iech_vals = [safe_float(r.get("IECH")) for r in iech_rows]
+03127:         iech_vals = [v for v in iech_vals if v is not None]
+03128:         if not iech_vals:
+03129:             report.fail("IECH historical degenerate: all values are NaN.")
+03130:         if max(iech_vals) <= 0.0:
+03131:             report.fail("IECH historical degenerate: max(IECH)==0.")
+03132:         scen_rows = read_csv_rows(scen_csv)[1]
+03133:         if not scen_rows:
+03134:             report.fail("IECH_scenarios_2026_2030.csv has 0 rows")
+03135: 
+03136:         run_step7_extended(out_dir, Path(args.gata_root), report)
+03137:         brief_path = brief_dir / "Brief_Politica_IECH_2030.md"
+03138:         causal_csv = brief_dir / "causal_matrix" / "causal_matrix_IECH_NUTS3.csv"
+03139:         causal_txt = brief_dir / "causal_matrix" / "causal_matrix_IECH_NUTS3.txt"
+03140:         runtime_decision = write_runtime_closure_decision_from_current_runtime(out_dir, report)
+03141:         for p in (brief_path, causal_csv, causal_txt, runtime_decision):
+03142:             if not p.exists():
+03143:                 report.fail(f"STEP7 expected artifact missing: {p}")
+03144:         modulec_10d6a5_scientific_gate_audit = _modulec_10d6a5_run_scientific_threshold_gate(
+03145:             out_dir,
+03146:             _repo_root_from_script(),
+03147:             report,
+03148:         )
+03149:         run_qa_gate(tables_dir, brief_path, report)
+03150: 
+03151:         outputs = [
+03152:             smoke_csv,
+03153:             pop_csv,
+03154:             rec_csv,
+03155:             iech_hist,
+03156:             iech_mean,
+03157:             scen_csv,
+03158:             scen_mean,
+03159:             brief_path,
+03160:             causal_csv,
+03161:             causal_txt,
+03162:             runtime_decision,
+03163:             admin_gpkg,
+03164:             preflight_path,
+03165:             out_dir / "qa" / "inputs_resolved.json",
+03166:             out_dir / "qa" / "run_log.txt",
+03167:             out_dir / "qa" / "QA_checks.csv",
+03168:             out_dir / "qa" / "scientific_validation_gate.tsv",
+03169:             out_dir / "qa" / "scientific_threshold_evidence_register.tsv",
+03170:             out_dir / "qa" / "blocked_claims_register.tsv",
+03171:             out_dir / "brief" / "causal_matrix" / "causal_matrix_IECH_NUTS3.json",
+03172:             out_dir / "tables" / "IECH_municipio_2015_2024.csv",
+03173:             out_dir / "tables" / "wrb_context_nuts3.csv",
+03174:             out_dir / "tables" / "territorial_context_nuts3.csv",
+03175:         ]
+03176:         build_manifest_and_zip(outputs, deliver_dir, report, output_root=out_dir)
+03177:         report.log("END v2 PASS")
+03178:         if qgs:
+03179:             qgs.exitQgis()
+03180:         return 0
+03181:     except StageError:
+03182:         report.log("END v2 NO-GO")
+03183:         return 2
+03184:     except Exception as e:
+03185:         report.log("UNEXPECTED ERROR: " + str(e))
+03186:         report.log(traceback.format_exc())
+03187:         report.log("END v2 NO-GO")
+03188:         return 2
+03189: 
+03190: 
+03191: if __name__ == "__main__":
+03192:     sys.exit(main())
+03193: 
+03194: 
+03195: 
+03196: 
+03197: 

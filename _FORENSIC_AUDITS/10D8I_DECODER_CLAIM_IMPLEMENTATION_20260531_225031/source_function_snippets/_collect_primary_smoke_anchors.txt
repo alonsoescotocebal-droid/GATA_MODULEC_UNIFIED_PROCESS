@@ -1,0 +1,69 @@
+﻿def _collect_primary_smoke_anchors(modulec_datos: Path, report: Report) -> Dict[int, float]:
+    from osgeo import ogr  # type: ignore
+
+    parquet_zips = [modulec_datos / "ParquetFiles 2017.zip", modulec_datos / "ParquetFiles 2022.zip"]
+    parquet_zips = [p for p in parquet_zips if p.exists()]
+    if not parquet_zips:
+        report.fail(f"Primary smoke source missing. Expected parquet zips in: {modulec_datos}")
+
+    # station/year/day -> any(Value > 0). This preserves smoke-day signal from primary source.
+    day_signal: Dict[Tuple[str, int, str], bool] = {}
+    for zpath in parquet_zips:
+        with zipfile.ZipFile(zpath, "r") as zf:
+            entries = [n for n in zf.namelist() if n.lower().endswith(".parquet")]
+        if not entries:
+            report.fail(f"Primary smoke parquet zip has no parquet entries: {zpath}")
+
+        for entry in entries:
+            station = Path(entry).stem
+            vpath = f"/vsizip/{zpath.as_posix()}/{entry}"
+            ds = ogr.Open(vpath, 0)
+            if ds is None:
+                report.fail(f"Cannot open primary smoke parquet: {vpath}")
+            lyr = ds.GetLayer(0)
+            if lyr is None:
+                report.fail(f"Primary smoke parquet has no layer: {vpath}")
+            lyr.ResetReading()
+            for ft in lyr:
+                start_val = ft.GetField("Start")
+                y = _extract_year_from_text(start_val)
+                if y is None or y not in YEARS_HIST:
+                    continue
+                day = str(start_val)[:10]
+                if len(day) != 10:
+                    continue
+                v = safe_float(ft.GetField("Value"))
+                gt0 = v is not None and v > 0.0
+                key = (station, y, day)
+                day_signal[key] = day_signal.get(key, False) or gt0
+
+    if not day_signal:
+        report.fail("Primary smoke parquet contains no usable day-level records for 2015-2024.")
+
+    station_year_days_gt0: Dict[Tuple[str, int], int] = {}
+    for (station, y, _day), flag in day_signal.items():
+        if not flag:
+            continue
+        key = (station, y)
+        station_year_days_gt0[key] = station_year_days_gt0.get(key, 0) + 1
+
+    by_year: Dict[int, List[float]] = {}
+    for (_station, y), days_gt0 in station_year_days_gt0.items():
+        by_year.setdefault(y, []).append(float(days_gt0))
+
+    if not by_year:
+        report.fail("Primary smoke parquet has total absence of smoke signal (all days <= 0).")
+
+    anchors = {y: _median(vals) for y, vals in by_year.items() if vals}
+    if not anchors:
+        report.fail("Primary smoke anchors could not be computed.")
+    if sum(anchors.values()) <= 0.0:
+        report.fail("Primary smoke anchors are degenerate: sum(smoke_days)==0.")
+    if max(anchors.values()) <= 0.0:
+        report.fail("Primary smoke anchors are degenerate: max(smoke_days)==0.")
+
+    anchor_txt = ", ".join(f"{y}:{anchors[y]:.3f}" for y in sorted(anchors.keys()))
+    report.log(f"Primary smoke anchors built from parquet: {anchor_txt}")
+    return anchors
+
+

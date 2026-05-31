@@ -1,0 +1,54 @@
+﻿# MODULE C 10D8B V4 - OC09 forensic read-only audit
+
+## Mode
+LOCAL_READ_ONLY_NO_PATCH_NO_COMMIT_NO_RESET_NO_CLEAN_NO_RUNTIME
+
+## Context
+- BaseRoot=D:\GATA_MODULEC_UNIFIED_PROCESS
+- ExpectedHead=206d40c30c9799ce0da4fcbb9ceb1295e556bfdf
+- GitRoot=D:\GATA_MODULEC_UNIFIED_PROCESS
+- ActiveUnifiedRoot=D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642
+- PreferredUnifiedFolder=GATA_ModuleC_pipeline_unified_20260529_110642
+- RepoCopyRoot=D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\01_REPO_COPY
+- Branch=main
+- CurrentHead=206d40c30c9799ce0da4fcbb9ceb1295e556bfdf
+- GitStatusRows=2
+- RuntimeRoot=D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\03_RUNTIMES\ModuleC_RUNTIME_10D7_REAL_PRODUCER_PATCH_20260531_083731_ITER3
+- OutputRoot=D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642\03_RUNTIMES\ModuleC_RUNTIME_10D7_REAL_PRODUCER_PATCH_20260531_083731_ITER3\03_outputs
+- AuditRoot=D:\GATA_MODULEC_UNIFIED_PROCESS\_FORENSIC_AUDITS\10D8B_OC09_FORENSIC_READONLY_V4_20260531_192831
+
+## Decision
+NO_GO_CONFIRMED_BY_READONLY_AUDIT
+
+## Classification
+SCIENTIFIC_BLOCK_COHERENT_WITH_SMOKE_HOMOGENEITY_AND_CAUSAL_CLAIM_BLOCK
+
+## Evidence
+- OC09 matrix exists but all NUTS3 rows are HOLD.
+- OC09 matrix contains SMOKE_ROUTE_BLOCKED.
+- Gate files contain BLOCKED_FOR_CAUSAL_CLAIM and NO-GO_SCIENTIFIC_THRESHOLD.
+- Smoke profile indicates homogeneous or non-discriminating smoke metric in at least one checked yearly/table scope.
+
+## Generated evidence files
+- selected_context.tsv=D:\GATA_MODULEC_UNIFIED_PROCESS\_FORENSIC_AUDITS\10D8B_OC09_FORENSIC_READONLY_V4_20260531_192831\selected_context.tsv
+- repo_candidates.tsv=D:\GATA_MODULEC_UNIFIED_PROCESS\_FORENSIC_AUDITS\10D8B_OC09_FORENSIC_READONLY_V4_20260531_192831\repo_candidates.tsv
+- artifact_inventory.tsv=D:\GATA_MODULEC_UNIFIED_PROCESS\_FORENSIC_AUDITS\10D8B_OC09_FORENSIC_READONLY_V4_20260531_192831\artifact_inventory.tsv
+- oc09_matrix_profile.tsv=D:\GATA_MODULEC_UNIFIED_PROCESS\_FORENSIC_AUDITS\10D8B_OC09_FORENSIC_READONLY_V4_20260531_192831\oc09_matrix_profile.tsv
+- smoke_profile.tsv=D:\GATA_MODULEC_UNIFIED_PROCESS\_FORENSIC_AUDITS\10D8B_OC09_FORENSIC_READONLY_V4_20260531_192831\smoke_profile.tsv
+- inputs_smoke_route_trace.tsv=D:\GATA_MODULEC_UNIFIED_PROCESS\_FORENSIC_AUDITS\10D8B_OC09_FORENSIC_READONLY_V4_20260531_192831\inputs_smoke_route_trace.tsv
+- gate_token_counts.tsv=D:\GATA_MODULEC_UNIFIED_PROCESS\_FORENSIC_AUDITS\10D8B_OC09_FORENSIC_READONLY_V4_20260531_192831\gate_token_counts.tsv
+- source_trace_oc09_gate.tsv=D:\GATA_MODULEC_UNIFIED_PROCESS\_FORENSIC_AUDITS\10D8B_OC09_FORENSIC_READONLY_V4_20260531_192831\source_trace_oc09_gate.tsv
+- source_trace_error.txt=D:\GATA_MODULEC_UNIFIED_PROCESS\_FORENSIC_AUDITS\10D8B_OC09_FORENSIC_READONLY_V4_20260531_192831\source_trace_error.txt
+- gate_replay.tsv=D:\GATA_MODULEC_UNIFIED_PROCESS\_FORENSIC_AUDITS\10D8B_OC09_FORENSIC_READONLY_V4_20260531_192831\gate_replay.tsv
+- classification.tsv=D:\GATA_MODULEC_UNIFIED_PROCESS\_FORENSIC_AUDITS\10D8B_OC09_FORENSIC_READONLY_V4_20260531_192831\classification.tsv
+- classification_evidence.tsv=D:\GATA_MODULEC_UNIFIED_PROCESS\_FORENSIC_AUDITS\10D8B_OC09_FORENSIC_READONLY_V4_20260531_192831\classification_evidence.tsv
+
+## Interpretation guide
+- BUG_OR_PRODUCER_PATH_FAILURE_OC09_MATRIX_MISSING means producer/path failure.
+- POSSIBLE_ARTIFACT_NAME_CONTRACT_MISMATCH means producer and gate may not agree on artifact names.
+- POSSIBLE_GATE_OVERBLOCK_OR_UNPROVEN_SMOKE_ROUTE_BLOCK means scientific block is not yet proven by this audit.
+- SCIENTIFIC_BLOCK_COHERENT_WITH_SMOKE_HOMOGENEITY_AND_CAUSAL_CLAIM_BLOCK means the NO-GO hypothesis is internally coherent.
+- INTERNAL_MISMATCH_OC09_HOLD_WITHOUT_SCIENTIFIC_NOGO means OC09 and scientific gate disagree.
+
+## Closure rule
+This script does not declare Module C closure. It only classifies the probable OC09 blocking mechanism by direct file reading from the selected runtime.

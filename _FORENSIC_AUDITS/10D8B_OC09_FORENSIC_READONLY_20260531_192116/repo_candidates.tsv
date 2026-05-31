@@ -1,0 +1,8 @@
+﻿"repo_root"	"branch"	"head"	"head_matches_expected"	"git_status_rows"	"git_status_text"
+"D:\GATA_MODULEC_UNIFIED_PROCESS"	"main"	"206d40c30c9799ce0da4fcbb9ceb1295e556bfdf"	"YES"	"1"	"?? GATA_ModuleC_pipeline_unified_20260529_110642/"
+"D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110642"	"main"	"1bab7fea25c742671f1d838efdfff293599443ba"	"NO"	"6"	" M 01_REPO_COPY/pipeline/moduleC_pipeline_v2.py
+ M 01_REPO_COPY/pipeline/validate_modulec_objectives_canon.py
+?? 03_RUNTIMES/ModuleC_RUNTIME_10D7_REAL_PRODUCER_PATCH_20260531_010441/
+?? 03_RUNTIMES/ModuleC_RUNTIME_10D7_REAL_PRODUCER_PATCH_20260531_015217_ITER1/
+?? 03_RUNTIMES/ModuleC_RUNTIME_10D7_REAL_PRODUCER_PATCH_20260531_054259_ITER2/
+?? 03_RUNTIMES/ModuleC_RUNTIME_10D7_REAL_PRODUCER_PATCH_20260531_083731_ITER3/"

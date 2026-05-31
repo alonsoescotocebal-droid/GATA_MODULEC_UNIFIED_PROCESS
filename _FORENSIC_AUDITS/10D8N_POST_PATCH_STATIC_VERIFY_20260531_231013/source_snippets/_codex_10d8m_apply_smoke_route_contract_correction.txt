@@ -1,0 +1,190 @@
+﻿  1874: def _codex_10d8m_apply_smoke_route_contract_correction(local_scope, route_decision, decoder_payload, report):
+  1875:     """Correct smoke route metadata when runtime evidence shows missing direct-year smoke.
+  1876: 
+  1877:     This helper does not fabricate smoke values. It only prevents a false scientific
+  1878:     declaration of direct/real decoder coverage when the produced smoke tables and
+  1879:     smoke_route_audit.tsv show all-zero + missing/extrapolated 2023/2024 branches.
+  1880:     """
+  1881:     import csv
+  1882:     import json
+  1883:     from pathlib import Path
+  1884: 
+  1885:     def _path_from_local(name):
+  1886:         try:
+  1887:             v = local_scope.get(name)
+  1888:             if v is None:
+  1889:                 return None
+  1890:             return Path(v)
+  1891:         except Exception:
+  1892:             return None
+  1893: 
+  1894:     output_root = _path_from_local("output_root") or _path_from_local("out_root") or _path_from_local("root")
+  1895:     qa_dir = _path_from_local("qa_dir")
+  1896:     tables_dir = _path_from_local("tables_dir") or _path_from_local("table_dir")
+  1897: 
+  1898:     if output_root is None:
+  1899:         if tables_dir is not None and tables_dir.name.lower() == "tables":
+  1900:             output_root = tables_dir.parent
+  1901:         elif qa_dir is not None and qa_dir.name.lower() == "qa":
+  1902:             output_root = qa_dir.parent
+  1903: 
+  1904:     if output_root is None:
+  1905:         raise RuntimeError("10D8M cannot derive output_root from smoke_prepare locals")
+  1906: 
+  1907:     if qa_dir is None:
+  1908:         qa_dir = output_root / "qa"
+  1909:     if tables_dir is None:
+  1910:         tables_dir = output_root / "tables"
+  1911: 
+  1912:     qa_dir.mkdir(parents=True, exist_ok=True)
+  1913: 
+  1914:     def _safe_float(v):
+  1915:         try:
+  1916:             s = str(v).strip().replace(",", ".")
+  1917:             if s == "":
+  1918:                 return None
+  1919:             return float(s)
+  1920:         except Exception:
+  1921:             return None
+  1922: 
+  1923:     def _read_table(path):
+  1924:         path = Path(path)
+  1925:         if not path.exists():
+  1926:             return [], []
+  1927:         raw = path.read_text(encoding="utf-8", errors="replace")
+  1928:         first = raw.splitlines()[0] if raw.splitlines() else ""
+  1929:         delim = ";" if first.count(";") >= first.count(",") else ","
+  1930:         rows = list(csv.DictReader(raw.splitlines(), delimiter=delim))
+  1931:         return rows, list(rows[0].keys()) if rows else []
+  1932: 
+  1933:     def _year_col(cols):
+  1934:         for c in cols:
+  1935:             if c.lower() in ("year", "ano"):
+  1936:                 return c
+  1937:         for c in cols:
+  1938:             if "year" in c.lower() or "ano" in c.lower():
+  1939:                 return c
+  1940:         return ""
+  1941: 
+  1942:     def _smoke_col(cols):
+  1943:         for c in cols:
+  1944:             if c.lower() == "smoke_days":
+  1945:                 return c
+  1946:         for c in cols:
+  1947:             if "smoke" in c.lower() and "day" in c.lower():
+  1948:                 return c
+  1949:         return ""
+  1950: 
+  1951:     def _missing_col(cols):
+  1952:         for c in cols:
+  1953:             lc = c.lower()
+  1954:             if lc in ("smoke_missing_flag", "missing_flag"):
+  1955:                 return c
+  1956:         for c in cols:
+  1957:             if "missing" in c.lower():
+  1958:                 return c
+  1959:         return ""
+  1960: 
+  1961:     def _profile_smoke_table(rel):
+  1962:         path = tables_dir / rel
+  1963:         rows, cols = _read_table(path)
+  1964:         yc = _year_col(cols)
+  1965:         sc = _smoke_col(cols)
+  1966:         mc = _missing_col(cols)
+  1967:         out = []
+  1968:         for y in (2023, 2024):
+  1969:             subset = [r for r in rows if yc and str(r.get(yc, "")).strip() == str(y)]
+  1970:             vals = [_safe_float(r.get(sc, "")) for r in subset] if sc else []
+  1971:             vals = [v for v in vals if v is not None]
+  1972:             miss = []
+  1973:             if mc:
+  1974:                 miss = [str(r.get(mc, "")).strip() for r in subset]
+  1975:             all_zero = bool(vals) and all(abs(v) <= 1e-12 for v in vals)
+  1976:             missing_flagged = any(v in ("1", "true", "TRUE", "yes", "YES") for v in miss)
+  1977:             out.append({
+  1978:                 "artifact": rel,
+  1979:                 "year": y,
+  1980:                 "rows": len(subset),
+  1981:                 "numeric_values": len(vals),
+  1982:                 "all_zero": all_zero,
+  1983:                 "missing_flagged": missing_flagged,
+  1984:                 "max": max(vals) if vals else "",
+  1985:             })
+  1986:         return out
+  1987: 
+  1988:     evidence = []
+  1989:     for rel in (
+  1990:         "smoke_days_unit_2015_2024.csv",
+  1991:         "smoke_days_nuts3_annual_2015_2024.csv",
+  1992:         "smoke_days_municipio_2015_2024.csv",
+  1993:     ):
+  1994:         evidence.extend(_profile_smoke_table(rel))
+  1995: 
+  1996:     audit_path = qa_dir / "smoke_route_audit.tsv"
+  1997:     audit_lines = audit_path.read_text(encoding="utf-8", errors="replace").splitlines() if audit_path.exists() else []
+  1998:     audit_2023_2024 = [ln for ln in audit_lines if ln.startswith("2023") or ln.startswith("2024")]
+  1999:     audit_extrapolated_missing = any("extrapolated_from_anchors" in ln for ln in audit_2023_2024) and any("\t1\t" in ln or ln.rstrip().endswith("\t1") for ln in audit_2023_2024)
+  2000: 
+  2001:     all_zero_2023_2024 = any(e["year"] in (2023, 2024) and e["all_zero"] for e in evidence)
+  2002:     missing_flagged_output = any(e["year"] in (2023, 2024) and e["missing_flagged"] for e in evidence)
+  2003:     route_selected = str(route_decision.get("route_selected", "") or route_decision.get("smoke_route_selected", "")).strip()
+  2004:     selected_real = route_selected == "v0_gfas_era5_real"
+  2005:     decoder_available = bool((decoder_payload or {}).get("decoder_available"))
+  2006:     required_decoder = str(route_decision.get("required_decoder", "") or "").strip()
+  2007: 
+  2008:     needs_correction = selected_real and all_zero_2023_2024 and (audit_extrapolated_missing or missing_flagged_output or required_decoder == "")
+  2009: 
+  2010:     correction_status = "NO_CHANGE"
+  2011:     correction_reason = "No contradictory direct-year missing evidence detected."
+  2012:     if needs_correction:
+  2013:         correction_status = "APPLIED_ROUTE_METADATA_DEGRADATION"
+  2014:         correction_reason = "v0_gfas_era5_real was selected, but 2023/2024 smoke outputs are all-zero and audit/output flags indicate extrapolated or missing direct-year coverage."
+  2015:         route_decision["smoke_route_status"] = "HOLD_DIRECT_YEAR_DECODER_EVIDENCE_MISSING"
+  2016:         route_decision["smoke_route_decision"] = "BLOCKED_DIRECT_YEAR_DECODER_EVIDENCE_MISSING"
+  2017:         route_decision["reason"] = correction_reason
+  2018:         route_decision["required_decoder"] = "GFAS_ERA5_DIRECT_YEAR_DECODER_PROOF_REQUIRED"
+  2019:         route_decision["final_scientific_decision"] = "NO-GO_SCIENTIFIC_THRESHOLD"
+  2020:         route_decision["health_exposure_claim"] = "BLOCKED_FOR_HEALTH_EXPOSURE_CLAIM"
+  2021:         route_decision["causal_matrix_decision"] = "BLOCKED_FOR_CAUSAL_CLAIM"
+  2022: 
+  2023:         inputs_path = qa_dir / "inputs_resolved.json"
+  2024:         if inputs_path.exists():
+  2025:             try:
+  2026:                 data = json.loads(inputs_path.read_text(encoding="utf-8"))
+  2027:                 data["smoke_route_status"] = route_decision["smoke_route_status"]
+  2028:                 data["smoke_route_decision"] = route_decision["smoke_route_decision"]
+  2029:                 data["smoke_route_reason"] = correction_reason
+  2030:                 data["required_decoder"] = route_decision["required_decoder"]
+  2031:                 data["smoke_route_contract_correction"] = "CODEX_10D8M"
+  2032:                 data["smoke_route_contract_correction_status"] = correction_status
+  2033:                 data["smoke_route_contract_correction_basis"] = "direct output all-zero 2023/2024 plus extrapolated/missing branch evidence"
+  2034:                 inputs_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+  2035:             except Exception as exc:
+  2036:                 try:
+  2037:                     report.fail(f"10D8M failed to update inputs_resolved.json: {exc}")
+  2038:                 except Exception:
+  2039:                     pass
+  2040: 
+  2041:     out_tsv = qa_dir / "smoke_route_contract_correction.tsv"
+  2042:     with out_tsv.open("w", encoding="utf-8", newline="") as f:
+  2043:         writer = csv.writer(f, delimiter="\t")
+  2044:         writer.writerow(["check_id", "status", "route_selected", "decoder_available", "required_decoder", "finding"])
+  2045:         writer.writerow(["CONTRACT-001", correction_status, route_selected, int(decoder_available), required_decoder, correction_reason])
+  2046:         writer.writerow(["CONTRACT-002", "PASS" if all_zero_2023_2024 else "HOLD", route_selected, int(decoder_available), required_decoder, "2023/2024 all-zero output evidence present" if all_zero_2023_2024 else "No all-zero output evidence present"])
+  2047:         writer.writerow(["CONTRACT-003", "PASS" if audit_extrapolated_missing else "HOLD", route_selected, int(decoder_available), required_decoder, "smoke_route_audit.tsv marks 2023/2024 as extrapolated/missing" if audit_extrapolated_missing else "No extrapolated/missing smoke_route_audit evidence"])
+  2048: 
+  2049:     try:
+  2050:         if needs_correction:
+  2051:             report.fail("10D8M corrected smoke route metadata: real decoder route downgraded because direct-year evidence is missing for 2023/2024.")
+  2052:         else:
+  2053:             report.log("10D8M smoke route metadata correction checked; no correction needed.")
+  2054:     except Exception:
+  2055:         pass
+  2056: 
+  2057:     return {
+  2058:         "status": correction_status,
+  2059:         "needs_correction": needs_correction,
+  2060:         "all_zero_2023_2024": all_zero_2023_2024,
+  2061:         "audit_extrapolated_missing": audit_extrapolated_missing,
+  2062:     }
+  2063: # END CODEX_10D8M_SMOKE_ROUTE_CONTRACT_HELPER

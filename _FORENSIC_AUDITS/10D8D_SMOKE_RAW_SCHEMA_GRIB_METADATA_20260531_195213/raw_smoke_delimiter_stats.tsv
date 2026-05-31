@@ -1,0 +1,5 @@
+﻿"delimiter_label"	"delimiter"	"nonzero_line_count"	"max_count_per_line"	"average_count_per_line"
+"COMMA"	","	"8"	"2"	"0.225"
+"SEMICOLON"	";"	"10"	"2"	"0.3"
+"TAB"	"	"	"11"	"3"	"0.325"
+"PIPE"	"|"	"14"	"4"	"0.65"

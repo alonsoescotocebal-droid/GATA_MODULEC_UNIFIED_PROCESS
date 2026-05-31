@@ -1,0 +1,66 @@
+﻿00907:     return anchors
+00908: 
+00909: 
+00910: def _fill_smoke_year_series(anchors: Dict[int, float], report: Report) -> Tuple[Dict[int, float], Dict[int, str]]:
+00911:     years = sorted(anchors.keys())
+00912:     if not years:
+00913:         report.fail("No primary smoke anchors available for interpolation.")
+00914: 
+00915:     values: Dict[int, float] = {}
+00916:     methods: Dict[int, str] = {}
+00917: 
+00918:     if len(years) == 1:
+00919:         y0 = years[0]
+00920:         v0 = float(anchors[y0])
+00921:         for y in YEARS_HIST:
+00922:             values[y] = max(v0, 0.0)
+00923:             methods[y] = "primary_parquet_direct_year" if y == y0 else "primary_parquet_flat_single_anchor"
+00924:         return values, methods
+00925: 
+00926:     for y in YEARS_HIST:
+00927:         if y in anchors:
+00928:             values[y] = max(float(anchors[y]), 0.0)
+00929:             methods[y] = "primary_parquet_direct_year"
+00930:             continue
+00931: 
+00932:         if y < years[0]:
+00933:             y0, y1 = years[0], years[1]
+00934:             method = "primary_parquet_extrapolated_from_anchors"
+00935:         elif y > years[-1]:
+00936:             y0, y1 = years[-2], years[-1]
+00937:             method = "primary_parquet_extrapolated_from_anchors"
+00938:         else:
+00939:             y0, y1 = years[0], years[-1]
+00940:             for i in range(len(years) - 1):
+00941:                 a, b = years[i], years[i + 1]
+00942:                 if a <= y <= b:
+00943:                     y0, y1 = a, b
+00944:                     break
+00945:             method = "primary_parquet_interpolated_from_anchors"
+00946: 
+00947:         v0 = float(anchors[y0])
+00948:         v1 = float(anchors[y1])
+00949:         frac = 0.0 if y1 == y0 else (float(y - y0) / float(y1 - y0))
+00950:         vy = v0 + (v1 - v0) * frac
+00951:         values[y] = max(vy, 0.0)
+00952:         methods[y] = method
+00953: 
+00954:     if sum(values.values()) <= 0.0:
+00955:         report.fail("Smoke year series is degenerate after interpolation: sum(smoke_days)==0.")
+00956:     if max(values.values()) <= 0.0:
+00957:         report.fail("Smoke year series is degenerate after interpolation: max(smoke_days)==0.")
+00958:     return values, methods
+00959: 
+00960: 
+00961: def _fill_smoke_year_series_relaxed(anchors: Dict[int, float], method_prefix: str) -> Tuple[Dict[int, float], Dict[int, str]]:
+00962:     years = sorted(int(y) for y in anchors.keys())
+00963:     values: Dict[int, float] = {}
+00964:     methods: Dict[int, str] = {}
+00965:     if not years:
+00966:         return values, methods
+00967: 
+00968:     if len(years) == 1:
+00969:         y0 = years[0]
+00970:         v0 = max(float(anchors[y0]), 0.0)
+00971:         for y in YEARS_HIST:
+00972:             values[y] = v0
