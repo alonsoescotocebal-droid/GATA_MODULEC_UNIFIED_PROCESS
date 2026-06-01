@@ -1,0 +1,2 @@
+﻿"command"	"exit_code"	"status"	"stdout"	"stderr"
+"python -m py_compile launcher/objective/scientific"	"0"	"PASS"	"D:\GATA_MODULEC_UNIFIED_PROCESS\_FORENSIC_AUDITS\10D8O_POST_PATCH_RUNTIME_RECHECK_20260601_001746\pre_runtime_pycompile_stdout.txt"	"D:\GATA_MODULEC_UNIFIED_PROCESS\_FORENSIC_AUDITS\10D8O_POST_PATCH_RUNTIME_RECHECK_20260601_001746\pre_runtime_pycompile_stderr.txt"
