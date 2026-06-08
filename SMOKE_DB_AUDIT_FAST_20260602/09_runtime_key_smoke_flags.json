@@ -1,0 +1,9 @@
+{
+  "smoke_route_status": "HOLD_DIRECT_YEAR_DECODER_EVIDENCE_MISSING",
+  "smoke_route_decision": "BLOCKED_DIRECT_YEAR_DECODER_EVIDENCE_MISSING",
+  "smoke_route_reason": "v0_gfas_era5_real was selected, but 2023/2024 smoke outputs are all-zero and audit/output flags indicate extrapolated or missing direct-year coverage.",
+  "required_decoder": "GFAS_ERA5_DIRECT_YEAR_DECODER_PROOF_REQUIRED",
+  "smoke_route_contract_correction": "CODEX_10D8M",
+  "smoke_route_contract_correction_status": "APPLIED_ROUTE_METADATA_DEGRADATION",
+  "smoke_route_contract_correction_basis": "direct output all-zero 2023/2024 plus extrapolated/missing branch evidence"
+}

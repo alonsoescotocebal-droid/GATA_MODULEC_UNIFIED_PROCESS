@@ -1,0 +1,13 @@
+{
+  "timestamp": "2026-06-02T14:34:03",
+  "mode": "READ_ONLY_NO_PATCH_NO_COMMIT_NO_RUNTIME_MUTATION",
+  "repo_root": "D:\\GitHub\\GATA_ModuleC_pipeline_clean",
+  "data_root": "D:\\Mestrado\\GATA_2025_2026\\Prueba_aislada\\ISO_GATA_20260121_130505\\Complementariedad de analisis\\Module C\\Datos",
+  "output_root_used": "D:\\GATA_MODULEC_UNIFIED_PROCESS\\GATA_ModuleC_pipeline_unified_20260529_110642\\03_RUNTIMES\\ModuleC_RUNTIME_10D8R_CANON_THRESHOLD_ONLY_20260601_171721_ITER1\\03_outputs",
+  "required_years": "2015,2016,2017,2018,2019,2020,2021,2022,2023,2024",
+  "deep_grib": false,
+  "deep_parquet": false,
+  "python_executable": "C:\\OSGEO4~1\\bin\\python.exe",
+  "gdal_available": true,
+  "pandas_available": true
+}

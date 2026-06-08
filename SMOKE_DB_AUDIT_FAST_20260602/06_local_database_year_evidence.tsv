@@ -1,0 +1,11 @@
+year	data_files_with_year_in_path	data_gfas_or_grib_files_with_year_in_path	data_era5_files_with_year_in_path	data_aq_or_parquet_files_with_year_in_path	zip_members_with_year	deep_grib_metadata_hits	deep_parquet_year_hits	example_data_paths	example_archive_members	example_grib_metadata	example_parquet
+2015	0	0	0	0	0	0	0				
+2016	0	0	0	0	0	0	0				
+2017	1	0	0	1	0	0	0	ParquetFiles 2017.zip			
+2018	0	0	0	0	0	0	0				
+2019	0	0	0	0	0	0	0				
+2020	0	0	0	0	0	0	0				
+2021	0	0	0	0	0	0	0				
+2022	1	0	0	1	0	0	0	ParquetFiles 2022.zip			
+2023	0	0	0	0	0	0	0				
+2024	0	0	0	0	0	0	0				
