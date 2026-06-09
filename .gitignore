@@ -1,0 +1,18 @@
+﻿# Module C generated/runtime/heavy artifacts - do not version
+**/03_RUNTIMES/
+**/03_outputs/step7_work/
+**/_step7_work/
+**/rasters_*/
+*.tif
+*.tiff
+*.aux.xml
+*.grib
+*.grb
+*.nc
+*.netcdf
+*.vrt
+*.gpkg
+*.zip
+*.7z
+*.rar
+_git_safety_largefile_purge_*/
