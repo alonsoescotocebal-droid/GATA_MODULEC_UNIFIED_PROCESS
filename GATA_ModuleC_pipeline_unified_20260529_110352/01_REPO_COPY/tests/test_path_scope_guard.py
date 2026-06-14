@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
@@ -27,7 +27,7 @@ def test_path_scope_guard_pass(tmp_path, monkeypatch):
     cfg = {
         "EXPECTED_REPO_ROOT": str(repo),
         "EXPECTED_BRANCH": "main",
-        "EXPECTED_BASE_SHA": "0e9ef1d5788ecfd19bc1669c50d098bc1faaeb92",
+        "EXPECTED_BASE_SHA": "ce7736d893a588ce85b21d725f1288d97c031bb6",
         "FORBIDDEN_CODE_ROOT": str(forbidden),
         "DATA_ROOT_ALLOWED_PREFIX": str(data_prefix),
         "OUTPUT_ROOT_ALLOWED_PREFIX": str(output_prefix),
@@ -70,7 +70,7 @@ def test_path_scope_guard_blocks_forbidden_code_root(tmp_path, monkeypatch):
     cfg = {
         "EXPECTED_REPO_ROOT": str(repo),
         "EXPECTED_BRANCH": "main",
-        "EXPECTED_BASE_SHA": "0e9ef1d5788ecfd19bc1669c50d098bc1faaeb92",
+        "EXPECTED_BASE_SHA": "ce7736d893a588ce85b21d725f1288d97c031bb6",
         "FORBIDDEN_CODE_ROOT": str(forbidden),
         "DATA_ROOT_ALLOWED_PREFIX": str(data_prefix),
         "OUTPUT_ROOT_ALLOWED_PREFIX": str(output_prefix),
@@ -98,3 +98,4 @@ def test_path_scope_guard_blocks_forbidden_code_root(tmp_path, monkeypatch):
     )
     assert overall == "BLOCKED_PATH_DESYNC"
     assert any(r["status"] == "BLOCKED_FORBIDDEN_CODE_ROOT" for r in rows)
+

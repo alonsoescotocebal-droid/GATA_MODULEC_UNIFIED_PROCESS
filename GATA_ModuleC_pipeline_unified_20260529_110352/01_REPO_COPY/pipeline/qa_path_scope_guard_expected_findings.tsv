@@ -1,7 +1,7 @@
-finding_id	expected_status	evidence_key	evidence_value
-F001	PASS	repo_root	D:\GitHub\GATA_ModuleC_pipeline_clean
+﻿finding_id	expected_status	evidence_key	evidence_value
+F001	PASS	repo_root	D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110352\01_REPO_COPY
 F002	PASS	branch	main
-F003	PASS	base_sha_ancestor	0e9ef1d5788ecfd19bc1669c50d098bc1faaeb92
+F003	PASS	base_sha_ancestor	ce7736d893a588ce85b21d725f1288d97c031bb6
 F004	BLOCKED	forbidden_code_root	D:\Mestrado\GATA_2025_2026\Prueba_aislada\ISO_GATA_20260121_130505\_qa_catalogs\moduleC_local_pipeline
 F005	PASS	data_root_allowed_prefix	D:\Mestrado\GATA_2025_2026\Prueba_aislada\ISO_GATA_20260121_130505\Complementariedad de analisis\Module C\Datos
 F006	PASS	output_root_allowed_prefix	D:\Mestrado\GATA_2025_2026\Prueba_aislada\ISO_GATA_20260121_130505\Complementariedad de analisis\Module C\03_outputs
@@ -9,3 +9,4 @@ F007	BLOCKED	legacy_mode	RUNMODE=ISO
 F008	BLOCKED	forbidden_code_dirname	moduleC_local_pipeline
 F009	PASS	allowed_code_dirname	pipeline
 F010	PASS	decision_contract	PATH_SCOPE_PASS|BLOCKED_PATH_DESYNC|BLOCKED_FORBIDDEN_CODE_ROOT|BLOCKED_REPO_ROOT_MISMATCH|BLOCKED_BRANCH_MISMATCH|BLOCKED_BASE_SHA_MISMATCH|BLOCKED_DIRTY_TREE_BEFORE_BASELINE|BLOCKED_DATA_ROOT_MISSING|BLOCKED_OUTPUT_ROOT_PARENT_MISSING|BLOCKED_OUTPUT_ROOT_INSIDE_REPO|BLOCKED_CODE_WRITE_OUTSIDE_GITHUB_REPO
+
