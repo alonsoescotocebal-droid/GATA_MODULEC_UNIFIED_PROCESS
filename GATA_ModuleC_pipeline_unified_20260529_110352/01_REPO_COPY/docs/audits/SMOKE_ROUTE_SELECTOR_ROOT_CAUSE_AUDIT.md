@@ -1,7 +1,7 @@
-# SMOKE ROUTE SELECTOR ROOT CAUSE AUDIT
+﻿# SMOKE ROUTE SELECTOR ROOT CAUSE AUDIT
 
 ## Scope
-- Repo analyzed: `D:\GitHub\GATA_ModuleC_pipeline_clean`
+- Repo analyzed: `D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110352\01_REPO_COPY`
 - Branch/SHA at audit time: `main` / `e4b415e38198b90186d8dab8fa78ccfa0f323131`
 - Objective: isolate the active smoke-route root cause before implementation edits.
 
@@ -41,3 +41,4 @@
 ## Confirmed root cause
 The open Falla 3 root cause was no longer selector priority; it was the missing executable GFAS/ERA5 decoder branch in runtime.  
 Therefore the corrective action must be decoder-path implementation (GDAL-only) plus explicit warning/claim gating, not causal-matrix relaxation.
+

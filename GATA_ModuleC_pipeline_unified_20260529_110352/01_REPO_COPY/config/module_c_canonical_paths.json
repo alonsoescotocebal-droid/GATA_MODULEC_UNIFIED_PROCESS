@@ -1,9 +1,10 @@
 ﻿{
-  "EXPECTED_REPO_ROOT": "D:\\GitHub\\GATA_ModuleC_pipeline_clean",
+  "EXPECTED_REPO_ROOT": "D:\\GATA_MODULEC_UNIFIED_PROCESS\\GATA_ModuleC_pipeline_unified_20260529_110352\\01_REPO_COPY",
   "EXPECTED_BRANCH": "main",
   "EXPECTED_BASE_SHA": "ce7736d893a588ce85b21d725f1288d97c031bb6",
   "FORBIDDEN_CODE_ROOT": "D:\\Mestrado\\GATA_2025_2026\\Prueba_aislada\\ISO_GATA_20260121_130505\\_qa_catalogs\\moduleC_local_pipeline",
   "DATA_ROOT_ALLOWED_PREFIX": "D:\\Mestrado\\GATA_2025_2026\\Prueba_aislada\\ISO_GATA_20260121_130505\\Complementariedad de analisis\\Module C\\Datos",
   "OUTPUT_ROOT_ALLOWED_PREFIX": "D:\\Mestrado\\GATA_2025_2026\\Prueba_aislada\\ISO_GATA_20260121_130505\\Complementariedad de analisis\\Module C\\03_outputs"
 }
+
 

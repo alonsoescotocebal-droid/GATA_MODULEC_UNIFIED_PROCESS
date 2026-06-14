@@ -1,14 +1,14 @@
-# PATH DESYNC Root Cause Audit (44ff1ff -> 0e9ef1d)
+﻿# PATH DESYNC Root Cause Audit (44ff1ff -> 0e9ef1d)
 
 ## Scope
-- Canonical repo: `D:\GitHub\GATA_ModuleC_pipeline_clean`
+- Canonical repo: `D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110352\01_REPO_COPY`
 - Branch checked: `main`
-- Base SHA checked: `0e9ef1d5788ecfd19bc1669c50d098bc1faaeb92`
-- Diff window: `44ff1ff903dbcc39ee8b7da289a5ced159a71384..0e9ef1d5788ecfd19bc1669c50d098bc1faaeb92`
+- Base SHA checked: `ce7736d893a588ce85b21d725f1288d97c031bb6`
+- Diff window: `44ff1ff903dbcc39ee8b7da289a5ced159a71384..ce7736d893a588ce85b21d725f1288d97c031bb6`
 
 ## Precheck Evidence
 - `git branch --show-current` -> `main`
-- `git rev-parse HEAD` -> `0e9ef1d5788ecfd19bc1669c50d098bc1faaeb92`
+- `git rev-parse HEAD` -> `ce7736d893a588ce85b21d725f1288d97c031bb6`
 - `git status --short` -> clean (no entries)
 
 ## Commit Delta (direct)
@@ -65,7 +65,8 @@ From `pipeline/RUN_ModuleC_Pipeline_OSGeo4W.cmd` at SHA `0e9ef1d...`:
 - Causal class: `dual code-root acceptance + mixed derivation of data/output roots`
 
 ## Required correction direction
-- Keep `D:\GitHub\GATA_ModuleC_pipeline_clean` as only editable/executable code root.
+- Keep `D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110352\01_REPO_COPY` as only editable/executable code root.
 - Block `moduleC_local_pipeline` as runner root (`BLOCKED_FORBIDDEN_CODE_ROOT`).
 - Remove active `RUNMODE=ISO`; keep only diagnostic reference (`ISO_DIAGNOSTIC_REFERENCE_ONLY`).
 - Enforce path scope guard before pipeline and objectives execution.
+
