@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
@@ -366,13 +366,49 @@ def _v10b_meta_get(inputs: Dict[str, object], key: str) -> str:
 
 
 def _v10b_read_rows_if_exists(path: Path) -> List[Dict[str, str]]:
+    # >>> OC03_V10L_SEMICOLON_CSV_READER_PATCH
+    # Robust reader for objective-gate evidence. V9D IECH mean CSVs are semicolon-delimited.
+    # First try the repository reader for backwards compatibility; if it collapses the
+    # header into a single semicolon-containing column, sniff delimiters and re-read.
     if not path.exists() or path.stat().st_size <= 0:
         return []
+    rows: List[Dict[str, str]] = []
     try:
-        return read_csv_rows(path)
+        rows = read_csv_rows(path)
+        if rows:
+            cols = [str(c) for c in rows[0].keys()]
+            if len(cols) > 1 and not any(";" in c for c in cols):
+                return rows
+            if len(cols) == 1 and ";" not in cols[0]:
+                return rows
+        else:
+            return rows
     except Exception:
-        return []
-
+        rows = []
+    try:
+        import csv
+        with path.open("r", encoding="utf-8-sig", newline="") as fh:
+            sample = fh.read(8192)
+            fh.seek(0)
+            delimiter = ","
+            try:
+                dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
+                delimiter = dialect.delimiter
+            except Exception:
+                first_line = sample.splitlines()[0] if sample.splitlines() else ""
+                counts = {",": first_line.count(","), ";": first_line.count(";"), "\t": first_line.count("\t"), "|": first_line.count("|")}
+                delimiter = max(counts, key=counts.get)
+                if counts.get(delimiter, 0) <= 0:
+                    delimiter = ","
+            reader = csv.DictReader(fh, delimiter=delimiter)
+            out: List[Dict[str, str]] = []
+            for row in reader:
+                clean = {str(k): ("" if v is None else str(v)) for k, v in row.items() if k is not None}
+                out.append(clean)
+            return out
+    except Exception:
+        return rows if isinstance(rows, list) else []
+    # <<< OC03_V10L_SEMICOLON_CSV_READER_PATCH
 
 def _v10b_route_meta_not_blocked(inputs: Dict[str, object]) -> Tuple[bool, str]:
     keys = ["smoke_route_mode", "smoke_route_selected", "smoke_route_status", "smoke_route_decision", "final_scientific_decision"]
@@ -500,6 +536,9 @@ def _v10b_iech_non_degenerate(output_root: Path) -> Tuple[bool, str]:
             v = safe_float(r.get(c))
             if v is not None:
                 vals.append(round(float(v), 8))
+        if not vals:
+            findings.append(f"{p.name}:{c}:rows={len(rows)}:numeric_values=0")
+            return False, "IECH has no numeric values after delimiter-aware parsing: " + "; ".join(findings)
         uniq = len(set(vals))
         findings.append(f"{p.name}:{c}:rows={len(rows)}:unique={uniq}")
         if uniq <= 1:
