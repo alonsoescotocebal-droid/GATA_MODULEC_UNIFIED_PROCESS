@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
@@ -333,17 +333,188 @@ def _check_step9_zip_contents(output_root: Path) -> Tuple[bool, str]:
     return True, "Final ZIP contains direct scientific outputs."
 
 
+# >>> OC03_V10B_DECODER_CONTRACT_PATCH
+# Purpose:
+# - Bind the V9D-discovered decoder failure to the correct objective sections.
+# - OC-03 must HOLD when smoke route is BLOCKED_DECODER_REQUIRED/PROXY_DEGRADED,
+#   when v0 audit reports HOLD/BLOCKED, when GFAS daily extraction is only one date per year,
+#   or when smoke outputs are spatially homogeneous.
+# - OC-05 must HOLD when IECH collapses to a single value across units.
+
+BLOCKING_SMOKE_ROUTE_STATES = {
+    "BLOCKED_DECODER_REQUIRED",
+    "NO-GO_SMOKE_ROUTE",
+    "NO_GO_SMOKE_ROUTE",
+    "PROXY_DEGRADED",
+    "v0_parquet_proxy_degraded",
+    "HOLD_DIRECT_YEAR_DECODER_EVIDENCE_MISSING",
+    "BLOCKED_DIRECT_YEAR_DECODER_EVIDENCE_MISSING",
+}
+
+
+def _v10b_meta_get(inputs: Dict[str, object], key: str) -> str:
+    if isinstance(inputs, dict):
+        val = inputs.get(key)
+        if val is not None and str(val).strip():
+            return str(val).strip()
+        meta = inputs.get("meta", {})
+        if isinstance(meta, dict):
+            val = meta.get(key)
+            if val is not None and str(val).strip():
+                return str(val).strip()
+    return ""
+
+
+def _v10b_read_rows_if_exists(path: Path) -> List[Dict[str, str]]:
+    if not path.exists() or path.stat().st_size <= 0:
+        return []
+    try:
+        return read_csv_rows(path)
+    except Exception:
+        return []
+
+
+def _v10b_route_meta_not_blocked(inputs: Dict[str, object]) -> Tuple[bool, str]:
+    keys = ["smoke_route_mode", "smoke_route_selected", "smoke_route_status", "smoke_route_decision", "final_scientific_decision"]
+    blocking = []
+    for k in keys:
+        v = _v10b_meta_get(inputs, k)
+        vu = str(v).strip()
+        if not vu:
+            continue
+        if vu in BLOCKING_SMOKE_ROUTE_STATES or vu.upper() in BLOCKING_SMOKE_ROUTE_STATES:
+            blocking.append(f"{k}={vu}")
+        if any(tok in vu for tok in ["BLOCKED_DECODER_REQUIRED", "NO-GO_SMOKE_ROUTE", "PROXY_DEGRADED"]):
+            blocking.append(f"{k}={vu}")
+    if blocking:
+        return False, "smoke route decoder contract blocked by inputs_resolved: " + "; ".join(sorted(set(blocking)))
+    return True, "smoke route meta not blocked."
+
+
+def _v10b_v0_audit_not_blocked(output_root: Path) -> Tuple[bool, str]:
+    p = output_root / "qa" / "smoke_route_v0_audit.tsv"
+    rows = _v10b_read_rows_if_exists(p)
+    if not rows:
+        return False, "smoke_route_v0_audit.tsv missing or unreadable."
+    blocking = []
+    for r in rows:
+        text = " ".join(str(v) for v in r.values()).strip()
+        tl = text.lower()
+        status = str(r.get("status") or r.get("gate_status") or "").strip().upper()
+        if status in ("HOLD", "BLOCKED", "FAIL", "NO-GO", "NO_GO"):
+            blocking.append(text[:220])
+            continue
+        if any(tok in tl for tok in ["failed", "probe not completed", "unexplained", "blocked", "decoder required", "gdalinfo failed", "rc=1", "warning"]):
+            blocking.append(text[:220])
+    if blocking:
+        return False, "smoke_route_v0_audit contains blocking decoder/probe findings: " + " | ".join(blocking[:4])
+    return True, "smoke_route_v0_audit has no blocking findings."
+
+
+def _v10b_gfas_daily_series_not_edge_only(output_root: Path) -> Tuple[bool, str]:
+    p = output_root / "qa" / "gfas_pm2p5fire_portugal_daily_summary.csv"
+    rows = _v10b_read_rows_if_exists(p)
+    if not rows:
+        return False, "gfas_pm2p5fire_portugal_daily_summary.csv missing or unreadable."
+    dates = set()
+    years = set()
+    for r in rows:
+        for k in ("date", "day", "validityDate_1", "dataDate_1", "validity_date"):
+            v = (r.get(k) or "").strip()
+            if v:
+                dates.add(v[:10])
+                if len(v) >= 4 and v[:4].isdigit():
+                    years.add(int(v[:4]))
+                break
+        y = safe_float(r.get("year"))
+        if y is not None:
+            years.add(int(y))
+    if len(rows) <= len(YEARS_HIST) or len(dates) <= len(YEARS_HIST):
+        return False, f"GFAS daily summary is edge-only, not a daily spatial decoder output: rows={len(rows)}, unique_dates={len(dates)}, years={sorted(years)}"
+    return True, f"GFAS daily summary has daily-depth evidence: rows={len(rows)}, unique_dates={len(dates)}."
+
+
+def _v10b_smoke_spatial_not_homogeneous(output_root: Path) -> Tuple[bool, str]:
+    p = output_root / "qa" / "smoke_route_audit.tsv"
+    rows = _v10b_read_rows_if_exists(p)
+    if not rows:
+        return False, "smoke_route_audit.tsv missing or unreadable."
+    checked = 0
+    homogeneous = 0
+    blocked_route_rows = []
+    for r in rows:
+        y = safe_float(r.get("year"))
+        if y is None:
+            continue
+        checked += 1
+        uniq = safe_float(r.get("unique_values"))
+        flag = safe_float(r.get("spatial_homogeneous_flag"))
+        route = (r.get("route_selected") or r.get("smoke_route_decision") or "").strip()
+        if uniq is not None and uniq <= 1:
+            homogeneous += 1
+        elif flag is not None and flag >= 1:
+            homogeneous += 1
+        if "BLOCKED" in route or "NO-GO" in route or "PROXY_DEGRADED" in route:
+            blocked_route_rows.append(f"{int(y)}:{route}")
+    if checked <= 0:
+        return False, "smoke_route_audit has no year rows."
+    if blocked_route_rows:
+        return False, "smoke route audit still reports blocked/degraded route: " + "; ".join(blocked_route_rows[:10])
+    if homogeneous >= checked:
+        return False, f"smoke_days spatially homogeneous for all checked years: homogeneous={homogeneous}/{checked}"
+    return True, f"smoke route has spatial variation in at least one checked year: homogeneous={homogeneous}/{checked}."
+
+
+def _v10b_oc03_decoder_contract(output_root: Path, inputs: Dict[str, object]) -> Tuple[bool, str]:
+    checks = [
+        _v10b_route_meta_not_blocked(inputs),
+        _v10b_v0_audit_not_blocked(output_root),
+        _v10b_gfas_daily_series_not_edge_only(output_root),
+        _v10b_smoke_spatial_not_homogeneous(output_root),
+    ]
+    failures = [msg for ok, msg in checks if not ok]
+    if failures:
+        return False, "OC-03 decoder contract unresolved: " + " || ".join(failures)
+    return True, "OC-03 decoder contract passed: route real, v0 audit clean, daily-depth GFAS, smoke spatial variation."
+
+
+def _v10b_iech_non_degenerate(output_root: Path) -> Tuple[bool, str]:
+    paths = [
+        output_root / "tables" / "IECH_unit_2015_2024_mean.csv",
+        output_root / "tables" / "IECH_municipio_2015_2024_mean.csv",
+    ]
+    findings = []
+    for p in paths:
+        rows = _v10b_read_rows_if_exists(p)
+        if not rows:
+            return False, f"{p.name} missing or unreadable."
+        cols = list(rows[0].keys()) if rows else []
+        value_cols = [c for c in cols if "iech" in c.lower() and ("mean" in c.lower() or c.lower() == "iech")]
+        if not value_cols:
+            value_cols = [c for c in cols if "iech" in c.lower()]
+        if not value_cols:
+            return False, f"{p.name} has no IECH numeric column."
+        c = value_cols[0]
+        vals = []
+        for r in rows:
+            v = safe_float(r.get(c))
+            if v is not None:
+                vals.append(round(float(v), 8))
+        uniq = len(set(vals))
+        findings.append(f"{p.name}:{c}:rows={len(rows)}:unique={uniq}")
+        if uniq <= 1:
+            return False, "IECH collapsed to one value across units: " + "; ".join(findings)
+    return True, "IECH non-degenerate: " + "; ".join(findings)
+
+
 def objective_specific_check(obj_id: str, output_root: Path, inputs: Dict[str, object]) -> Tuple[bool, str]:
     if obj_id == "OC-03":
         ok, reason = _check_smoke_inputs_clean(inputs)
         if not ok:
             return ok, reason
-        meta = inputs.get("meta", {}) if isinstance(inputs, dict) else {}
-        if isinstance(meta, dict):
-            route_selected = str(meta.get("smoke_route_selected") or meta.get("smoke_route_mode") or "").strip()
-            route_decision = str(meta.get("smoke_route_decision") or "").strip()
-            if route_selected in ("BLOCKED_DECODER_REQUIRED", "v0_parquet_proxy_degraded", "NO-GO_SMOKE_ROUTE"):
-                return False, f"smoke route blocked/degraded: route_selected={route_selected}; route_decision={route_decision}"
+        ok, decoder_reason = _v10b_oc03_decoder_contract(output_root, inputs)
+        if not ok:
+            return False, decoder_reason
         smoke_unit = output_root / "tables" / "smoke_days_unit_2015_2024.csv"
         rows = read_csv_rows(smoke_unit) if smoke_unit.exists() else []
         vals = [safe_float(r.get("smoke_days")) for r in rows]
@@ -352,7 +523,9 @@ def objective_specific_check(obj_id: str, output_root: Path, inputs: Dict[str, o
             return False, "smoke_days table has no numeric values."
         if max(vals) <= 0:
             return False, "smoke_days table degenerate (max <= 0)."
-        return True, reason
+        return True, decoder_reason
+    if obj_id == "OC-05":
+        return _v10b_iech_non_degenerate(output_root)
     if obj_id == "OC-07":
         return _check_wui_quality(output_root)
     if obj_id == "OC-08":
@@ -364,8 +537,7 @@ def objective_specific_check(obj_id: str, output_root: Path, inputs: Dict[str, o
     if obj_id == "OC-12":
         return _check_step9_zip_contents(output_root)
     return True, ""
-
-
+# <<< OC03_V10B_DECODER_CONTRACT_PATCH
 def write_reports(qa_dir: Path, rows: List[Dict[str, str]], canon_path: Path, canon_sha: str) -> None:
     qa_dir.mkdir(parents=True, exist_ok=True)
     tsv_path = qa_dir / "objectives_canon_alignment_report.tsv"
@@ -528,3 +700,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
