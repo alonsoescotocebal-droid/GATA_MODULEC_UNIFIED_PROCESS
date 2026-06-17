@@ -341,35 +341,80 @@ def get_unit_ids(layer, id_field: str) -> List[str]:
     return out
 
 
-def smoke_year_series_from_unit_csv(smoke_unit_csv: Path) -> Dict[int, float]:
+def smoke_rows_by_unit_year(smoke_unit_csv: Path) -> Dict[str, Dict[int, Dict[str, str]]]:
     _hdr, rows, _delim = read_csv_rows(smoke_unit_csv)
-    by_year: Dict[int, List[float]] = defaultdict(list)
+    out: Dict[str, Dict[int, Dict[str, str]]] = defaultdict(dict)
     for r in rows:
+        uid = (r.get("unit_id") or "").strip()
         y = safe_float(r.get("year"))
-        sd = safe_float(r.get("smoke_days"))
-        if y is None or sd is None:
+        if not uid or y is None:
             continue
-        by_year[int(y)].append(sd)
-    out: Dict[int, float] = {}
-    for y in YEARS_HIST:
-        vals = by_year.get(y, [])
-        if not vals:
-            raise RuntimeError(f"smoke_days_unit missing year {y}")
-        out[y] = float(sum(vals) / len(vals))
+        out[uid][int(y)] = dict(r)
     return out
 
 
-def write_smoke_table(unit_ids: List[str], smoke_by_year: Dict[int, float], out_csv: Path) -> None:
+def municipio_map_rows(map_csv: Path) -> List[Tuple[str, str]]:
+    _hdr, rows, _delim = read_csv_rows(map_csv)
+    out: List[Tuple[str, str]] = []
+    for r in rows:
+        municipio_id = (r.get("municipio_id") or "").strip()
+        nuts3_id = (r.get("nuts3_id") or "").strip()
+        mapping_ok = (r.get("mapping_ok") or "").strip()
+        if municipio_id and nuts3_id and mapping_ok not in ("0", "False", "false"):
+            out.append((municipio_id, nuts3_id))
+    return out
+
+
+def write_smoke_table_from_nuts_map(smoke_unit_csv: Path, municipio_map_csv: Path, out_csv: Path) -> None:
+    smoke_by_unit = smoke_rows_by_unit_year(smoke_unit_csv)
     rows = []
-    for uid in unit_ids:
+    for municipio_id, nuts3_id in municipio_map_rows(municipio_map_csv):
+        unit_rows = smoke_by_unit.get(nuts3_id, {})
+        if not unit_rows:
+            continue
         for y in YEARS_HIST:
-            rows.append([uid, y, smoke_by_year[y], "", "", "derived_from_unit_smoke_year_mean", 0])
+            src = unit_rows.get(y)
+            if src is None:
+                raise RuntimeError(f"Missing NUTS3 smoke mapping for municipio {municipio_id} year {y} via {nuts3_id}")
+            rows.append(
+                [
+                    municipio_id,
+                    y,
+                    src.get("smoke_days", ""),
+                    src.get("smoke_score_mean", ""),
+                    src.get("smoke_score_p80", ""),
+                    f"{src.get('smoke_method', '')}_mapped_from_nuts3",
+                    src.get("smoke_missing_flag", 0),
+                ]
+            )
     write_csv(
         out_csv,
         ["unit_id", "year", "smoke_days", "smoke_score_mean", "smoke_score_p80", "smoke_method", "smoke_missing_flag"],
         rows,
         delim=";",
     )
+
+
+def write_smoke_daily_table_from_nuts_map(smoke_daily_unit_csv: Path, municipio_map_csv: Path, out_csv: Path) -> None:
+    if not smoke_daily_unit_csv.exists():
+        return
+    hdr, rows, _delim = read_csv_rows(smoke_daily_unit_csv)
+    by_unit: Dict[str, List[Dict[str, str]]] = defaultdict(list)
+    for r in rows:
+        uid = (r.get("unit_id") or "").strip()
+        if uid:
+            by_unit[uid].append(r)
+    out_rows: List[List[object]] = []
+    for municipio_id, nuts3_id in municipio_map_rows(municipio_map_csv):
+        for src in by_unit.get(nuts3_id, []):
+            copied = dict(src)
+            copied["unit_id"] = municipio_id
+            copied["unit_name"] = municipio_id
+            copied["unit_level"] = "MUNICIPIO"
+            method = (copied.get("spatial_assignment_method") or copied.get("spatial_assignment") or "").strip()
+            copied["spatial_assignment_method"] = (method + "|MAPPED_FROM_NUTS3").strip("|")
+            out_rows.append([copied.get(h, "") for h in hdr])
+    write_csv(out_csv, hdr, out_rows, delim=";")
 
 
 def compute_pop_table(layer, id_field: str, paths: Dict[str, object], work_dir: Path, out_csv: Path, processing) -> None:
@@ -1258,15 +1303,21 @@ def _smoke_spatial_homogeneous(smoke_csv: Path) -> bool:
         return True
     rows = read_csv_rows(smoke_csv)[1]
     by_year: Dict[int, set] = defaultdict(set)
+    signal_years: set[int] = set()
     for r in rows:
         y = safe_float(r.get("year"))
         v = safe_float(r.get("smoke_days"))
+        method = (r.get("smoke_method") or "").strip().lower()
         if y is None or v is None:
             continue
-        by_year[int(y)].add(round(v, 8))
-    if not by_year:
+        year_int = int(y)
+        direct_signal = ("direct_year" in method) and (float(v) > 0.0)
+        if direct_signal:
+            signal_years.add(year_int)
+            by_year[year_int].add(round(v, 8))
+    if not signal_years:
         return True
-    return any(len(vals) <= 1 for vals in by_year.values())
+    return any(len(by_year.get(year_int, set())) <= 1 for year_int in signal_years)
 
 
 def _iech_population_cancellation(iech_hist_csv: Path) -> bool:
@@ -2125,16 +2176,18 @@ def main() -> int:
             muni_field=muni_field,
             out_csv=tables_dir / "municipio_unit_map.csv",
         )
+        municipio_map_csv = tables_dir / "municipio_unit_map.csv"
 
-        # Smoke municipal from unit smoke annual means
+        # Smoke municipal from mapped NUTS3 smoke outputs
         smoke_unit_csv = tables_dir / "smoke_days_unit_2015_2024.csv"
         smoke_muni_csv = tables_dir / "smoke_days_municipio_2015_2024.csv"
+        smoke_daily_unit_csv = tables_dir / "smoke_day_score_nuts3_daily.csv"
+        smoke_daily_muni_csv = tables_dir / "smoke_day_score_municipio_daily.csv"
         if not smoke_unit_csv.exists():
             raise FileNotFoundError(f"Missing unit smoke table from runtime: {smoke_unit_csv}")
-        smoke_years = smoke_year_series_from_unit_csv(smoke_unit_csv)
-        muni_ids = get_unit_ids(muni_layer, muni_field)
-        write_smoke_table(muni_ids, smoke_years, smoke_muni_csv)
-        log_line(run_log, "Municipal smoke table generated")
+        write_smoke_table_from_nuts_map(smoke_unit_csv, municipio_map_csv, smoke_muni_csv)
+        write_smoke_daily_table_from_nuts_map(smoke_daily_unit_csv, municipio_map_csv, smoke_daily_muni_csv)
+        log_line(run_log, "Municipal smoke tables generated from NUTS3 mapping")
 
         # Recurrence (recompute both levels to include fuel proxies)
         fire_paths = [Path(p) for p in paths.get("fire_gpkgs_tm06", [])]
@@ -2190,7 +2243,7 @@ def main() -> int:
         smoke_route_blocked = route_selected in ("BLOCKED_DECODER_REQUIRED", "v0_parquet_proxy_degraded", "NO-GO_SMOKE_ROUTE")
         smoke_homogeneous_blocked = _smoke_spatial_homogeneous(smoke_unit_csv)
         iech_cancellation_blocked = _iech_population_cancellation(iech_unit_hist_csv)
-        if smoke_homogeneous_blocked or iech_cancellation_blocked:
+        if smoke_homogeneous_blocked:
             smoke_route_blocked = True
         smoke_route_context_parts = []
         if route_selected or route_decision:

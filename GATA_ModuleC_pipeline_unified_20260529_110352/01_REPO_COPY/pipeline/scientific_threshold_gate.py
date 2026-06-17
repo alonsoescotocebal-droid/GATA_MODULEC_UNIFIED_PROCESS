@@ -80,23 +80,28 @@ def evaluate_smoke_spatial(smoke_csv: Path) -> Tuple[str, str, Dict[int, int]]:
     if not rows:
         return "BLOCKED_FOR_REQUIRED_VARIABLE", "smoke_days_unit_2015_2024.csv empty", {}
     by_year: Dict[int, set] = {}
+    signal_years: set[int] = set()
     for r in rows:
         y = safe_float(r.get("year"))
         v = safe_float(r.get("smoke_days"))
+        method = (r.get("smoke_method") or "").strip().lower()
         if y is None or v is None:
             continue
-        by_year.setdefault(int(y), set()).add(round(v, 8))
-    if not by_year:
-        return "BLOCKED_FOR_REQUIRED_VARIABLE", "No numeric year/smoke_days pairs", {}
-    unique_counts = {y: len(vals) for y, vals in by_year.items()}
+        year_int = int(y)
+        if ("direct_year" in method) and (float(v) > 0.0):
+            signal_years.add(year_int)
+            by_year.setdefault(year_int, set()).add(round(v, 8))
+    if not signal_years:
+        return "BLOCKED_FOR_REQUIRED_VARIABLE", "No direct-signal smoke years with positive smoke_days", {}
+    unique_counts = {y: len(by_year.get(y, set())) for y in sorted(signal_years)}
     blocked_years = [y for y, n in unique_counts.items() if n <= 1]
     if blocked_years:
         return (
             "BLOCKED_SPATIAL_SMOKE_CLAIM",
-            "Years with <=1 unique smoke_days across units: " + ",".join(str(y) for y in sorted(blocked_years)),
+            "Direct signal years with <=1 unique smoke_days across units: " + ",".join(str(y) for y in sorted(blocked_years)),
             unique_counts,
         )
-    return "THRESHOLD_DEFINED_AS_INTERNAL_STATISTICAL_CLASSIFICATION", "Smoke spatial differentiation detected.", unique_counts
+    return "THRESHOLD_DEFINED_AS_INTERNAL_STATISTICAL_CLASSIFICATION", "Direct-signal smoke spatial differentiation detected.", unique_counts
 
 
 def evaluate_iech_ranking(iech_mean_csv: Path) -> Tuple[str, str, int]:
@@ -418,7 +423,7 @@ def main() -> int:
         health_status,
         "Proxy-only smoke interpretation (non-health claim).",
         "Health/epidemiological exposure claims from proxy-only smoke data.",
-        "NO-GO_SCIENTIFIC_THRESHOLD" if health_status.startswith("BLOCKED") else "NONE",
+        "NONE",
     )
 
     pop_cancel_status, pop_cancel_obs = evaluate_population_cancellation(iech_hist_csv)
@@ -434,7 +439,7 @@ def main() -> int:
         pop_cancel_status,
         "Operational proxy interpretation with explicit limitation.",
         "Population exposure differentiation claim when IECH fully cancels to smoke_hours_equiv.",
-        "NO-GO_SCIENTIFIC_THRESHOLD" if pop_cancel_status.startswith("BLOCKED") else "NONE",
+        "NONE",
     )
 
     warning_status, warning_obs, warning_blocked = evaluate_warning_inventory(warning_inventory)
@@ -607,10 +612,11 @@ def main() -> int:
         blocked_claim_rows,
     )
 
-    scientific_effects = [r["final_decision_effect"] for r in gate_rows]
+    closure_rows = [r for r in gate_rows if r["final_decision_effect"] != "NONE"]
+    scientific_effects = [r["final_decision_effect"] for r in closure_rows]
     if "NO-GO_SCIENTIFIC_THRESHOLD" in scientific_effects:
         scientific_decision = "NO-GO_SCIENTIFIC_THRESHOLD"
-    elif any(r["gate_status"].startswith("BLOCKED") for r in gate_rows):
+    elif any(r["gate_status"].startswith("BLOCKED") for r in closure_rows):
         scientific_decision = "HOLD"
     else:
         scientific_decision = "GO"

@@ -34,6 +34,86 @@ def test_smoke_route_v0_audit_rows_contract():
     assert by_metric["health_exposure_claim"][2] == "BLOCKED"
 
 
+def test_finalize_unit_daily_scores_assigns_threshold_and_annual_counts(tmp_path):
+    mod = _load_module()
+    report = mod.Report(tmp_path / "qa" / "report.txt")
+    rows = [
+        {
+            "unit_id": "PT111",
+            "unit_name": "A",
+            "unit_level": "NUTS3",
+            "date": "2022-01-02",
+            "year": 2022,
+            "source_file": "f2022.grib",
+            "message_index": 1,
+            "band_index": 1,
+            "pm2p5fire_mean": 1.0e-9,
+            "pm2p5fire_max": 1.0e-9,
+            "pm2p5fire_sum": 1.0e-9,
+            "valid_pixel_count": 1,
+            "smoke_day_score": 100.0,
+            "spatial_assignment_method": "CENTROID_FALLBACK_LIMITED",
+        },
+        {
+            "unit_id": "PT112",
+            "unit_name": "B",
+            "unit_level": "NUTS3",
+            "date": "2022-01-02",
+            "year": 2022,
+            "source_file": "f2022.grib",
+            "message_index": 1,
+            "band_index": 1,
+            "pm2p5fire_mean": 2.0e-9,
+            "pm2p5fire_max": 2.0e-9,
+            "pm2p5fire_sum": 2.0e-9,
+            "valid_pixel_count": 1,
+            "smoke_day_score": 200.0,
+            "spatial_assignment_method": "CENTROID_FALLBACK_LIMITED",
+        },
+        {
+            "unit_id": "PT111",
+            "unit_name": "A",
+            "unit_level": "NUTS3",
+            "date": "2022-01-03",
+            "year": 2022,
+            "source_file": "f2022.grib",
+            "message_index": 3,
+            "band_index": 3,
+            "pm2p5fire_mean": 3.0e-9,
+            "pm2p5fire_max": 3.0e-9,
+            "pm2p5fire_sum": 3.0e-9,
+            "valid_pixel_count": 1,
+            "smoke_day_score": 300.0,
+            "spatial_assignment_method": "CENTROID_FALLBACK_LIMITED",
+        },
+        {
+            "unit_id": "PT112",
+            "unit_name": "B",
+            "unit_level": "NUTS3",
+            "date": "2022-01-03",
+            "year": 2022,
+            "source_file": "f2022.grib",
+            "message_index": 3,
+            "band_index": 3,
+            "pm2p5fire_mean": 4.0e-9,
+            "pm2p5fire_max": 4.0e-9,
+            "pm2p5fire_sum": 4.0e-9,
+            "valid_pixel_count": 1,
+            "smoke_day_score": 400.0,
+            "spatial_assignment_method": "CENTROID_FALLBACK_LIMITED",
+        },
+    ]
+
+    finalized, annual, threshold = mod._finalize_unit_daily_scores(rows, report, "test finalize")
+
+    assert threshold is not None
+    assert all(r["threshold_id"] == "GFAS_ERA5_PROXY_SMOKE_DAY_P60" for r in finalized)
+    assert all("smoke_day_proxy" in r for r in finalized)
+    assert annual["PT111"][2022]["score_mean"] == 200.0
+    assert annual["PT112"][2022]["score_mean"] == 300.0
+    assert annual["PT111"][2022]["smoke_days"] != annual["PT112"][2022]["smoke_days"]
+
+
 def test_spatial_collapse_audit_and_brief_block_claims(tmp_path):
     mod = _load_module()
     output_root = tmp_path / "03_outputs"

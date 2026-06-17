@@ -13,4 +13,8 @@ def test_step9_blocks_stale_bundle_payload():
     assert "final_bundle_staleness_audit.tsv" in text
     assert "qa\\gfas_pm2p5fire_message_inventory.tsv" in text
     assert "qa\\warning_inventory.tsv" in text
+    assert "qa\\gfas_era5_decoder_backend_audit.tsv" in text
+    assert "qa\\gfas_era5_decoder_daily_spatial_audit.tsv" in text
+    assert "qa\\oc03_v11_decoder_contract_validation.tsv" in text
     assert "tables\\smoke_day_score_nuts3_daily.csv" in text
+    assert "tables\\smoke_day_score_municipio_daily.csv" in text
