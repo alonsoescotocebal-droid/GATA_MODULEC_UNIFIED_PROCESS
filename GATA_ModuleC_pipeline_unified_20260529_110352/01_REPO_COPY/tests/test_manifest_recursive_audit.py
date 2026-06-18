@@ -11,3 +11,5 @@ def test_step9_emits_recursive_manifest_audit():
     assert "Get-ChildItem -Recurse -File $bundleDir" in text
     assert "final_manifest_recursive_audit.tsv" in text
     assert "final_manifest.json" in text
+    assert "& $R6KRefreshScript -OutputRoot $modcOut" in text
+    assert "ISO_GATA_20260121_130505\\Complementariedad de analisis\\Module C\\03_outputs" not in text

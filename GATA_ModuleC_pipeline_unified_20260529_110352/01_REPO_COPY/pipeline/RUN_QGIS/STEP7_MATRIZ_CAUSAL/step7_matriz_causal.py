@@ -785,8 +785,8 @@ def compute_iech(pop_csv: Path, smoke_csv: Path, out_hist_csv: Path, out_mean_cs
             h = sd * 24.0
             p = interpolate_pop(p2015, p2020, p2025, y)
             expo = h * p if p > 0 else None
-            iech = (expo / p) if expo is not None and p > 0 else None
-            rows_hist.append([uid, y, sd, h, p, expo, iech, "IECH=smoke_days*24;pop=interp(2015,2020,2025)"])
+            iech = expo
+            rows_hist.append([uid, y, sd, h, p, expo, iech, "IECH=smoke_days*24*pop_interp(2015,2020,2025);proxy_person_hours"])
 
     write_csv(out_hist_csv, ["unit_id", "year", "smoke_days", "smoke_hours_equiv", "pop", "expo_person_hours", "IECH", "method_flags"], rows_hist, delim=";")
 
@@ -840,13 +840,13 @@ def compute_scenarios(smoke_csv: Path, pop_csv: Path, out_scen_csv: Path, out_me
             sd0 = base
             h0 = sd0 * 24.0
             expo0 = h0 * p if p > 0 else None
-            iech0 = (expo0 / p) if expo0 is not None and p > 0 else None
+            iech0 = expo0
             sd1 = base * (0.8 if uid in target else 1.0)
             h1 = sd1 * 24.0
             expo1 = h1 * p if p > 0 else None
-            iech1 = (expo1 / p) if expo1 is not None and p > 0 else None
+            iech1 = expo1
             delta = (iech1 - iech0) if (iech1 is not None and iech0 is not None) else None
-            flags = "S0=mean(2015-2024);S1=-20% top_quintile;pop=interp(2025,2030)"
+            flags = "S0=mean(2015-2024);S1=-20% top_quintile;IECH=smoke_days*24*pop_interp(2025,2030);proxy_person_hours"
             rows.append([uid, y, "S0", sd0, h0, p, expo0, iech0, 0.0, flags])
             rows.append([uid, y, "S1", sd1, h1, p, expo1, iech1, delta, flags])
 
@@ -2027,7 +2027,8 @@ def generate_brief(output_root: Path, inputs: Dict[str, object]) -> Path:
             lines.append(f"- fire_gpkgs_tm06: {len(fire)} capas 2015-2024.")
     lines.append("")
     lines.append("## Definición IECH")
-    lines.append("- IECH = `smoke_days * 24` con ponderación poblacional por interpolación GHSL en cada unidad.")
+    lines.append("- IECH = `smoke_days * 24 * poblacion interpolada GHSL` como proxy operacional de persona-horas de exposicion.")
+    lines.append("- IECH no equivale a concentracion contaminante ni valida por si solo una afirmacion sanitaria o epidemiologica.")
     lines.append("")
     lines.append("## Cobertura temporal")
     lines.append("- Histórico: 2015-2024.")

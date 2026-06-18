@@ -415,7 +415,7 @@ if($missing.Count -gt 0){
 try {
     $R6KRefreshScript = Join-Path $PSScriptRoot "r6k_refresh_runtime_closure_decision.ps1"
     if (Test-Path -LiteralPath $R6KRefreshScript) {
-        & $R6KRefreshScript -OutputRoot "D:\Mestrado\GATA_2025_2026\Prueba_aislada\ISO_GATA_20260121_130505\Complementariedad de analisis\Module C\03_outputs"
+        & $R6KRefreshScript -OutputRoot $modcOut
         if ($LASTEXITCODE -ne 0) {
             throw "R6K runtime closure refresh failed with LASTEXITCODE=$LASTEXITCODE"
         }

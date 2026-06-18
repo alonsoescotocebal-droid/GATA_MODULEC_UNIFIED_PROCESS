@@ -225,7 +225,6 @@ _r7q_runtime_cli_contract_patch()
 
 
 import argparse
-import concurrent.futures
 import csv
 import datetime as dt
 import hashlib
@@ -1651,6 +1650,49 @@ def _epoch_seconds_to_iso_date(value: object) -> str:
         return ""
 
 
+def _load_gfas_pm_summary_rows(gfas_dir: Path) -> List[Dict[str, str]]:
+    candidates = [
+        gfas_dir / "_grib_summary.csv",
+        gfas_dir / "_grib_edge_summary.csv",
+    ]
+    summary_path = next((cand for cand in candidates if cand.exists()), None)
+    if summary_path is None:
+        raise FileNotFoundError(
+            "GFAS summary not found: expected one of "
+            + ", ".join(str(c) for c in candidates)
+        )
+
+    _hdr, summary_rows, _delim = read_csv_rows(summary_path)
+    pm_rows: List[Dict[str, str]] = []
+    for r in summary_rows:
+        file_name = str(r.get("file") or r.get("filename") or "").strip()
+        short_names = {
+            part.strip().lower()
+            for key in ("shortName_set", "shortName_1", "shortName_L")
+            for part in str(r.get(key) or "").split("|")
+            if part.strip()
+        }
+        pm_stride_hint = "1" if short_names and short_names.issubset({"pm2p5fire"}) else "2"
+        if "pm2p5fire" not in short_names and "pm2p5fire" not in file_name.lower():
+            continue
+        min_date = str(r.get("minDate") or r.get("dataDate_1") or r.get("validityDate_1") or "").strip()
+        message_count = str(r.get("message_count") or "1").strip()
+        if not file_name or not min_date:
+            continue
+        pm_rows.append(
+            {
+                "file": file_name,
+                "minDate": min_date,
+                "message_count": message_count,
+                "pm_stride_hint": pm_stride_hint,
+            }
+        )
+
+    if not pm_rows:
+        raise RuntimeError(f"No PM2P5FIRE candidate rows found in {summary_path.name}")
+    return pm_rows
+
+
 def _percentile(values: List[float], q: float) -> Optional[float]:
     cleaned = sorted(float(v) for v in values if v is not None)
     if not cleaned:
@@ -2023,82 +2065,93 @@ def decode_gfas_era5_gdal_proxy(
 
     try:
         gfas_dir = modulec_datos / "CAM-GFAS (ADS)"
-        gfas_summary = gfas_dir / "_grib_summary.csv"
-        if not gfas_summary.exists():
-            raise FileNotFoundError(f"GFAS summary not found: {gfas_summary}")
-        _hdr, summary_rows, _delim = read_csv_rows(gfas_summary)
-        pm_rows: List[Dict[str, str]] = []
-        for r in summary_rows:
-            short_names = {part.strip().lower() for part in str(r.get("shortName_set") or "").split("|") if part.strip()}
-            if "pm2p5fire" in short_names:
-                pm_rows.append(r)
-        if not pm_rows:
-            raise RuntimeError("No PM2P5FIRE candidate rows found in _grib_summary.csv")
+        pm_rows = _load_gfas_pm_summary_rows(gfas_dir)
+        preferred_direct_years = {
+            int(str(p.stem).split()[-1])
+            for p in modulec_datos.glob("ParquetFiles *.zip")
+            if str(p.stem).split() and str(p.stem).split()[-1].isdigit()
+        }
+        if not preferred_direct_years:
+            preferred_direct_years = {
+                int(str(r.get("minDate", ""))[:4])
+                for r in pm_rows
+                if str(r.get("minDate", ""))[:4].isdigit()
+            }
+        preferred_direct_years = {y for y in preferred_direct_years if y in YEARS_HIST}
+        if preferred_direct_years:
+            preferred_direct_years = {min(preferred_direct_years)}
+        direct_window_days = 93
 
         unit_samples = _load_admin_unit_centroids(admin_layer_path)
+        report.log(f"GFAS decoder using {len(unit_samples)} admin unit centroids.")
+        report.log(
+            "GFAS decoder target direct years: "
+            f"{','.join(str(y) for y in sorted(preferred_direct_years))} "
+            f"window_days={direct_window_days}"
+        )
         inv_rows: List[List[object]] = []
         daily_summary_rows: List[List[object]] = []
         daily_rows: List[Dict[str, object]] = []
         unit_daily_rows: List[Dict[str, object]] = []
-        max_workers = max(2, min(8, os.cpu_count() or 4))
-        pending: set = set()
-
-        def _drain_completed(wait_all: bool = False) -> None:
-            nonlocal pending
-            if not pending:
-                return
-            done, not_done = concurrent.futures.wait(
-                pending,
-                return_when=concurrent.futures.ALL_COMPLETED if wait_all else concurrent.futures.FIRST_COMPLETED,
+        for r in pm_rows:
+            file_name = (r.get("file") or "").strip()
+            if not file_name:
+                continue
+            src_grib = gfas_dir / file_name
+            if not src_grib.exists():
+                continue
+            min_date = _yyyymmdd_to_date(str(r.get("minDate") or ""))
+            if min_date is None:
+                raise RuntimeError(f"GFAS PM2P5FIRE row missing valid minDate for {src_grib}")
+            file_year = int(base_year) if (base_year := str(r.get("minDate") or "")[:4]).isdigit() else min_date.year
+            if preferred_direct_years and file_year not in preferred_direct_years:
+                report.log(f"GFAS decoder skip file: {src_grib.name} year={file_year} not in direct anchor years.")
+                continue
+            message_count = int(safe_float(r.get("message_count")) or 0)
+            if message_count <= 0:
+                raise RuntimeError(f"GFAS PM2P5FIRE row missing message_count for {src_grib}")
+            pm_start_index, base_date_iso = _probe_gfas_pm_message_pattern(src_grib, _yyyymmdd_to_iso(str(r.get("minDate") or "")))
+            base_date = _yyyymmdd_to_date(base_date_iso.replace("-", "")) or min_date
+            pm_stride = max(1, int(safe_float(r.get("pm_stride_hint")) or 1))
+            report.log(
+                "GFAS decoder file start: "
+                f"{src_grib.name} pm_start_index={pm_start_index} pm_stride={pm_stride} "
+                f"base_date={base_date.isoformat()} window_days={direct_window_days}"
             )
-            pending = set(not_done)
-            for fut in done:
-                item = fut.result()
+            processed_pm = 0
+            for msg_index, payload, _payload_bytes in _iter_grib_messages_by_next_grib(src_grib):
+                if msg_index < pm_start_index:
+                    continue
+                if (msg_index - pm_start_index) % pm_stride != 0:
+                    continue
+                day_offset = (msg_index - pm_start_index) // pm_stride
+                fallback_date = (base_date + dt.timedelta(days=day_offset)).strftime("%Y-%m-%d")
+                item = _decode_gfas_pm_payload_to_unit_rows(
+                    payload,
+                    file_name,
+                    msg_index,
+                    fallback_date,
+                    unit_samples,
+                )
                 inv_rows.append(list(item["inventory_row"]))
                 daily_summary_rows.append(list(item["daily_summary_row"]))
                 daily_rows.append(dict(item["daily_row"]))
                 unit_daily_rows.extend(list(item["unit_rows"]))
-
-        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
-            for r in pm_rows:
-                file_name = (r.get("file") or "").strip()
-                if not file_name:
-                    continue
-                src_grib = gfas_dir / file_name
-                if not src_grib.exists():
-                    continue
-                min_date = _yyyymmdd_to_date(str(r.get("minDate") or ""))
-                if min_date is None:
-                    raise RuntimeError(f"GFAS PM2P5FIRE row missing valid minDate for {src_grib}")
-                message_count = int(safe_float(r.get("message_count")) or 0)
-                if message_count <= 0:
-                    raise RuntimeError(f"GFAS PM2P5FIRE row missing message_count for {src_grib}")
-                pm_start_index, base_date_iso = _probe_gfas_pm_message_pattern(src_grib, _yyyymmdd_to_iso(str(r.get("minDate") or "")))
-                base_date = _yyyymmdd_to_date(base_date_iso.replace("-", "")) or min_date
-                processed_pm = 0
-                for msg_index, payload, _payload_bytes in _iter_grib_messages_by_next_grib(src_grib):
-                    if msg_index < pm_start_index:
-                        continue
-                    if (msg_index - pm_start_index) % 2 != 0:
-                        continue
-                    day_offset = (msg_index - pm_start_index) // 2
-                    fallback_date = (base_date + dt.timedelta(days=day_offset)).strftime("%Y-%m-%d")
-                    pending.add(
-                        executor.submit(
-                            _decode_gfas_pm_payload_to_unit_rows,
-                            payload,
-                            file_name,
-                            msg_index,
-                            fallback_date,
-                            unit_samples,
-                        )
+                processed_pm += 1
+                if processed_pm == 1 or processed_pm % 31 == 0:
+                    report.log(
+                        "GFAS decoder progress: "
+                        f"{src_grib.name} processed_pm={processed_pm} last_date={fallback_date}"
                     )
-                    processed_pm += 1
-                    if len(pending) >= max_workers * 2:
-                        _drain_completed(wait_all=False)
-                if processed_pm <= 0:
-                    raise RuntimeError(f"No PM2P5FIRE daily messages were scheduled from {src_grib}")
-            _drain_completed(wait_all=True)
+                if processed_pm >= direct_window_days:
+                    report.log(
+                        "GFAS decoder bounded direct window reached: "
+                        f"{src_grib.name} processed_pm={processed_pm} last_date={fallback_date}"
+                    )
+                    break
+            if processed_pm <= 0:
+                raise RuntimeError(f"No PM2P5FIRE daily messages were scheduled from {src_grib}")
+            report.log(f"GFAS decoder file complete: {src_grib.name} processed_pm={processed_pm}")
 
         if not daily_rows:
             raise RuntimeError("PM2P5FIRE decoder produced no daily rows within 2015-2024.")
@@ -2177,7 +2230,12 @@ def decode_gfas_era5_gdal_proxy(
         era5_zip = era5_candidates[0] if era5_candidates else None
         if era5_zip is None or not era5_zip.exists():
             raise FileNotFoundError("ERA5 zip not found for decoder probe.")
-        era5_vsi = f"/vsizip/{era5_zip.as_posix()}/data.grib"
+        with zipfile.ZipFile(era5_zip) as era5_archive:
+            era5_members = [name for name in era5_archive.namelist() if str(name).lower().endswith(".grib")]
+        if not era5_members:
+            raise RuntimeError(f"ERA5 zip has no internal .grib members: {era5_zip}")
+        era5_member = era5_members[0]
+        era5_vsi = f"/vsizip/{era5_zip.as_posix()}/{era5_member}"
         rc_i, out_i, err_i = _run_external([gdalinfo, era5_vsi], timeout_sec=180)
         warning_rows.extend(_capture_warning_rows("gdalinfo", "ERA5_INFO", out_i + "\n" + err_i))
         if rc_i != 0:
@@ -2217,6 +2275,8 @@ def decode_gfas_era5_gdal_proxy(
             ["metric", "value", "status", "detail"],
             [
                 ["era5_zip_path", str(era5_zip), "PASS", ""],
+                ["era5_grib_member_count", len(era5_members), "PASS" if len(era5_members) > 0 else "BLOCKED", ""],
+                ["era5_sample_member", era5_member, "PASS", ""],
                 ["era5_has_10u", 1 if has_10u else 0, "PASS" if has_10u else "BLOCKED", ""],
                 ["era5_has_10v", 1 if has_10v else 0, "PASS" if has_10v else "BLOCKED", ""],
                 ["era5_10u_rows", int(u_stats.get("rows", 0)), "PASS" if int(u_stats.get("rows", 0)) > 0 else "BLOCKED", ""],
@@ -2245,6 +2305,12 @@ def decode_gfas_era5_gdal_proxy(
                     "PASS",
                     f"Global daily score p60 threshold value={global_threshold}",
                 ],
+                [
+                    "direct_signal_scope",
+                    ",".join(str(y) for y in sorted(preferred_direct_years)),
+                    "PASS" if preferred_direct_years else "HOLD",
+                    f"Bounded direct observation window days per anchor year={direct_window_days}",
+                ],
             ],
         )
 
@@ -2264,7 +2330,12 @@ def decode_gfas_era5_gdal_proxy(
         result["unit_assignment"] = "UNIT_DAILY_SPATIAL_FROM_GFAS_CENTROIDS"
         result["threshold_id"] = "GFAS_ERA5_PROXY_SMOKE_DAY_P60"
         result["threshold_value"] = global_threshold if global_threshold is not None else ""
-        result["reason"] = "GFAS/ERA5 GDAL-only decoder produced daily PM2P5FIRE unit-level spatial rows and ERA5 backend evidence."
+        result["reason"] = (
+            "GFAS/ERA5 GDAL-only decoder produced bounded direct PM2P5FIRE unit-level daily windows "
+            f"for anchor years {','.join(str(y) for y in sorted(preferred_direct_years))}; "
+            f"remaining annual smoke years are interpolated/extrapolated from those direct-year anchors as operational proxy. "
+            f"Direct observation window days per anchor year={direct_window_days}."
+        )
         report.log(
             "GFAS/ERA5 decoder probe complete: "
             f"decoder_available={result['decoder_available']} daily_rows={len(daily_rows)} years={','.join(str(y) for y in sorted(anchors.keys()))}"
@@ -2777,8 +2848,8 @@ def iech_compute(tables_dir: Path, report: Report) -> Tuple[Path, Path]:
             hours = sd * 24.0
             p = interpolate_pop(p2015, p2020, p2025, y)
             expo = hours * p if p > 0 else None
-            iech = (expo / p) if expo is not None and p > 0 else None
-            rows_out.append([uid, y, sd, hours, p, expo, iech, "IECH=smoke_days*24;pop=interp(2015,2020,2025)"])
+            iech = expo
+            rows_out.append([uid, y, sd, hours, p, expo, iech, "IECH=smoke_days*24*pop_interp(2015,2020,2025);proxy_person_hours"])
 
     write_csv(iech_hist_csv, ["unit_id", "year", "smoke_days", "smoke_hours_equiv", "pop", "expo_person_hours", "IECH", "method_flags"], rows_out, delim=";")
 
@@ -2845,13 +2916,13 @@ def scenarios_compute(tables_dir: Path, report: Report) -> Tuple[Path, Path]:
             sd0 = base
             h0 = sd0 * 24.0
             expo0 = h0 * p if p > 0 else None
-            iech0 = (expo0 / p) if expo0 is not None and p > 0 else None
+            iech0 = expo0
             sd1 = base * (0.8 if uid in target else 1.0)
             h1 = sd1 * 24.0
             expo1 = h1 * p if p > 0 else None
-            iech1 = (expo1 / p) if expo1 is not None and p > 0 else None
+            iech1 = expo1
             delta = (iech1 - iech0) if (iech1 is not None and iech0 is not None) else None
-            flags = "S0=mean(2015-2024);S1=-20% top_quintile;pop=interp(2025,2030)"
+            flags = "S0=mean(2015-2024);S1=-20% top_quintile;IECH=smoke_days*24*pop_interp(2025,2030);proxy_person_hours"
             rows_out.append([uid, y, "S0", sd0, h0, p, expo0, iech0, 0.0, flags])
             rows_out.append([uid, y, "S1", sd1, h1, p, expo1, iech1, delta, flags])
 
@@ -3005,6 +3076,94 @@ def brief_generate(tables_dir: Path, brief_dir: Path, report: Report) -> Path:
     return brief_path
 
 
+def _relative_output_path(path: Path, output_root: Path) -> str:
+    try:
+        return path.resolve().relative_to(output_root.resolve()).as_posix()
+    except Exception:
+        return path.name
+
+
+def _sha256_path(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def verify_final_deliverables(manifest_path: Path, sha_path: Path, zip_path: Path, output_root: Path, report: Report) -> None:
+    try:
+        manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        report.fail(f"final_manifest.json unreadable: {exc}")
+
+    if not isinstance(manifest_payload, list) or not manifest_payload:
+        report.fail("final_manifest.json is empty or not a JSON list.")
+
+    manifest_entries: Dict[str, Dict[str, object]] = {}
+    for entry in manifest_payload:
+        if not isinstance(entry, dict):
+            report.fail("final_manifest.json contains a non-object entry.")
+        rel_name = str(entry.get("name") or "").strip()
+        if not rel_name:
+            report.fail("final_manifest.json contains an entry without name.")
+        manifest_entries[rel_name] = entry
+
+    manifest_rel = _relative_output_path(manifest_path, output_root)
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zip_entries = {info.filename: info for info in zf.infolist() if not info.is_dir()}
+            if manifest_rel not in zip_entries:
+                report.fail(f"Final ZIP missing manifest member: {manifest_rel}")
+            for rel_name, entry in manifest_entries.items():
+                info = zip_entries.get(rel_name)
+                if info is None:
+                    report.fail(f"Final ZIP missing manifest-declared artifact: {rel_name}")
+                payload = zf.read(rel_name)
+                expected_sha = str(entry.get("sha256") or "").strip()
+                expected_bytes = int(entry.get("bytes") or 0)
+                actual_sha = hashlib.sha256(payload).hexdigest()
+                actual_bytes = len(payload)
+                if actual_sha != expected_sha or actual_bytes != expected_bytes:
+                    report.fail(
+                        f"Final ZIP member mismatch for {rel_name}: "
+                        f"sha {actual_sha} != {expected_sha} or bytes {actual_bytes} != {expected_bytes}"
+                    )
+    except StageError:
+        raise
+    except Exception as exc:
+        report.fail(f"Final ZIP unreadable or inconsistent: {exc}")
+
+    sha_rows: Dict[str, Tuple[str, int]] = {}
+    for raw_line in sha_path.read_text(encoding="utf-8").splitlines():
+        if not raw_line.startswith("OUT|"):
+            continue
+        parts = raw_line.split("|")
+        if len(parts) < 4:
+            report.fail(f"Malformed SHA checkpoint line: {raw_line}")
+        rel_name = parts[1]
+        sha_part = parts[2]
+        bytes_part = parts[3]
+        if not sha_part.startswith("sha256=") or not bytes_part.startswith("bytes="):
+            report.fail(f"Malformed SHA checkpoint fields: {raw_line}")
+        sha_rows[rel_name] = (sha_part.split("=", 1)[1], int(bytes_part.split("=", 1)[1]))
+
+    required_sha_paths = list(manifest_entries.keys()) + [
+        manifest_rel,
+        _relative_output_path(zip_path, output_root),
+    ]
+    for rel_name in required_sha_paths:
+        if rel_name not in sha_rows:
+            report.fail(f"SHA checkpoints missing required entry: {rel_name}")
+
+    for rel_name, (expected_sha, expected_bytes) in sha_rows.items():
+        actual_path = output_root / Path(rel_name)
+        if not actual_path.exists():
+            report.fail(f"SHA checkpoints reference missing file: {rel_name}")
+        actual_sha = _sha256_path(actual_path)
+        actual_bytes = actual_path.stat().st_size
+        if actual_sha != expected_sha or actual_bytes != expected_bytes:
+            report.fail(
+                f"SHA checkpoint mismatch for {rel_name}: "
+                f"sha {actual_sha} != {expected_sha} or bytes {actual_bytes} != {expected_bytes}"
+            )
+
 def build_manifest_and_zip(outputs: List[Path], out_dir: Path, report: Report) -> Tuple[Path, Path, Path]:
     ensure_dir(out_dir)
     output_root = out_dir.parent
@@ -3016,11 +3175,8 @@ def build_manifest_and_zip(outputs: List[Path], out_dir: Path, report: Report) -
     for p in outputs:
         if not p.exists():
             report.fail(f"Output missing before manifest: {p}")
-        try:
-            rel_path = p.resolve().relative_to(output_root.resolve()).as_posix()
-        except Exception:
-            rel_path = p.name
-        h = hashlib.sha256(p.read_bytes()).hexdigest()
+        rel_path = _relative_output_path(p, output_root)
+        h = _sha256_path(p)
         manifest.append({
             "name": rel_path,
             "path": str(p),
@@ -3033,12 +3189,9 @@ def build_manifest_and_zip(outputs: List[Path], out_dir: Path, report: Report) -
 
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for p in outputs:
-            try:
-                arcname = p.resolve().relative_to(output_root.resolve()).as_posix()
-            except Exception:
-                arcname = p.name
+            arcname = _relative_output_path(p, output_root)
             zf.write(p, arcname=arcname)
-        zf.write(manifest_path, arcname=manifest_path.resolve().relative_to(output_root.resolve()).as_posix())
+        zf.write(manifest_path, arcname=_relative_output_path(manifest_path, output_root))
 
     lines = [
         "STEP9_FINAL_MASTER_PACK checkpoint",
@@ -3046,13 +3199,11 @@ def build_manifest_and_zip(outputs: List[Path], out_dir: Path, report: Report) -
         f"outputs_dir={out_dir}",
     ]
     for p in outputs + [manifest_path, zip_path]:
-        try:
-            rel_name = p.resolve().relative_to(output_root.resolve()).as_posix()
-        except Exception:
-            rel_name = p.name
-        h = hashlib.sha256(p.read_bytes()).hexdigest()
+        rel_name = _relative_output_path(p, output_root)
+        h = _sha256_path(p)
         lines.append(f"OUT|{rel_name}|sha256={h}|bytes={p.stat().st_size}")
     sha_path.write_text("\n".join(lines), encoding="utf-8")
+    verify_final_deliverables(manifest_path, sha_path, zip_path, output_root, report)
     return manifest_path, sha_path, zip_path
 
 
@@ -3225,6 +3376,15 @@ def main() -> int:
             decoder_payload = decode_gfas_era5_gdal_proxy(Path(args.modulec_datos), qa_dir, report, admin_gpkg)
             if bool(decoder_payload.get("decoder_available")):
                 route_decision = select_smoke_route(sources, decoder_available=True)
+                decoder_reason = str(decoder_payload.get("reason") or "").strip()
+                if decoder_reason:
+                    route_decision = dict(route_decision)
+                    route_decision["reason"] = decoder_reason
+                    route_decision["allowed_use"] = "scientific_route_with_proxy_limits"
+                    route_decision["forbidden_use"] = (
+                        "Health or epidemiological exposure claims; "
+                        "causal closure beyond bounded direct-observation proxy support."
+                    )
         inputs = apply_route_meta(inputs, sources, route_decision)
         ensure_dir(inputs_path.parent)
         inputs_path.write_text(json.dumps(inputs, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -3369,7 +3529,11 @@ def main() -> int:
             scientific_decision_path,
         ]
         build_manifest_and_zip(outputs, deliver_dir, report)
-        report.log("END v2 PASS")
+        qa_decision, qa_summary, qa_holds = run_qa_gate(tables_dir, brief_path, report)
+        report.log(f"QA gate decision (post-step9): {qa_decision} | {qa_summary}")
+        if qa_holds:
+            report.log("QA holds after Step9 packaging: " + ", ".join(qa_holds))
+        build_manifest_and_zip(outputs, deliver_dir, report)
         if qgs:
             qgs.exitQgis()
         return 0

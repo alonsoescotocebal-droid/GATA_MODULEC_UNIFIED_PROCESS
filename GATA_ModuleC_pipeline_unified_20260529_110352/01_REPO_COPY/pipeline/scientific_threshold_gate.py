@@ -189,6 +189,25 @@ def evaluate_smoke_route_trace(inputs_json: Path) -> Tuple[str, str, str]:
     )
 
 
+def read_smoke_route_scope(inputs_json: Path) -> Dict[str, str]:
+    if not inputs_json.exists():
+        return {}
+    try:
+        payload = json.loads(inputs_json.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    meta = payload.get("meta", {})
+    if not isinstance(meta, dict):
+        return {}
+    return {
+        "reason": str(meta.get("smoke_route_reason") or "").strip(),
+        "allowed_use": str(meta.get("smoke_route_allowed_use") or "").strip(),
+        "forbidden_use": str(meta.get("smoke_route_forbidden_use") or "").strip(),
+    }
+
+
 def evaluate_population_cancellation(iech_hist_csv: Path) -> Tuple[str, str]:
     if not iech_hist_csv.exists():
         return "BLOCKED_FOR_REQUIRED_VARIABLE", "IECH_unit_2015_2024.csv missing"
@@ -379,6 +398,7 @@ def main() -> int:
         )
 
     route_status, route_obs, route_selected = evaluate_smoke_route_trace(inputs_json)
+    route_scope = read_smoke_route_scope(inputs_json)
     add_gate(
         "SMOKE-ROUTE-001",
         "Smoke route selector priority",
@@ -636,6 +656,11 @@ def main() -> int:
         decision_lines.append("- none")
     decision_lines.extend(
         [
+            "",
+            "## Smoke Route Scope",
+            f"- reason: {route_scope.get('reason') or 'n/a'}",
+            f"- allowed_use: {route_scope.get('allowed_use') or 'n/a'}",
+            f"- forbidden_use: {route_scope.get('forbidden_use') or 'n/a'}",
             "",
             "## Contracts",
             "- scientific_validation_gate.tsv generated",
