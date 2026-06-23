@@ -104,7 +104,36 @@ def load_config(config_path: Path) -> Dict[str, str]:
     missing = [k for k in required if not str(payload.get(k, "")).strip()]
     if missing:
         raise RuntimeError("Missing keys in canonical path config: " + ", ".join(missing))
-    return {k: str(payload[k]).strip() for k in required}
+    cfg = {k: str(payload[k]).strip() for k in required}
+    extra_prefixes = payload.get("DATA_ROOT_ALLOWED_PREFIXES")
+    if isinstance(extra_prefixes, list):
+        cfg["DATA_ROOT_ALLOWED_PREFIXES"] = json.dumps([str(p).strip() for p in extra_prefixes if str(p).strip()])
+    elif extra_prefixes is not None:
+        cfg["DATA_ROOT_ALLOWED_PREFIXES"] = str(extra_prefixes).strip()
+    return cfg
+
+
+def _allowed_data_prefixes(cfg: Dict[str, str]) -> List[Path]:
+    prefixes = [Path(cfg["DATA_ROOT_ALLOWED_PREFIX"])]
+    extra_raw = cfg.get("DATA_ROOT_ALLOWED_PREFIXES", "")
+    if extra_raw.strip():
+        try:
+            extra_payload = json.loads(extra_raw)
+            if isinstance(extra_payload, list):
+                prefixes.extend(Path(str(p).strip()) for p in extra_payload if str(p).strip())
+        except Exception:
+            for part in extra_raw.split(";"):
+                if part.strip():
+                    prefixes.append(Path(part.strip()))
+    seen = set()
+    out: List[Path] = []
+    for prefix in prefixes:
+        key = norm_path(prefix)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(prefix)
+    return out
 
 
 def evaluate(
@@ -136,7 +165,7 @@ def evaluate(
     expected_branch = cfg["EXPECTED_BRANCH"]
     expected_base_sha = cfg["EXPECTED_BASE_SHA"]
     forbidden_code_root = Path(cfg["FORBIDDEN_CODE_ROOT"])
-    data_prefix = Path(cfg["DATA_ROOT_ALLOWED_PREFIX"])
+    data_prefixes = _allowed_data_prefixes(cfg)
     output_prefix = Path(cfg["OUTPUT_ROOT_ALLOWED_PREFIX"])
 
     if is_same_or_subpath(pipeline_root, forbidden_code_root):
@@ -271,12 +300,12 @@ def evaluate(
             f"existing path under {data_prefix}",
             "Data root is missing.",
         )
-    elif not is_same_or_subpath(data_root, data_prefix):
+    elif not any(is_same_or_subpath(data_root, prefix) for prefix in data_prefixes):
         add(
             "P001_data_root_exists",
             STATE_BLOCKED_PATH_DESYNC,
             str(data_root),
-            str(data_prefix),
+            "; ".join(str(p) for p in data_prefixes),
             "Data root is outside allowed prefix.",
         )
     else:
@@ -284,7 +313,7 @@ def evaluate(
             "P001_data_root_exists",
             "PASS",
             str(data_root),
-            str(data_prefix),
+            "; ".join(str(p) for p in data_prefixes),
             "Data root exists under allowed prefix.",
         )
 

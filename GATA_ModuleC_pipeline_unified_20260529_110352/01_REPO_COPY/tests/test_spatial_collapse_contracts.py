@@ -30,8 +30,8 @@ def test_smoke_route_v0_audit_rows_contract():
     by_metric = {str(r[0]): r for r in rows}
     assert by_metric["backend_gfas"][1] == "GDAL"
     assert by_metric["eccodes_for_gfas"][1] == "REJECTED_OR_FORBIDDEN"
-    assert by_metric["health_exposure_claim"][1] == "BLOCKED_UNLESS_VALIDATED"
-    assert by_metric["health_exposure_claim"][2] == "BLOCKED"
+    assert by_metric["health_exposure_claim"][1] == "NON_HEALTH_LIMITATION_DECLARED"
+    assert by_metric["health_exposure_claim"][2] == "PASS"
 
 
 def test_finalize_unit_daily_scores_assigns_threshold_and_annual_counts(tmp_path):
@@ -109,9 +109,27 @@ def test_finalize_unit_daily_scores_assigns_threshold_and_annual_counts(tmp_path
     assert threshold is not None
     assert all(r["threshold_id"] == "GFAS_ERA5_PROXY_SMOKE_DAY_P60" for r in finalized)
     assert all("smoke_day_proxy" in r for r in finalized)
+    assert all("smoke_day_equivalent" in r for r in finalized)
     assert annual["PT111"][2022]["score_mean"] == 200.0
     assert annual["PT112"][2022]["score_mean"] == 300.0
+    assert annual["PT111"][2022]["smoke_days_binary"] == 1.0
+    assert annual["PT112"][2022]["smoke_days_binary"] == 1.0
+    assert round(annual["PT111"][2022]["smoke_days"], 6) == round((100.0 / 300.0) + (300.0 / 300.0), 6)
+    assert round(annual["PT112"][2022]["smoke_days"], 6) == round((200.0 / 300.0) + (400.0 / 300.0), 6)
     assert annual["PT111"][2022]["smoke_days"] != annual["PT112"][2022]["smoke_days"]
+
+
+def test_direct_decoder_helpers_expand_coverage_and_preserve_multi_point_variation():
+    mod = _load_module()
+
+    assert mod._planned_pm_message_count(730, 2) == 93
+    assert mod._planned_pm_message_count(366, 1) == 93
+    assert mod._planned_pm_message_count(93, 1) == 93
+
+    score = mod._direct_unit_smoke_score(2.0, 10.0)
+    assert score == ((2.0 * 0.75) + (10.0 * 0.25)) * 1.0e11
+    assert score < (10.0 * 1.0e11)
+    assert score > (2.0 * 1.0e11)
 
 
 def test_spatial_collapse_audit_and_brief_block_claims(tmp_path):

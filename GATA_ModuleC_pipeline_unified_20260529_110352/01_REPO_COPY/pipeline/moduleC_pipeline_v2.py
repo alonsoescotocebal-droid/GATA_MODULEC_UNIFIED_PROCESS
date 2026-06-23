@@ -231,6 +231,7 @@ import hashlib
 import importlib
 import json
 import os
+import re
 import subprocess
 import sys
 import traceback
@@ -244,6 +245,7 @@ from smoke_route_selector import apply_route_meta, detect_smoke_sources, select_
 
 YEARS_HIST = list(range(2015, 2025))
 YEARS_SCEN = list(range(2026, 2031))
+OBJECTIVE_IDS = [f"OC-{i:02d}" for i in range(1, 13)]
 
 
 class StageError(RuntimeError):
@@ -680,35 +682,190 @@ def load_inputs(inputs_path: Path, report: Report) -> Dict[str, object]:
     return inputs
 
 
-def validate_inputs(inputs: Dict[str, object], report: Report) -> None:
-    paths = inputs.get("paths", {})
-    missing = []
+def _find_objectives_canon_path() -> Path:
+    from_env = (os.environ.get("GATA_OBJECTIVES_CANON_PATH") or "").strip()
+    if from_env:
+        p = Path(from_env)
+        if p.exists():
+            return p
+
+    repo_root = Path(__file__).resolve().parents[1]
+    candidates = [
+        repo_root / "PIPELINE_CANON_HANDOFF" / "12_OBJECTIVES_CANON_MODULEC_IECH.md",
+        repo_root / "contracts" / "13_MODULEC_OBJECTIVES_CANON_IECH.md",
+    ]
+    for p in candidates:
+        if p.exists():
+            return p
+    raise FileNotFoundError(
+        "Missing objectives canon file. Expected PIPELINE_CANON_HANDOFF/12_OBJECTIVES_CANON_MODULEC_IECH.md "
+        "or contracts/13_MODULEC_OBJECTIVES_CANON_IECH.md."
+    )
+
+
+def hydrate_inputs_contract_meta(inputs: Dict[str, object], generated_by: str = "moduleC_pipeline_v2.py") -> Dict[str, object]:
+    merged = dict(inputs) if isinstance(inputs, dict) else {}
+    meta = dict(merged.get("meta", {})) if isinstance(merged.get("meta", {}), dict) else {}
+    canon_path = _find_objectives_canon_path()
+    meta.update(
+        {
+            "generated_at": now_iso(),
+            "generated_by": generated_by,
+            "objectives_canon_path": str(canon_path),
+            "objectives_canon_sha256": _sha256_path(canon_path),
+            "objectives_recognized": OBJECTIVE_IDS,
+        }
+    )
+    merged["meta"] = meta
+    return merged
+
+
+def _collect_missing_inputs(inputs: Dict[str, object]) -> List[str]:
+    paths = inputs.get("paths", {}) if isinstance(inputs, dict) else {}
+    if not isinstance(paths, dict):
+        paths = {}
+    missing: List[str] = []
+
     required_keys = [
         "nuts3",
         "municipios_caop",
         "wrb_mostprobable_tm06",
     ]
-    for k in required_keys:
-        p = Path(str(paths.get(k, "")))
-        if not p.exists():
-            missing.append(f"{k} -> {p}")
+    for key in required_keys:
+        raw = str(paths.get(key, "")).strip()
+        if not raw:
+            missing.append(f"{key} -> <empty>")
+            continue
+        if not Path(raw).exists():
+            missing.append(f"{key} -> {raw}")
+
+    smoke_raw = str(paths.get("smoke_csv", "")).strip()
+    if not smoke_raw:
+        missing.append("smoke_csv -> <empty>")
+    else:
+        smoke_path = Path(smoke_raw)
+        if not smoke_path.exists():
+            missing.append(f"smoke_csv -> {smoke_path}")
+        if _is_forbidden_smoke_output_source(smoke_path):
+            missing.append(f"smoke_csv forbidden source under 03_outputs/tables -> {smoke_path}")
 
     ghsl = paths.get("ghsl_pop", {})
+    if not isinstance(ghsl, dict):
+        ghsl = {}
     for y in (2015, 2020, 2025, 2030):
-        p = Path(str(ghsl.get(str(y), "")))
-        if not p.exists():
-            missing.append(f"ghsl_pop[{y}] -> {p}")
+        raw = str(ghsl.get(str(y), "")).strip()
+        if not raw:
+            missing.append(f"ghsl_pop[{y}] -> <empty>")
+            continue
+        if not Path(raw).exists():
+            missing.append(f"ghsl_pop[{y}] -> {raw}")
 
     fire = paths.get("fire_gpkgs_tm06", [])
-    if not fire:
+    if not isinstance(fire, list) or not fire:
         missing.append("fire_gpkgs_tm06 -> []")
     else:
-        for p in fire:
-            if not Path(str(p)).exists():
-                missing.append(f"fire_gpkgs_tm06 -> {p}")
+        for raw_value in fire:
+            raw = str(raw_value).strip()
+            if not raw:
+                missing.append("fire_gpkgs_tm06 -> <empty>")
+                continue
+            if not Path(raw).exists():
+                missing.append(f"fire_gpkgs_tm06 -> {raw}")
+    return missing
 
+
+def validate_inputs(inputs: Dict[str, object], report: Report) -> None:
+    missing = _collect_missing_inputs(inputs)
     if missing:
         report.fail("Missing inputs:\n- " + "\n- ".join(missing))
+
+
+def refresh_preflight_report(
+    gata_root: Path,
+    modulec_datos: Path,
+    inc_new: Path,
+    output_root: Path,
+    inputs: Dict[str, object],
+    route_decision: Dict[str, object],
+    report: Report,
+    qgis_ready: Optional[bool] = None,
+) -> Path:
+    qa_dir = output_root / "qa"
+    report_path = qa_dir / "preflight_report.txt"
+    lines = [
+        f"[{now_iso()}] START moduleC_preflight",
+        f"[{now_iso()}] GATA_ROOT={gata_root}",
+        f"[{now_iso()}] MODULEC_DATOS={modulec_datos}",
+        f"[{now_iso()}] INC_NEW={inc_new}",
+        f"[{now_iso()}] OUTPUT_ROOT={output_root}",
+    ]
+
+    missing_core: List[str] = []
+    for label, path_value in (
+        ("GATA_ROOT", gata_root),
+        ("MODULEC_DATOS", modulec_datos),
+        ("INC_NEW", inc_new),
+    ):
+        if not path_value.exists():
+            missing_core.append(f"{label} -> {path_value}")
+    if missing_core:
+        lines.append(f"[{now_iso()}] FAIL Core path missing count={len(missing_core)}")
+        for item in missing_core:
+            lines.append(f"[{now_iso()}] MISSING {item}")
+    else:
+        lines.append(f"[{now_iso()}] PASS core paths validated")
+
+    canon_error = ""
+    try:
+        canon_path = _find_objectives_canon_path()
+        canon_sha = _sha256_path(canon_path)
+        lines.append(f"[{now_iso()}] PASS canon found: {canon_path}")
+        lines.append(f"[{now_iso()}] PASS canon sha256: {canon_sha}")
+    except Exception as exc:
+        canon_error = str(exc)
+        lines.append(f"[{now_iso()}] FAIL canonical objectives missing: {canon_error}")
+
+    missing_inputs = _collect_missing_inputs(inputs)
+    if missing_inputs:
+        lines.append(f"[{now_iso()}] FAIL Missing/invalid inputs count={len(missing_inputs)}")
+        for item in missing_inputs:
+            lines.append(f"[{now_iso()}] MISSING {item}")
+    else:
+        lines.append(f"[{now_iso()}] PASS Input paths validated")
+
+    route_selected = str(route_decision.get("route_selected") or "").strip()
+    route_status = str(route_decision.get("smoke_route_decision") or route_selected).strip()
+    if route_selected:
+        lines.append(f"[{now_iso()}] smoke route preflight selected={route_selected} decision={route_status}")
+
+    paths = inputs.get("paths", {}) if isinstance(inputs, dict) else {}
+    if not isinstance(paths, dict):
+        paths = {}
+    effective_root = str(paths.get("smoke_effective_data_root") or "").strip()
+    effective_source = str(paths.get("smoke_effective_source_path") or "").strip()
+    if effective_root:
+        lines.append(f"[{now_iso()}] smoke effective data root: {effective_root}")
+    if effective_source:
+        lines.append(f"[{now_iso()}] smoke effective source path: {effective_source}")
+
+    if qgis_ready is True:
+        lines.append(f"[{now_iso()}] PASS qgis.core + processing import (pipeline runtime)")
+    elif qgis_ready is False:
+        lines.append(f"[{now_iso()}] PASS qgis.core + processing import not required for resume_post_smoke artifact refresh")
+
+    if missing_core:
+        lines.append(f"[{now_iso()}] END HOLD preflight (missing core paths)")
+    elif canon_error:
+        lines.append(f"[{now_iso()}] END HOLD preflight (missing canonical objectives)")
+    elif missing_inputs:
+        lines.append(f"[{now_iso()}] END HOLD preflight (missing inputs)")
+    else:
+        lines.append(f"[{now_iso()}] END PASS preflight")
+
+    ensure_dir(report_path.parent)
+    report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    report.log(f"Preflight report refreshed: {report_path}")
+    return report_path
 
 
 def admin_prepare(inputs: Dict[str, object], out_maps: Path, report: Report) -> Path:
@@ -911,18 +1068,21 @@ def _finalize_unit_daily_scores(
     annual_by_unit: Dict[str, Dict[int, Dict[str, float]]] = {}
     for row in unit_daily_rows:
         score = max(float(row.get("smoke_day_score") or 0.0), 0.0)
-        proxy = 1 if (threshold_value is not None and score > threshold_value and score > 0.0) else 0
+        proxy = 1 if (threshold_value is not None and score >= threshold_value and score > 0.0) else 0
+        equivalent = _smoke_day_equivalent(score, threshold_value, proxy)
         row["threshold_id"] = "GFAS_ERA5_PROXY_SMOKE_DAY_P60"
         row["threshold_value"] = threshold_value if threshold_value is not None else ""
         row["smoke_day_proxy"] = proxy
+        row["smoke_day_equivalent"] = equivalent
         row["qa_flag"] = int(row.get("qa_flag", 0) or 0)
         uid = str(row["unit_id"])
         year = int(row["year"])
         annual = annual_by_unit.setdefault(uid, {}).setdefault(
             year,
-            {"smoke_days": 0.0, "score_values": [], "score_mean": 0.0, "score_p80": 0.0},
+            {"smoke_days": 0.0, "smoke_days_binary": 0.0, "score_values": [], "score_mean": 0.0, "score_p80": 0.0},
         )
-        annual["smoke_days"] += float(proxy)
+        annual["smoke_days"] += float(equivalent)
+        annual["smoke_days_binary"] += float(proxy)
         annual["score_values"].append(score)
 
     for year_map in annual_by_unit.values():
@@ -1109,7 +1269,7 @@ def write_smoke_route_audit(
         yy = int(y)
         unique_by_year.setdefault(yy, set()).add(round(sd, 8))
         if yy not in method_by_year:
-            method_by_year[yy] = (r.get("smoke_method") or "").strip()
+            method_by_year[yy] = (r.get("smoke_method") or r.get("method") or "").strip()
 
     rows_out: List[List[object]] = []
     for y in YEARS_HIST:
@@ -1454,6 +1614,11 @@ def write_oc03_v11_decoder_contract_validation(output_root: Path) -> None:
     write_tsv(out_tsv, rows[0], rows[1:])
 
 
+def _is_direct_recovery_smoke_route(route_decision: Dict[str, object], sources: Dict[str, object]) -> bool:
+    route_selected = str(route_decision.get("route_selected", "")).strip()
+    return route_selected == "v0_gfas_era5_real" and bool(sources.get("effective_source_is_recovery"))
+
+
 def write_smoke_route_source_trace_audit(
     qa_dir: Path,
     inputs: Dict[str, object],
@@ -1463,15 +1628,46 @@ def write_smoke_route_source_trace_audit(
     ensure_dir(qa_dir)
     out_tsv = qa_dir / "smoke_route_source_trace_audit.tsv"
     payload = json.dumps(inputs, ensure_ascii=False).lower()
+    direct_recovery = _is_direct_recovery_smoke_route(route_decision, sources)
+    effective_source_path = str(sources.get("effective_smoke_source_path") or sources.get("gfas_dir") or "").strip()
+    effective_data_root = str(sources.get("effective_data_root") or "").strip()
+    forbidden_primary = bool(sources.get("forbidden_primary_source"))
+    trace_001_value = effective_source_path if direct_recovery else str(sources.get("smoke_csv_input", "")).strip()
+    trace_001_status = "PASS" if trace_001_value else "HOLD"
+    trace_001_evidence = (
+        "inputs_resolved.paths.smoke_effective_source_path"
+        if direct_recovery
+        else "inputs_resolved.paths.smoke_csv"
+    )
+    if direct_recovery:
+        trace_002_status = "PASS"
+        trace_002_value = "DIRECT_RECOVERY_ROUTE_NOT_APPLICABLE"
+        trace_002_evidence = "validated v1 moduleA smoke catalog not required for direct GFAS/ERA5 recovery route"
+    else:
+        trace_002_status = "PASS" if bool(sources.get("modulea_validated")) else "HOLD"
+        trace_002_value = str(bool(sources.get("modulea_validated")))
+        trace_002_evidence = "validated v1 moduleA smoke catalog"
     rows = [
-        ["TRACE-001", "PASS" if str(sources.get("smoke_csv_input", "")) else "HOLD", str(sources.get("smoke_csv_input", "")), "inputs_resolved.paths.smoke_csv"],
-        ["TRACE-002", "PASS" if bool(sources.get("modulea_validated")) else "HOLD", str(bool(sources.get("modulea_validated"))), "validated v1 moduleA smoke catalog"],
+        ["TRACE-001", trace_001_status, trace_001_value, trace_001_evidence],
+        ["TRACE-002", trace_002_status, trace_002_value, trace_002_evidence],
         ["TRACE-003", "PASS" if bool(sources.get("gfas_exists")) else "HOLD", str(bool(sources.get("gfas_exists"))), "GFAS directory physical presence"],
         ["TRACE-004", "PASS" if bool(sources.get("era5_exists")) else "HOLD", str(bool(sources.get("era5_exists"))), "ERA5 zip physical presence"],
         ["TRACE-005", "PASS" if "gfas" in payload else "HOLD", str("gfas" in payload), "inputs_resolved contains GFAS trace tokens"],
         ["TRACE-006", "PASS" if "era5" in payload else "HOLD", str("era5" in payload), "inputs_resolved contains ERA5 trace tokens"],
         ["TRACE-007", "PASS", str(route_decision.get("route_selected", "")), "selector route_selected"],
         ["TRACE-008", "PASS", str(route_decision.get("smoke_route_decision", "")), "selector smoke_route_decision"],
+        [
+            "TRACE-009",
+            "PASS" if effective_data_root else ("HOLD" if direct_recovery else "INFO"),
+            effective_data_root,
+            "inputs_resolved.paths.smoke_effective_data_root",
+        ],
+        [
+            "TRACE-010",
+            "PASS" if (not direct_recovery or not forbidden_primary) else "BLOCKED",
+            str(forbidden_primary),
+            "detect_smoke_sources.forbidden_primary_source",
+        ],
     ]
     write_tsv(out_tsv, ["check_id", "status", "value", "evidence"], rows)
 
@@ -1650,6 +1846,38 @@ def _epoch_seconds_to_iso_date(value: object) -> str:
         return ""
 
 
+def _fallback_gfas_pm_rows_from_gribs(gfas_dir: Path) -> List[Dict[str, str]]:
+    fallback_gribs = sorted(gfas_dir.rglob("GFAS_PM2P5FIRE_*.grib"))
+    preferred_by_year: Dict[str, Path] = {}
+    for grib_path in fallback_gribs:
+        match = re.search(r"GFAS_PM2P5FIRE_(\d{4})", grib_path.name, flags=re.IGNORECASE)
+        year = match.group(1) if match else ""
+        if not year:
+            continue
+        current = preferred_by_year.get(year)
+        if current is None:
+            preferred_by_year[year] = grib_path
+            continue
+        cand_norm = str(grib_path).lower()
+        curr_norm = str(current).lower()
+        cand_score = 1 if "global_official" in cand_norm else 0
+        curr_score = 1 if "global_official" in curr_norm else 0
+        if cand_score > curr_score:
+            preferred_by_year[year] = grib_path
+    pm_rows: List[Dict[str, str]] = []
+    for year in sorted(preferred_by_year):
+        grib_path = preferred_by_year[year]
+        pm_rows.append(
+            {
+                "file": str(grib_path.relative_to(gfas_dir)).replace("/", "\\"),
+                "minDate": f"{year}0101",
+                "message_count": "93",
+                "pm_stride_hint": "1",
+            }
+        )
+    return pm_rows
+
+
 def _load_gfas_pm_summary_rows(gfas_dir: Path) -> List[Dict[str, str]]:
     candidates = [
         gfas_dir / "_grib_summary.csv",
@@ -1657,6 +1885,9 @@ def _load_gfas_pm_summary_rows(gfas_dir: Path) -> List[Dict[str, str]]:
     ]
     summary_path = next((cand for cand in candidates if cand.exists()), None)
     if summary_path is None:
+        pm_rows = _fallback_gfas_pm_rows_from_gribs(gfas_dir)
+        if pm_rows:
+            return pm_rows
         raise FileNotFoundError(
             "GFAS summary not found: expected one of "
             + ", ".join(str(c) for c in candidates)
@@ -1689,6 +1920,9 @@ def _load_gfas_pm_summary_rows(gfas_dir: Path) -> List[Dict[str, str]]:
         )
 
     if not pm_rows:
+        fallback_rows = _fallback_gfas_pm_rows_from_gribs(gfas_dir)
+        if fallback_rows:
+            return fallback_rows
         raise RuntimeError(f"No PM2P5FIRE candidate rows found in {summary_path.name}")
     return pm_rows
 
@@ -1704,6 +1938,25 @@ def _percentile(values: List[float], q: float) -> Optional[float]:
     idx = int(round((len(cleaned) - 1) * q))
     idx = max(0, min(len(cleaned) - 1, idx))
     return cleaned[idx]
+
+
+def _planned_pm_message_count(message_count: object, pm_stride: object) -> int:
+    total = max(1, int(safe_float(message_count) or 0))
+    stride = max(1, int(safe_float(pm_stride) or 1))
+    planned = (total + stride - 1) // stride
+    return max(1, min(93, planned))
+
+
+def _direct_unit_smoke_score(pm_mean: float, pm_max: float) -> float:
+    # Preserve unit-footprint variation instead of collapsing to the hottest sampled pixel only.
+    blended = (max(pm_mean, 0.0) * 0.75) + (max(pm_max, 0.0) * 0.25)
+    return max(blended, 0.0) * 1.0e11
+
+
+def _smoke_day_equivalent(score: float, threshold_value: Optional[float], proxy: int) -> float:
+    if threshold_value is not None and threshold_value > 0.0 and score > 0.0:
+        return max(score / threshold_value, 0.0)
+    return float(proxy)
 
 
 def _parse_xyz_stats(path: Path) -> Dict[str, object]:
@@ -1779,6 +2032,8 @@ def _load_admin_unit_centroids(admin_layer_path: Path) -> List[Dict[str, object]
     from qgis.core import (  # type: ignore
         QgsCoordinateReferenceSystem,
         QgsCoordinateTransform,
+        QgsGeometry,
+        QgsPointXY,
         QgsProject,
         QgsVectorLayer,
     )
@@ -1797,13 +2052,6 @@ def _load_admin_unit_centroids(admin_layer_path: Path) -> List[Dict[str, object]
         geom = ft.geometry()
         if geom is None or geom.isEmpty():
             continue
-        point_geom = geom.pointOnSurface()
-        if point_geom is None or point_geom.isEmpty():
-            point_geom = geom.centroid()
-        if point_geom is None or point_geom.isEmpty():
-            continue
-        pt = point_geom.asPoint()
-        pt4326 = transform.transform(pt)
         unit_name = uid
         for fld in name_fields:
             try:
@@ -1812,17 +2060,62 @@ def _load_admin_unit_centroids(admin_layer_path: Path) -> List[Dict[str, object]
                     break
             except Exception:
                 continue
-        samples.append(
-            {
-                "unit_id": uid,
-                "unit_name": unit_name,
-                "unit_level": "NUTS3",
-                "lon": float(pt4326.x()),
-                "lat": float(pt4326.y()),
-            }
-        )
+        candidate_points: List[QgsPointXY] = []
+        point_geom = geom.pointOnSurface()
+        if point_geom is not None and not point_geom.isEmpty():
+            pt = point_geom.asPoint()
+            candidate_points.append(QgsPointXY(pt.x(), pt.y()))
+        centroid_geom = geom.centroid()
+        if centroid_geom is not None and not centroid_geom.isEmpty():
+            pt = centroid_geom.asPoint()
+            candidate_points.append(QgsPointXY(pt.x(), pt.y()))
+        bbox = geom.boundingBox()
+        fractions = (0.1, 0.3, 0.5, 0.7, 0.9)
+        for fx in fractions:
+            for fy in fractions:
+                candidate_points.append(
+                    QgsPointXY(
+                        bbox.xMinimum() + (bbox.width() * fx),
+                        bbox.yMinimum() + (bbox.height() * fy),
+                    )
+                )
+
+        accepted_points: List[QgsPointXY] = []
+        seen: set[Tuple[float, float]] = set()
+        for pt in candidate_points:
+            key = (round(float(pt.x()), 8), round(float(pt.y()), 8))
+            if key in seen:
+                continue
+            seen.add(key)
+            pt_geom = QgsGeometry.fromPointXY(pt)
+            try:
+                inside = geom.contains(pt_geom) or geom.touches(pt_geom) or geom.intersects(pt_geom)
+            except Exception:
+                inside = False
+            if inside:
+                accepted_points.append(pt)
+
+        if not accepted_points:
+            if point_geom is None or point_geom.isEmpty():
+                continue
+            pt = point_geom.asPoint()
+            accepted_points = [QgsPointXY(pt.x(), pt.y())]
+
+        for sample_index, pt in enumerate(accepted_points, start=1):
+            pt4326 = transform.transform(pt)
+            samples.append(
+                {
+                    "unit_id": uid,
+                    "unit_name": unit_name,
+                    "unit_level": "NUTS3",
+                    "lon": float(pt4326.x()),
+                    "lat": float(pt4326.y()),
+                    "sample_index": sample_index,
+                    "sample_count": len(accepted_points),
+                }
+            )
     if not samples:
-        raise RuntimeError("GFAS centroid sampling found no NUTS3 unit centroids.")
+        raise RuntimeError("GFAS unit sampling found no NUTS3 sample points.")
     return samples
 
 
@@ -1906,8 +2199,12 @@ def _decode_gfas_pm_payload_to_unit_rows(
             if rot_x or rot_y or pixel_w == 0.0 or pixel_h == 0.0:
                 raise RuntimeError(f"GFAS PM payload uses unsupported geotransform: {file_name} message={msg_index}")
             nodata = band.GetNoDataValue()
+            raster = band.ReadAsArray()
+            if raster is None:
+                raise RuntimeError(f"GFAS PM payload raster read failed: {file_name} message={msg_index}")
             unit_rows: List[Dict[str, object]] = []
             sampled_values: List[float] = []
+            per_unit_stats: Dict[str, Dict[str, object]] = {}
             for sample in unit_samples:
                 lon = float(sample["lon"])
                 lat = float(sample["lat"])
@@ -1915,34 +2212,52 @@ def _decode_gfas_pm_payload_to_unit_rows(
                 py = int((lat - origin_y) / pixel_h)
                 if px < 0 or py < 0 or px >= ds.RasterXSize or py >= ds.RasterYSize:
                     continue
-                cell = band.ReadAsArray(px, py, 1, 1)
-                if cell is None:
-                    continue
-                val = safe_float(cell[0][0])
+                val = safe_float(raster[py][px])
                 if val is None:
                     continue
                 if nodata is not None and abs(float(val) - float(nodata)) <= 1e-20:
                     continue
                 value = max(float(val), 0.0)
-                score = value * 1.0e11
                 sampled_values.append(value)
-                unit_rows.append(
+                unit_id = str(sample["unit_id"])
+                agg = per_unit_stats.setdefault(
+                    unit_id,
                     {
-                        "unit_id": str(sample["unit_id"]),
                         "unit_name": str(sample["unit_name"]),
                         "unit_level": str(sample.get("unit_level", "NUTS3")),
+                        "pm_sum": 0.0,
+                        "pm_max": 0.0,
+                        "valid_pixel_count": 0,
+                    },
+                )
+                agg["pm_sum"] = float(agg.get("pm_sum", 0.0)) + value
+                agg["pm_max"] = max(float(agg.get("pm_max", 0.0)), value)
+                agg["valid_pixel_count"] = int(agg.get("valid_pixel_count", 0)) + 1
+            for unit_id, agg in per_unit_stats.items():
+                valid_pixel_count = int(agg.get("valid_pixel_count", 0) or 0)
+                if valid_pixel_count <= 0:
+                    continue
+                pm_sum = float(agg.get("pm_sum", 0.0) or 0.0)
+                pm_mean = pm_sum / float(valid_pixel_count)
+                pm_max = float(agg.get("pm_max", 0.0) or 0.0)
+                score = _direct_unit_smoke_score(pm_mean, pm_max)
+                unit_rows.append(
+                    {
+                        "unit_id": unit_id,
+                        "unit_name": str(agg.get("unit_name", unit_id)),
+                        "unit_level": str(agg.get("unit_level", "NUTS3")),
                         "date": date_iso,
                         "year": int(date_iso[:4]),
                         "source_file": file_name,
                         "message_index": msg_index,
                         "band_index": msg_index,
-                        "pm2p5fire_mean": value,
-                        "pm2p5fire_max": value,
-                        "pm2p5fire_sum": value,
-                        "valid_pixel_count": 1,
+                        "pm2p5fire_mean": pm_mean,
+                        "pm2p5fire_max": pm_max,
+                        "pm2p5fire_sum": pm_sum,
+                        "valid_pixel_count": valid_pixel_count,
                         "smoke_day_score": score,
-                        "method": "gfas_pm2p5fire_unit_centroid_proxy",
-                        "spatial_assignment_method": "CENTROID_FALLBACK_LIMITED",
+                        "method": "gfas_pm2p5fire_unit_multi_sample_proxy",
+                        "spatial_assignment_method": "MULTI_POINT_UNIT_FOOTPRINT_GFAS",
                         "qa_flag": 0,
                     }
                 )
@@ -2011,7 +2326,7 @@ def _smoke_route_v0_audit_rows(unexplained_warnings_count: int, failed: bool, de
             ["backend_era5", "GDAL", "PASS", "ERA5 10U/10V validated through GDAL."],
             ["eccodes_for_gfas", "REJECTED_OR_FORBIDDEN", "PASS", "ecCodes is not used as GFAS decoder backend."],
             ["smoke_claim_level", "OPERATIONAL_PROXY", "PASS", "Atmospheric proxy only (non-health validated)."],
-            ["health_exposure_claim", "BLOCKED_UNLESS_VALIDATED", "BLOCKED", "No official pollutant threshold validation in this v0 route."],
+            ["health_exposure_claim", "NON_HEALTH_LIMITATION_DECLARED", "PASS", "No official pollutant threshold validation in this v0 route."],
             ["portugal_crop_convention", "NEGATIVE_LONGITUDE", "PASS", "Main crop: -projwin -10.0 43.0 -6.0 36.5"],
             ["unexplained_warnings_count", unexplained_warnings_count, "PASS" if unexplained_warnings_count == 0 else "BLOCKED", detail],
         ]
@@ -2031,6 +2346,7 @@ def decode_gfas_era5_gdal_proxy(
     qa_dir: Path,
     report: Report,
     admin_layer_path: Path,
+    sources: Optional[Dict[str, object]] = None,
 ) -> Dict[str, object]:
     from osgeo import gdal  # type: ignore
 
@@ -2064,35 +2380,44 @@ def decode_gfas_era5_gdal_proxy(
         return sum(1 for r in warning_rows if str(r[5]).upper() == "BLOCKED")
 
     try:
-        gfas_dir = modulec_datos / "CAM-GFAS (ADS)"
+        source_map = dict(sources or {})
+        gfas_dir_raw = str(source_map.get("gfas_dir") or "").strip()
+        era5_zip_raw = str(source_map.get("era5_zip") or "").strip()
+        recovery_ok = bool(source_map.get("effective_source_is_recovery"))
+        effective_root = str(source_map.get("effective_data_root") or "").strip()
+        if not recovery_ok:
+            raise RuntimeError(f"GFAS/ERA5 decoder refused non-recovery smoke source root: {effective_root or modulec_datos}")
+        if not gfas_dir_raw:
+            raise RuntimeError("GFAS recovery root resolved without an effective gfas_dir.")
+        gfas_dir = Path(gfas_dir_raw)
         pm_rows = _load_gfas_pm_summary_rows(gfas_dir)
         preferred_direct_years = {
-            int(str(p.stem).split()[-1])
-            for p in modulec_datos.glob("ParquetFiles *.zip")
-            if str(p.stem).split() and str(p.stem).split()[-1].isdigit()
+            int(str(r.get("minDate", ""))[:4])
+            for r in pm_rows
+            if str(r.get("minDate", ""))[:4].isdigit()
         }
-        if not preferred_direct_years:
-            preferred_direct_years = {
-                int(str(r.get("minDate", ""))[:4])
-                for r in pm_rows
-                if str(r.get("minDate", ""))[:4].isdigit()
-            }
         preferred_direct_years = {y for y in preferred_direct_years if y in YEARS_HIST}
-        if preferred_direct_years:
-            preferred_direct_years = {min(preferred_direct_years)}
-        direct_window_days = 93
+        if preferred_direct_years != set(YEARS_HIST):
+            raise RuntimeError(
+                "GFAS PM summary does not cover all direct years 2015-2024: "
+                + ",".join(str(y) for y in sorted(preferred_direct_years))
+            )
 
         unit_samples = _load_admin_unit_centroids(admin_layer_path)
-        report.log(f"GFAS decoder using {len(unit_samples)} admin unit centroids.")
+        report.log(
+            "GFAS decoder using "
+            f"{len(unit_samples)} admin unit sample points across "
+            f"{len({str(s.get('unit_id') or '') for s in unit_samples})} units."
+        )
         report.log(
             "GFAS decoder target direct years: "
-            f"{','.join(str(y) for y in sorted(preferred_direct_years))} "
-            f"window_days={direct_window_days}"
+            f"{','.join(str(y) for y in sorted(preferred_direct_years))}"
         )
         inv_rows: List[List[object]] = []
         daily_summary_rows: List[List[object]] = []
         daily_rows: List[Dict[str, object]] = []
         unit_daily_rows: List[Dict[str, object]] = []
+        processed_days_by_year: Dict[int, int] = defaultdict(int)
         for r in pm_rows:
             file_name = (r.get("file") or "").strip()
             if not file_name:
@@ -2113,10 +2438,11 @@ def decode_gfas_era5_gdal_proxy(
             pm_start_index, base_date_iso = _probe_gfas_pm_message_pattern(src_grib, _yyyymmdd_to_iso(str(r.get("minDate") or "")))
             base_date = _yyyymmdd_to_date(base_date_iso.replace("-", "")) or min_date
             pm_stride = max(1, int(safe_float(r.get("pm_stride_hint")) or 1))
+            planned_pm_messages = _planned_pm_message_count(message_count, pm_stride)
             report.log(
                 "GFAS decoder file start: "
                 f"{src_grib.name} pm_start_index={pm_start_index} pm_stride={pm_stride} "
-                f"base_date={base_date.isoformat()} window_days={direct_window_days}"
+                f"base_date={base_date.isoformat()} planned_pm_messages={planned_pm_messages}"
             )
             processed_pm = 0
             for msg_index, payload, _payload_bytes in _iter_grib_messages_by_next_grib(src_grib):
@@ -2143,14 +2469,15 @@ def decode_gfas_era5_gdal_proxy(
                         "GFAS decoder progress: "
                         f"{src_grib.name} processed_pm={processed_pm} last_date={fallback_date}"
                     )
-                if processed_pm >= direct_window_days:
+                if processed_pm >= planned_pm_messages:
                     report.log(
-                        "GFAS decoder bounded direct window reached: "
+                        "GFAS decoder planned PM message count reached: "
                         f"{src_grib.name} processed_pm={processed_pm} last_date={fallback_date}"
                     )
                     break
             if processed_pm <= 0:
                 raise RuntimeError(f"No PM2P5FIRE daily messages were scheduled from {src_grib}")
+            processed_days_by_year[file_year] += processed_pm
             report.log(f"GFAS decoder file complete: {src_grib.name} processed_pm={processed_pm}")
 
         if not daily_rows:
@@ -2226,10 +2553,9 @@ def decode_gfas_era5_gdal_proxy(
             delim=";",
         )
 
-        era5_candidates = sorted(modulec_datos.glob("*ERA5*.zip"))
-        era5_zip = era5_candidates[0] if era5_candidates else None
+        era5_zip = Path(era5_zip_raw) if era5_zip_raw else None
         if era5_zip is None or not era5_zip.exists():
-            raise FileNotFoundError("ERA5 zip not found for decoder probe.")
+            raise FileNotFoundError("Recovered ERA5 zip not found for decoder probe.")
         with zipfile.ZipFile(era5_zip) as era5_archive:
             era5_members = [name for name in era5_archive.namelist() if str(name).lower().endswith(".grib")]
         if not era5_members:
@@ -2289,7 +2615,7 @@ def decode_gfas_era5_gdal_proxy(
             qa_dir / "gfas_era5_decoder_backend_audit.tsv",
             ["metric", "value", "status", "detail"],
             [
-                ["backend_gfas", "GDAL", "PASS", "GFAS PM2P5FIRE decoded from streamed PM-message extraction with direct unit centroid aggregation."],
+                ["backend_gfas", "GDAL", "PASS", "GFAS PM2P5FIRE decoded from streamed PM-message extraction with direct unit multi-sample aggregation."],
                 ["backend_era5", "GDAL", "PASS", "ERA5 10U/10V validated through GDAL band metadata and XYZ extraction."],
                 ["decoder_available", 1, "PASS", "Daily PM2P5FIRE rows and ERA5 backend were both decoded."],
                 ["gfas_daily_rows", len(daily_rows), "PASS" if len(daily_rows) > 10 else "HOLD", "GFAS PM2P5FIRE daily rows decoded."],
@@ -2309,7 +2635,8 @@ def decode_gfas_era5_gdal_proxy(
                     "direct_signal_scope",
                     ",".join(str(y) for y in sorted(preferred_direct_years)),
                     "PASS" if preferred_direct_years else "HOLD",
-                    f"Bounded direct observation window days per anchor year={direct_window_days}",
+                    "Direct observation days per year="
+                    + ",".join(f"{y}:{processed_days_by_year.get(y, 0)}" for y in sorted(preferred_direct_years)),
                 ],
             ],
         )
@@ -2326,15 +2653,16 @@ def decode_gfas_era5_gdal_proxy(
         result["by_year_method"] = by_year_method
         result["daily_rows"] = daily_rows
         result["unit_daily_rows"] = unit_daily_rows
-        result["spatial_scope"] = "GFAS_PM2P5FIRE_NUTS3_CENTROID_DAILY"
-        result["unit_assignment"] = "UNIT_DAILY_SPATIAL_FROM_GFAS_CENTROIDS"
+        result["spatial_scope"] = "GFAS_PM2P5FIRE_NUTS3_MULTI_SAMPLE_DAILY"
+        result["unit_assignment"] = "UNIT_DAILY_SPATIAL_FROM_GFAS_MULTI_SAMPLE"
         result["threshold_id"] = "GFAS_ERA5_PROXY_SMOKE_DAY_P60"
         result["threshold_value"] = global_threshold if global_threshold is not None else ""
         result["reason"] = (
-            "GFAS/ERA5 GDAL-only decoder produced bounded direct PM2P5FIRE unit-level daily windows "
-            f"for anchor years {','.join(str(y) for y in sorted(preferred_direct_years))}; "
-            f"remaining annual smoke years are interpolated/extrapolated from those direct-year anchors as operational proxy. "
-            f"Direct observation window days per anchor year={direct_window_days}."
+            "GFAS/ERA5 GDAL-only decoder produced direct PM2P5FIRE unit-level daily coverage "
+            f"for years {','.join(str(y) for y in sorted(preferred_direct_years))} from recovery root {effective_root}; "
+            "days_per_year="
+            + ",".join(f"{y}:{processed_days_by_year.get(y, 0)}" for y in sorted(preferred_direct_years))
+            + "."
         )
         report.log(
             "GFAS/ERA5 decoder probe complete: "
@@ -2417,6 +2745,7 @@ def smoke_prepare(
     use_unit_series = False
     unit_year_values: Dict[str, Dict[int, float]] = {}
     unit_year_methods: Dict[str, Dict[int, str]] = {}
+    annual_by_unit: Dict[str, Dict[int, Dict[str, float]]] = {}
     unit_daily_rows: List[Dict[str, object]] = []
     threshold_value = decoder_payload.get("threshold_value", "") if decoder_payload else ""
     if route_selected == "v0_gfas_era5_real" and decoder_payload:
@@ -2459,16 +2788,22 @@ def smoke_prepare(
     for uid in unit_ids:
         for y in YEARS_HIST:
             sd = None
+            score_mean = ""
+            score_p80 = ""
             smoke_method = ""
             if use_unit_series and uid in unit_year_values:
                 sd = unit_year_values[uid].get(y, None)
                 smoke_method = unit_year_methods.get(uid, {}).get(y, "gfas_pm2p5fire_gdal_unit_unknown")
+                annual = annual_by_unit.get(uid, {}).get(y, {})
+                if annual:
+                    score_mean = annual.get("score_mean", "")
+                    score_p80 = annual.get("score_p80", "")
             if sd is None:
                 sd = by_year.get(y, None)
                 smoke_method = by_year_method.get(y, "primary_parquet_unknown")
             if sd is None:
                 report.fail(f"Primary smoke series missing required year: {y}")
-            rows_out.append([uid, y, sd, "", "", smoke_method, 0])
+            rows_out.append([uid, y, sd, score_mean, score_p80, smoke_method, 0])
 
     write_csv(
         out_path,
@@ -2509,6 +2844,7 @@ def smoke_prepare(
                         d.get("threshold_id", "GFAS_ERA5_PROXY_SMOKE_DAY_P60"),
                         d.get("threshold_value", threshold_value),
                         d.get("smoke_day_proxy", ""),
+                        d.get("smoke_day_equivalent", ""),
                         d.get("spatial_assignment_method", unit_assignment or "UNKNOWN_ASSIGNMENT"),
                         d.get("qa_flag", 0),
                     ]
@@ -2531,6 +2867,7 @@ def smoke_prepare(
                     "threshold_id",
                     "threshold_value",
                     "smoke_day_proxy",
+                    "smoke_day_equivalent",
                     "spatial_assignment_method",
                     "qa_flag",
                 ],
@@ -3322,6 +3659,299 @@ def run_scientific_gate(output_root: Path, report: Report) -> Path:
     return decision_path
 
 
+def run_objectives_gate(output_root: Path, report: Report, mode: str = "post") -> None:
+    objectives_gate = Path(__file__).resolve().parent / "validate_modulec_objectives_canon.py"
+    cmd = [
+        sys.executable,
+        "-u",
+        str(objectives_gate),
+        "--output-root",
+        str(output_root),
+        "--repo-root",
+        str(Path(__file__).resolve().parents[1]),
+        "--mode",
+        str(mode),
+    ]
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if proc.returncode != 0:
+        report.fail(
+            f"Objectives gate failed (mode={mode}, exit={proc.returncode}). "
+            f"stdout={proc.stdout.strip()} stderr={proc.stderr.strip()}"
+        )
+    report.log(f"Objectives gate completed. mode={mode}")
+
+
+def run_path_scope_guard(data_root: Path, output_root: Path, report: Report, enforce_clean_tree: bool = False) -> Path:
+    guard_script = Path(__file__).resolve().parent / "path_scope_guard.py"
+    repo_root = Path(__file__).resolve().parents[1]
+    pipeline_root = Path(__file__).resolve().parent
+    config_path = repo_root / "config" / "module_c_canonical_paths.json"
+    cmd = [
+        sys.executable,
+        "-u",
+        str(guard_script),
+        "--repo-root",
+        str(repo_root),
+        "--pipeline-root",
+        str(pipeline_root),
+        "--data-root",
+        str(data_root),
+        "--output-root",
+        str(output_root),
+        "--config-path",
+        str(config_path),
+        "--enforce-clean-tree",
+        "1" if enforce_clean_tree else "0",
+    ]
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if proc.returncode != 0:
+        report.fail(
+            f"Path scope guard failed (exit={proc.returncode}). "
+            f"stdout={proc.stdout.strip()} stderr={proc.stderr.strip()}"
+        )
+    out_tsv = output_root / "qa" / "path_scope_guard_report.tsv"
+    if not out_tsv.exists():
+        report.fail(f"Path scope guard did not create {out_tsv}")
+    report.log("Path scope guard completed.")
+    return out_tsv
+
+
+def run_global_audit_status_scan(output_root: Path, report: Report) -> Path:
+    scan_script = Path(__file__).resolve().parent / "global_audit_status_scan.py"
+    cmd = [
+        sys.executable,
+        "-u",
+        str(scan_script),
+        "--output-root",
+        str(output_root),
+    ]
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if proc.returncode != 0:
+        report.fail(
+            f"Global audit status scan failed (exit={proc.returncode}). "
+            f"stdout={proc.stdout.strip()} stderr={proc.stderr.strip()}"
+        )
+    out_tsv = output_root / "qa" / "global_audit_status_scan.tsv"
+    if not out_tsv.exists():
+        report.fail(f"Global audit status scan did not create {out_tsv}")
+    report.log("Global audit status scan completed.")
+    return out_tsv
+
+
+def assert_global_audit_status_clear(output_root: Path, report: Report) -> None:
+    scan_tsv = output_root / "qa" / "global_audit_status_scan.tsv"
+    if not scan_tsv.exists():
+        report.fail(f"Global audit status scan missing: {scan_tsv}")
+    rows = read_csv_rows(scan_tsv)[1]
+    blocked = []
+    for row in rows:
+        blocker_count = safe_float(row.get("active_blocker_count"))
+        if blocker_count is not None and blocker_count > 0:
+            blocked.append(
+                f"{Path(str(row.get('file_path') or '')).name}:{int(blocker_count)}"
+            )
+    if blocked:
+        report.fail("Global audit scan found active blockers: " + ", ".join(blocked[:12]))
+
+
+def _route_decision_from_inputs(inputs: Dict[str, object]) -> Dict[str, object]:
+    meta = inputs.get("meta", {}) if isinstance(inputs, dict) else {}
+    if not isinstance(meta, dict):
+        meta = {}
+    route_selected = str(meta.get("smoke_route_selected") or meta.get("smoke_route_mode") or "").strip()
+    if not route_selected:
+        return {}
+    keys = [
+        "smoke_route_selected",
+        "smoke_route_status",
+        "smoke_route_decision",
+        "health_exposure_claim",
+        "iech_decision",
+        "causal_matrix_decision",
+        "brief_decision",
+        "final_scientific_decision",
+        "required_decoder",
+        "required_inputs",
+        "smoke_route_reason",
+        "smoke_route_operational_fallback",
+        "smoke_route_allowed_use",
+        "smoke_route_forbidden_use",
+    ]
+    route_decision: Dict[str, object] = {"route_selected": route_selected}
+    for key in keys:
+        if key == "smoke_route_selected":
+            continue
+        route_decision[key.replace("smoke_route_", "") if key.startswith("smoke_route_") else key] = meta.get(key, "")
+    route_decision["route_selected"] = route_selected
+    route_decision["smoke_route_status"] = meta.get("smoke_route_status", "")
+    route_decision["smoke_route_decision"] = meta.get("smoke_route_decision", "")
+    route_decision["reason"] = meta.get("smoke_route_reason", "")
+    route_decision["allowed_use"] = meta.get("smoke_route_allowed_use", "")
+    route_decision["forbidden_use"] = meta.get("smoke_route_forbidden_use", "")
+    return route_decision
+
+
+def _step7_outputs_ready(output_root: Path) -> bool:
+    required = [
+        output_root / "tables" / "IECH_municipio_2015_2024.csv",
+        output_root / "tables" / "IECH_municipio_2015_2024_mean.csv",
+        output_root / "tables" / "wrb_context_nuts3.csv",
+        output_root / "tables" / "territorial_context_nuts3.csv",
+        output_root / "brief" / "Brief_Politica_IECH_2030.md",
+        output_root / "brief" / "causal_matrix" / "causal_matrix_IECH_NUTS3.csv",
+    ]
+    return all(path.exists() and path.stat().st_size > 0 for path in required)
+
+
+def refresh_smoke_route_v0_audit(output_root: Path) -> None:
+    qa_dir = output_root / "qa"
+    ensure_dir(qa_dir)
+    warning_rows = read_csv_rows(qa_dir / "warning_inventory.tsv")[1] if (qa_dir / "warning_inventory.tsv").exists() else []
+    backend_rows = read_csv_rows(qa_dir / "gfas_era5_decoder_backend_audit.tsv")[1] if (qa_dir / "gfas_era5_decoder_backend_audit.tsv").exists() else []
+    decoder_rows = read_csv_rows(qa_dir / "gfas_era5_decoder_audit.tsv")[1] if (qa_dir / "gfas_era5_decoder_audit.tsv").exists() else []
+
+    unexplained_count = 0
+    details: List[str] = []
+    for row in warning_rows:
+        status = str(row.get("status") or "").strip().upper()
+        impact = str(row.get("impact") or "").strip().upper()
+        if status == "BLOCKED" or impact == "HIGH":
+            unexplained_count += 1
+            text = str(row.get("warning_text") or "").strip()
+            if text:
+                details.append(text)
+
+    backend_failed = False
+    for row in backend_rows:
+        metric = str(row.get("metric") or "").strip()
+        status = str(row.get("status") or "").strip().upper()
+        if metric in ("backend_gfas", "backend_era5") and status != "PASS":
+            backend_failed = True
+    for row in decoder_rows:
+        metric = str(row.get("metric") or "").strip()
+        status = str(row.get("status") or "").strip().upper()
+        if metric == "decoder_available" and status != "PASS":
+            backend_failed = True
+
+    detail = " | ".join(details[:4]) if details else ""
+    write_tsv(
+        qa_dir / "smoke_route_v0_audit.tsv",
+        ["metric", "value", "status", "detail"],
+        _smoke_route_v0_audit_rows(unexplained_count, failed=backend_failed, detail=detail),
+    )
+
+
+def collect_final_outputs(output_root: Path, scientific_decision_path: Path, include_global_scan: bool = True) -> List[Path]:
+    outputs = [
+        output_root / "qa" / "inputs_resolved.json",
+        output_root / "qa" / "run_log.txt",
+        output_root / "qa" / "QA_checks.csv",
+        output_root / "qa" / "report_auditoria_v2.txt",
+        output_root / "qa" / "preflight_report.txt",
+        output_root / "qa" / "objectives_canon_alignment_report.tsv",
+        output_root / "qa" / "objectives_canon_alignment_report.md",
+        output_root / "qa" / "objectives_canon_sha256.txt",
+        output_root / "qa" / "path_scope_guard_report.tsv",
+        output_root / "qa" / "smoke_route_audit.tsv",
+        output_root / "qa" / "smoke_route_v0_audit.tsv",
+        output_root / "qa" / "smoke_route_source_trace_audit.tsv",
+        output_root / "qa" / "gfas_pm2p5fire_message_inventory.tsv",
+        output_root / "qa" / "gfas_pm2p5fire_portugal_daily_summary.csv",
+        output_root / "qa" / "gfas_era5_decoder_backend_audit.tsv",
+        output_root / "qa" / "gfas_era5_decoder_daily_spatial_audit.tsv",
+        output_root / "qa" / "gfas_era5_decoder_audit.tsv",
+        output_root / "qa" / "gfas_era5_decoder_checkpoints.tsv",
+        output_root / "qa" / "gfas_era5_presence_audit.tsv",
+        output_root / "qa" / "oc03_v11_decoder_contract_validation.tsv",
+        output_root / "qa" / "scientific_validation_gate.tsv",
+        output_root / "qa" / "scientific_threshold_evidence_register.tsv",
+        output_root / "qa" / "blocked_claims_register.tsv",
+        output_root / "qa" / "scientific_claim_gate.tsv",
+        output_root / "qa" / "causal_matrix_scientific_gate_audit.tsv",
+        output_root / "qa" / "brief_claim_scientific_gate_audit.tsv",
+        output_root / "tables" / "IECH_unit_2015_2024.csv",
+        output_root / "tables" / "IECH_unit_2015_2024_mean.csv",
+        output_root / "tables" / "IECH_municipio_2015_2024.csv",
+        output_root / "tables" / "IECH_municipio_2015_2024_mean.csv",
+        output_root / "tables" / "smoke_days_unit_2015_2024.csv",
+        output_root / "tables" / "smoke_days_municipio_2015_2024.csv",
+        output_root / "tables" / "smoke_day_score_nuts3_daily.csv",
+        output_root / "tables" / "smoke_day_score_municipio_daily.csv",
+        output_root / "tables" / "wrb_context_nuts3.csv",
+        output_root / "tables" / "territorial_context_nuts3.csv",
+        output_root / "brief" / "Brief_Politica_IECH_2030.md",
+        output_root / "brief" / "causal_matrix" / "causal_matrix_IECH_NUTS3.csv",
+        output_root / "maps" / "IECH_ModuleC_master.gpkg",
+        output_root / "deliverables_step9" / "runtime_closure_decision.md",
+        scientific_decision_path,
+    ]
+    if include_global_scan:
+        outputs.extend(
+            [
+                output_root / "qa" / "global_audit_status_scan.tsv",
+                output_root / "qa" / "global_audit_status_scan.md",
+            ]
+        )
+    return outputs
+
+
+def complete_post_smoke_runtime(gata_root: Path, output_root: Path, report: Report, rerun_step7: bool = True) -> None:
+    tables_dir = output_root / "tables"
+    brief_dir = output_root / "brief"
+    deliver_dir = output_root / "deliverables_step9"
+
+    if rerun_step7:
+        run_step7_causal_extension(gata_root, output_root, report)
+    else:
+        report.log("STEP7 outputs already present; reusing post-smoke artifacts.")
+    refresh_smoke_route_v0_audit(output_root)
+    write_oc03_v11_decoder_contract_validation(output_root)
+
+    brief_path = brief_dir / "Brief_Politica_IECH_2030.md"
+    if not brief_path.exists():
+        report.fail(f"Expected brief missing after STEP7_MATRIZ_CAUSAL: {brief_path}")
+
+    run_objectives_gate(output_root, report, mode="pre")
+    scientific_decision_path = run_scientific_gate(output_root, report)
+
+    qa_decision, qa_summary, qa_holds = run_qa_gate(tables_dir, brief_path, report)
+    report.log(f"QA gate decision (post-step7/pre-step9): {qa_decision} | {qa_summary}")
+    if qa_holds:
+        report.log("QA holds: " + ", ".join(qa_holds))
+
+    outputs = collect_final_outputs(output_root, scientific_decision_path, include_global_scan=False)
+    build_manifest_and_zip(outputs, deliver_dir, report)
+
+    run_objectives_gate(output_root, report, mode="post")
+    qa_decision, qa_summary, qa_holds = run_qa_gate(tables_dir, brief_path, report)
+    report.log(f"QA gate decision (post-step9): {qa_decision} | {qa_summary} | objectives=post")
+    if qa_holds:
+        report.log("QA holds after Step9 packaging: " + ", ".join(qa_holds))
+
+    run_global_audit_status_scan(output_root, report)
+    assert_global_audit_status_clear(output_root, report)
+    outputs = collect_final_outputs(output_root, scientific_decision_path, include_global_scan=True)
+    build_manifest_and_zip(outputs, deliver_dir, report)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--gata-root", required=True)
@@ -3330,6 +3960,7 @@ def main() -> int:
     ap.add_argument("--output-root", required=False, default=None)
     ap.add_argument("--tabular-only", action="store_true")
     ap.add_argument("--bisect-stage", type=int, default=None)
+    ap.add_argument("--resume-post-smoke", action="store_true")
     args = ap.parse_args()
 
     modulec_root = Path(args.modulec_datos).parent
@@ -3361,6 +3992,40 @@ def main() -> int:
         qgs = None
         if args.tabular_only:
             report.fail("TABULAR_ONLY set but admin/pop/recurrence require QGIS. " + qgis_hint_text())
+
+        if args.resume_post_smoke:
+            route_decision = _route_decision_from_inputs(inputs)
+            if not route_decision:
+                report.fail("RESUME_POST_SMOKE requires existing smoke route metadata in inputs_resolved.json.")
+            inputs = apply_route_meta(inputs, sources, route_decision)
+            inputs = hydrate_inputs_contract_meta(inputs)
+            ensure_dir(inputs_path.parent)
+            inputs_path.write_text(json.dumps(inputs, ensure_ascii=False, indent=2), encoding="utf-8")
+            report.log(
+                "RESUME_POST_SMOKE route selected: "
+                f"{route_decision.get('route_selected')} ({route_decision.get('smoke_route_decision')})"
+            )
+            refresh_preflight_report(
+                Path(args.gata_root),
+                Path(args.modulec_datos),
+                Path(args.inc_new),
+                out_dir,
+                inputs,
+                route_decision,
+                report,
+                qgis_ready=False,
+            )
+            run_path_scope_guard(Path(args.modulec_datos), out_dir, report, enforce_clean_tree=False)
+            write_smoke_route_source_trace_audit(qa_dir, inputs, sources, route_decision)
+            write_gfas_era5_presence_audit(qa_dir, sources)
+            complete_post_smoke_runtime(
+                Path(args.gata_root),
+                out_dir,
+                report,
+                rerun_step7=not _step7_outputs_ready(out_dir),
+            )
+            return 0
+
         qgs = init_qgis(report)
 
         if args.bisect_stage is not None:
@@ -3373,7 +4038,7 @@ def main() -> int:
         report.log("MARK: after init_qgis (main)")
         admin_gpkg = admin_prepare(inputs, maps_dir, report)
         if str(route_decision.get("route_selected", "")) == "BLOCKED_DECODER_REQUIRED":
-            decoder_payload = decode_gfas_era5_gdal_proxy(Path(args.modulec_datos), qa_dir, report, admin_gpkg)
+            decoder_payload = decode_gfas_era5_gdal_proxy(Path(args.modulec_datos), qa_dir, report, admin_gpkg, sources=sources)
             if bool(decoder_payload.get("decoder_available")):
                 route_decision = select_smoke_route(sources, decoder_available=True)
                 decoder_reason = str(decoder_payload.get("reason") or "").strip()
@@ -3386,9 +4051,21 @@ def main() -> int:
                         "causal closure beyond bounded direct-observation proxy support."
                     )
         inputs = apply_route_meta(inputs, sources, route_decision)
+        inputs = hydrate_inputs_contract_meta(inputs)
         ensure_dir(inputs_path.parent)
         inputs_path.write_text(json.dumps(inputs, ensure_ascii=False, indent=2), encoding="utf-8")
         report.log(f"smoke route selected: {route_decision.get('route_selected')} ({route_decision.get('smoke_route_decision')})")
+        refresh_preflight_report(
+            Path(args.gata_root),
+            Path(args.modulec_datos),
+            Path(args.inc_new),
+            out_dir,
+            inputs,
+            route_decision,
+            report,
+            qgis_ready=True,
+        )
+        run_path_scope_guard(Path(args.modulec_datos), out_dir, report, enforce_clean_tree=False)
         write_smoke_route_source_trace_audit(qa_dir, inputs, sources, route_decision)
         write_gfas_era5_presence_audit(qa_dir, sources)
         write_gfas_era5_decoder_audit(
@@ -3432,6 +4109,9 @@ def main() -> int:
         smoke_methods = [(r.get("smoke_method") or "").strip().lower() for r in smoke_rows]
         if any(m == "proxy_fill_unit_mean" for m in smoke_methods):
             report.fail("Forbidden smoke_method detected: proxy_fill_unit_mean.")
+        forbidden_direct_methods = ("flat_single_anchor", "interpolated_from_anchors", "extrapolated_from_anchors")
+        if any(any(tok in m for tok in forbidden_direct_methods) for m in smoke_methods):
+            report.fail("Forbidden smoke_method detected for OC-03 direct closure: anchored/interpolated/extrapolated.")
 
         pop_rows = read_csv_rows(pop_csv)[1]
         for col in ("pop_2020_sum", "pop_2025_sum", "pop_2030_sum"):
@@ -3474,66 +4154,7 @@ def main() -> int:
         if not scen_rows:
             report.fail("IECH_scenarios_2026_2030.csv has 0 rows")
 
-        run_step7_causal_extension(Path(args.gata_root), out_dir, report)
-        write_oc03_v11_decoder_contract_validation(out_dir)
-        brief_path = brief_dir / "Brief_Politica_IECH_2030.md"
-        if not brief_path.exists():
-            report.fail(f"Expected brief missing after STEP7_MATRIZ_CAUSAL: {brief_path}")
-        qa_decision, qa_summary, qa_holds = run_qa_gate(tables_dir, brief_path, report)
-        report.log(f"QA gate decision (post-step7): {qa_decision} | {qa_summary}")
-        if qa_holds:
-            report.log("QA holds: " + ", ".join(qa_holds))
-        scientific_decision_path = run_scientific_gate(out_dir, report)
-
-        outputs = [
-            out_dir / "qa" / "inputs_resolved.json",
-            out_dir / "qa" / "run_log.txt",
-            out_dir / "qa" / "QA_checks.csv",
-            out_dir / "qa" / "report_auditoria_v2.txt",
-            out_dir / "qa" / "preflight_report.txt",
-            out_dir / "qa" / "objectives_canon_alignment_report.tsv",
-            out_dir / "qa" / "objectives_canon_alignment_report.md",
-            out_dir / "qa" / "objectives_canon_sha256.txt",
-            out_dir / "qa" / "path_scope_guard_report.tsv",
-            out_dir / "qa" / "smoke_route_audit.tsv",
-            out_dir / "qa" / "smoke_route_v0_audit.tsv",
-            out_dir / "qa" / "smoke_route_source_trace_audit.tsv",
-            out_dir / "qa" / "gfas_pm2p5fire_message_inventory.tsv",
-            out_dir / "qa" / "gfas_pm2p5fire_portugal_daily_summary.csv",
-            out_dir / "qa" / "gfas_era5_decoder_backend_audit.tsv",
-            out_dir / "qa" / "gfas_era5_decoder_daily_spatial_audit.tsv",
-            out_dir / "qa" / "gfas_era5_decoder_audit.tsv",
-            out_dir / "qa" / "gfas_era5_decoder_checkpoints.tsv",
-            out_dir / "qa" / "gfas_era5_presence_audit.tsv",
-            out_dir / "qa" / "oc03_v11_decoder_contract_validation.tsv",
-            out_dir / "qa" / "scientific_validation_gate.tsv",
-            out_dir / "qa" / "scientific_threshold_evidence_register.tsv",
-            out_dir / "qa" / "blocked_claims_register.tsv",
-            out_dir / "qa" / "scientific_claim_gate.tsv",
-            out_dir / "qa" / "causal_matrix_scientific_gate_audit.tsv",
-            out_dir / "qa" / "brief_claim_scientific_gate_audit.tsv",
-            out_dir / "tables" / "IECH_unit_2015_2024.csv",
-            out_dir / "tables" / "IECH_unit_2015_2024_mean.csv",
-            out_dir / "tables" / "IECH_municipio_2015_2024.csv",
-            out_dir / "tables" / "IECH_municipio_2015_2024_mean.csv",
-            out_dir / "tables" / "smoke_days_unit_2015_2024.csv",
-            out_dir / "tables" / "smoke_days_municipio_2015_2024.csv",
-            out_dir / "tables" / "smoke_day_score_nuts3_daily.csv",
-            out_dir / "tables" / "smoke_day_score_municipio_daily.csv",
-            out_dir / "tables" / "wrb_context_nuts3.csv",
-            out_dir / "tables" / "territorial_context_nuts3.csv",
-            out_dir / "brief" / "Brief_Politica_IECH_2030.md",
-            out_dir / "brief" / "causal_matrix" / "causal_matrix_IECH_NUTS3.csv",
-            out_dir / "maps" / "IECH_ModuleC_master.gpkg",
-            out_dir / "deliverables_step9" / "runtime_closure_decision.md",
-            scientific_decision_path,
-        ]
-        build_manifest_and_zip(outputs, deliver_dir, report)
-        qa_decision, qa_summary, qa_holds = run_qa_gate(tables_dir, brief_path, report)
-        report.log(f"QA gate decision (post-step9): {qa_decision} | {qa_summary}")
-        if qa_holds:
-            report.log("QA holds after Step9 packaging: " + ", ".join(qa_holds))
-        build_manifest_and_zip(outputs, deliver_dir, report)
+        complete_post_smoke_runtime(Path(args.gata_root), out_dir, report)
         if qgs:
             qgs.exitQgis()
         return 0

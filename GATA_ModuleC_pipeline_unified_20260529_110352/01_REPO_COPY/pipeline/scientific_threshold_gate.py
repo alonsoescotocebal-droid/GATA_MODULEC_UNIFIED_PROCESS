@@ -11,6 +11,17 @@ import sys
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
+FORBIDDEN_DIRECT_METHOD_TOKENS = ("flat_single_anchor", "interpolated_from_anchors", "extrapolated_from_anchors")
+FORBIDDEN_PRIMARY_SOURCE_TOKENS = (
+    "parquetfiles 2017.zip",
+    "parquetfiles 2022.zip",
+    "era5_d016a6f04c5e420341cf0e7293fcfb56.zip",
+    "\\oc03_v9d",
+    "\\oc03_v11",
+    "\\oc03_v12",
+    "\\03_outputs\\oc03_v",
+)
+
 
 def now_iso() -> str:
     return dt.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
@@ -39,6 +50,20 @@ def safe_float(v: object):
         return float(s)
     except Exception:
         return None
+
+
+def _norm_path_text(value: object) -> str:
+    return str(value or "").replace("/", "\\").lower().strip()
+
+
+def _is_forbidden_primary_source(*paths: object) -> bool:
+    norm_paths = [_norm_path_text(path) for path in paths if str(path or "").strip()]
+    for norm in norm_paths:
+        if any(tok in norm for tok in FORBIDDEN_PRIMARY_SOURCE_TOKENS):
+            return True
+        if "\\cam-gfas (ads)" in norm and "datos_recovery_" not in norm:
+            return True
+    return False
 
 
 def sha256_file(path: Path) -> str:
@@ -80,25 +105,25 @@ def evaluate_smoke_spatial(smoke_csv: Path) -> Tuple[str, str, Dict[int, int]]:
     if not rows:
         return "BLOCKED_FOR_REQUIRED_VARIABLE", "smoke_days_unit_2015_2024.csv empty", {}
     by_year: Dict[int, set] = {}
-    signal_years: set[int] = set()
+    direct_years: set[int] = set()
     for r in rows:
         y = safe_float(r.get("year"))
         v = safe_float(r.get("smoke_days"))
-        method = (r.get("smoke_method") or "").strip().lower()
+        method = (r.get("smoke_method") or r.get("method") or "").strip().lower()
         if y is None or v is None:
             continue
         year_int = int(y)
-        if ("direct_year" in method) and (float(v) > 0.0):
-            signal_years.add(year_int)
+        if ("direct_year" in method) or (not method):
+            direct_years.add(year_int)
             by_year.setdefault(year_int, set()).add(round(v, 8))
-    if not signal_years:
+    if not direct_years:
         return "BLOCKED_FOR_REQUIRED_VARIABLE", "No direct-signal smoke years with positive smoke_days", {}
-    unique_counts = {y: len(by_year.get(y, set())) for y in sorted(signal_years)}
+    unique_counts = {y: len(by_year.get(y, set())) for y in sorted(direct_years)}
     blocked_years = [y for y, n in unique_counts.items() if n <= 1]
     if blocked_years:
         return (
             "BLOCKED_SPATIAL_SMOKE_CLAIM",
-            "Direct signal years with <=1 unique smoke_days across units: " + ",".join(str(y) for y in sorted(blocked_years)),
+            "Direct years with <=1 unique smoke_days across units: " + ",".join(str(y) for y in sorted(blocked_years)),
             unique_counts,
         )
     return "THRESHOLD_DEFINED_AS_INTERNAL_STATISTICAL_CLASSIFICATION", "Direct-signal smoke spatial differentiation detected.", unique_counts
@@ -206,6 +231,66 @@ def read_smoke_route_scope(inputs_json: Path) -> Dict[str, str]:
         "allowed_use": str(meta.get("smoke_route_allowed_use") or "").strip(),
         "forbidden_use": str(meta.get("smoke_route_forbidden_use") or "").strip(),
     }
+
+
+def evaluate_direct_decoder_contract(output_root: Path) -> Tuple[str, str]:
+    inputs_json = output_root / "qa" / "inputs_resolved.json"
+    decoder_audit = output_root / "qa" / "gfas_era5_decoder_daily_spatial_audit.tsv"
+    smoke_audit = output_root / "qa" / "smoke_route_audit.tsv"
+    if not inputs_json.exists():
+        return "BLOCKED_FOR_REQUIRED_VARIABLE", "inputs_resolved.json missing"
+    if not decoder_audit.exists():
+        return "BLOCKED_FOR_REQUIRED_VARIABLE", "gfas_era5_decoder_daily_spatial_audit.tsv missing"
+    if not smoke_audit.exists():
+        return "BLOCKED_FOR_REQUIRED_VARIABLE", "smoke_route_audit.tsv missing"
+
+    payload = json.loads(inputs_json.read_text(encoding="utf-8-sig"))
+    meta = payload.get("meta", {}) if isinstance(payload, dict) else {}
+    paths = payload.get("paths", {}) if isinstance(payload, dict) else {}
+    if not isinstance(meta, dict):
+        meta = {}
+    if not isinstance(paths, dict):
+        paths = {}
+
+    route_selected = str(meta.get("smoke_route_selected") or meta.get("smoke_route_mode") or "").strip()
+    effective_root = str(paths.get("smoke_effective_data_root") or "").replace("/", "\\").lower()
+    effective_path = str(paths.get("smoke_effective_source_path") or "").replace("/", "\\").lower()
+    recovery_flag = bool(meta.get("smoke_route_detected_sources", {}).get("effective_source_is_recovery")) if isinstance(meta.get("smoke_route_detected_sources"), dict) else False
+
+    if route_selected != "v0_gfas_era5_real":
+        return "BLOCKED_DECODER_REQUIRED", f"route_selected={route_selected or 'EMPTY'}"
+    if not recovery_flag or "datos_recovery_2015_2024_pipeline_grib" not in (effective_root + " " + effective_path):
+        return "BLOCKED_FOR_REQUIRED_VARIABLE", f"effective recovery smoke root missing in inputs_resolved: {effective_root or effective_path}"
+    if _is_forbidden_primary_source(effective_root, effective_path):
+        return "BLOCKED_SPATIAL_SMOKE_CLAIM", f"forbidden legacy primary smoke source detected: {effective_path or effective_root}"
+
+    decoder_rows = read_csv_rows(decoder_audit)
+    decoder_map = {str(r.get("metric") or "").strip().lower(): r for r in decoder_rows}
+    unique_years = int(
+        safe_float(decoder_map.get("uniqueyears", {}).get("value"))
+        or safe_float(decoder_map.get("unique_years", {}).get("value"))
+        or 0
+    )
+    unique_dates = int(
+        safe_float(decoder_map.get("uniquedates", {}).get("value"))
+        or safe_float(decoder_map.get("unique_dates", {}).get("value"))
+        or 0
+    )
+    if unique_years < 10 or unique_dates <= 900:
+        return "BLOCKED_SPATIAL_SMOKE_CLAIM", f"direct decoder depth insufficient: unique_years={unique_years}, unique_dates={unique_dates}"
+
+    smoke_rows = read_csv_rows(smoke_audit)
+    bad_methods = sorted(
+        {
+            str(r.get("smoke_method") or r.get("method") or "").strip()
+            for r in smoke_rows
+            if any(tok in str(r.get("smoke_method") or r.get("method") or "").strip().lower() for tok in FORBIDDEN_DIRECT_METHOD_TOKENS)
+        }
+    )
+    if bad_methods:
+        return "BLOCKED_SPATIAL_SMOKE_CLAIM", "forbidden direct smoke methods present: " + ", ".join(bad_methods[:6])
+
+    return "THRESHOLD_DEFINED_AS_INDEXED_METHOD", f"direct decoder depth passed: unique_years={unique_years}, unique_dates={unique_dates}"
 
 
 def evaluate_population_cancellation(iech_hist_csv: Path) -> Tuple[str, str]:
@@ -428,6 +513,22 @@ def main() -> int:
         "Smoke proxy can be used as common baseline when blocked.",
         "Spatially differentiated smoke exposure claim when n_unique<=1.",
         "NO-GO_SCIENTIFIC_THRESHOLD" if smoke_status.startswith("BLOCKED") else "NONE",
+    )
+
+    direct_contract_status, direct_contract_obs = evaluate_direct_decoder_contract(output_root)
+    add_gate(
+        "SMOKE-DIRECT-2015-2024",
+        "Recovered GFAS/ERA5 direct closure contract",
+        str(output_root / "qa" / "gfas_era5_decoder_daily_spatial_audit.tsv"),
+        "unique_years, unique_dates, smoke_method, effective recovery root",
+        direct_contract_obs,
+        "Requires route_selected=v0_gfas_era5_real, recovery root trace, unique_years>=10, unique_dates>900, no anchored/interpolated/extrapolated methods.",
+        "SRC-GATE-SMOKE-DIRECT-2015-2024",
+        "METHODOLOGICAL_GATE",
+        direct_contract_status,
+        "Direct recovered smoke closure for 2015-2024.",
+        "Direct 2015-2024 smoke closure when recovered source or decoder depth is insufficient.",
+        "NO-GO_SCIENTIFIC_THRESHOLD" if direct_contract_status.startswith("BLOCKED") else "NONE",
     )
 
     health_status, health_obs = evaluate_health_claim_support(smoke_csv)

@@ -14,6 +14,18 @@ import zipfile
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+YEARS_HIST = list(range(2015, 2025))
+FORBIDDEN_DIRECT_METHOD_TOKENS = ("flat_single_anchor", "interpolated_from_anchors", "extrapolated_from_anchors")
+FORBIDDEN_PRIMARY_SOURCE_TOKENS = (
+    "parquetfiles 2017.zip",
+    "parquetfiles 2022.zip",
+    "era5_d016a6f04c5e420341cf0e7293fcfb56.zip",
+    "\\oc03_v9d",
+    "\\oc03_v11",
+    "\\oc03_v12",
+    "\\03_outputs\\oc03_v",
+)
+
 
 OBJECTIVES: List[Dict[str, object]] = [
     {
@@ -239,6 +251,122 @@ def _check_smoke_inputs_clean(inputs: Dict[str, object]) -> Tuple[bool, str]:
     return True, f"smoke_csv source OK: {smoke}"
 
 
+def _norm_text(value: object) -> str:
+    return str(value or "").replace("/", "\\").lower().strip()
+
+
+def _is_forbidden_primary_source(*paths: object) -> bool:
+    norm_paths = [_norm_text(path) for path in paths if str(path or "").strip()]
+    for norm in norm_paths:
+        if any(tok in norm for tok in FORBIDDEN_PRIMARY_SOURCE_TOKENS):
+            return True
+        if "\\cam-gfas (ads)" in norm and "datos_recovery_" not in norm:
+            return True
+    return False
+
+
+def _count_unique_numeric(rows: List[Dict[str, str]], preferred_cols: List[str]) -> int:
+    if not rows:
+        return 0
+    cols = list(rows[0].keys())
+    target = ""
+    for col in preferred_cols:
+        if col in cols:
+            target = col
+            break
+    if not target:
+        for col in cols:
+            low = col.lower()
+            if "iech" in low and ("mean" in low or low == "iech"):
+                target = col
+                break
+    if not target:
+        return 0
+    vals = []
+    for row in rows:
+        val = safe_float(row.get(target))
+        if val is not None:
+            vals.append(round(float(val), 8))
+    return len(set(vals))
+
+
+def _check_oc03_v13_direct_contract(output_root: Path, inputs: Dict[str, object]) -> Tuple[bool, str]:
+    qa_dir = output_root / "qa"
+    smoke_audit_path = qa_dir / "smoke_route_audit.tsv"
+    decoder_audit_path = qa_dir / "gfas_era5_decoder_daily_spatial_audit.tsv"
+    smoke_rows = _v10b_read_rows_if_exists(smoke_audit_path)
+    decoder_rows = _v10b_read_rows_if_exists(decoder_audit_path)
+
+    if not smoke_rows:
+        return False, "smoke_route_audit.tsv missing or unreadable."
+    if not decoder_rows:
+        return False, "gfas_era5_decoder_daily_spatial_audit.tsv missing or unreadable."
+
+    meta = inputs.get("meta", {}) if isinstance(inputs, dict) else {}
+    paths = inputs.get("paths", {}) if isinstance(inputs, dict) else {}
+    if not isinstance(meta, dict):
+        meta = {}
+    if not isinstance(paths, dict):
+        paths = {}
+
+    route_selected = str(meta.get("smoke_route_selected") or meta.get("smoke_route_mode") or "").strip()
+    effective_source_path = str(paths.get("smoke_effective_source_path") or meta.get("effective_smoke_source_path") or "").strip()
+    effective_root = str(paths.get("smoke_effective_data_root") or meta.get("effective_data_root") or "").strip()
+    recovery_flag = bool(meta.get("smoke_route_detected_sources", {}).get("effective_source_is_recovery")) if isinstance(meta.get("smoke_route_detected_sources"), dict) else False
+
+    if route_selected != "v0_gfas_era5_real":
+        return False, f"OC-03 direct closure requires route_selected=v0_gfas_era5_real, found {route_selected or 'EMPTY'}"
+    if not recovery_flag:
+        return False, "inputs_resolved does not mark the effective smoke source as recovery-backed."
+    if "datos_recovery_2015_2024_pipeline_grib" not in _norm_text(effective_root) and "datos_recovery_2015_2024_pipeline_grib" not in _norm_text(effective_source_path):
+        return False, f"inputs_resolved effective smoke source does not point to recovery GFAS root: {effective_root or effective_source_path}"
+    if _is_forbidden_primary_source(effective_source_path, effective_root):
+        return False, f"inputs_resolved effective smoke source still points to forbidden legacy/proxy input: {effective_source_path or effective_root}"
+
+    blocked_methods = sorted(
+        {
+            str(r.get("smoke_method") or r.get("method") or "").strip()
+            for r in smoke_rows
+            if any(tok in str(r.get("smoke_method") or r.get("method") or "").strip().lower() for tok in FORBIDDEN_DIRECT_METHOD_TOKENS)
+        }
+    )
+    if blocked_methods:
+        return False, "Forbidden OC-03 closure methods present in smoke_route_audit.tsv: " + ", ".join(blocked_methods[:6])
+
+    smoke_unique_counts = [int(safe_float(r.get("unique_values")) or 0) for r in smoke_rows if safe_float(r.get("year")) is not None]
+    if len(smoke_unique_counts) < len(YEARS_HIST):
+        return False, f"smoke_route_audit.tsv covers only {len(smoke_unique_counts)} years, expected {len(YEARS_HIST)}"
+    if min(smoke_unique_counts) <= 1:
+        return False, f"smoke_route_audit.tsv still has homogeneous direct years: min unique_values={min(smoke_unique_counts)}"
+
+    decoder_map = {str(r.get("metric") or "").strip().lower(): r for r in decoder_rows}
+    unique_years = int(safe_float(decoder_map.get("uniqueyears", {}).get("value")) or safe_float(decoder_map.get("unique_years", {}).get("value")) or 0)
+    unique_dates = int(safe_float(decoder_map.get("uniquedates", {}).get("value")) or safe_float(decoder_map.get("unique_dates", {}).get("value")) or 0)
+    if unique_years < 10:
+        return False, f"Decoder daily spatial audit unique_years={unique_years} < 10"
+    if unique_dates <= 900:
+        return False, f"Decoder daily spatial audit unique_dates={unique_dates} <= 900"
+
+    iech_unit_rows = _v10b_read_rows_if_exists(output_root / "tables" / "IECH_unit_2015_2024_mean.csv")
+    iech_muni_rows = _v10b_read_rows_if_exists(output_root / "tables" / "IECH_municipio_2015_2024_mean.csv")
+    unit_unique = _count_unique_numeric(iech_unit_rows, ["IECH_mean_2015_2024", "IECH_mean"])
+    muni_unique = _count_unique_numeric(iech_muni_rows, ["IECH_mean_2015_2024", "IECH_mean"])
+    if unit_unique < 23:
+        return False, f"IECH_unit_2015_2024_mean unique numeric values={unit_unique} < 23"
+    if muni_unique < 278:
+        return False, f"IECH_municipio_2015_2024_mean unique numeric values={muni_unique} < 278"
+
+    smoke_unit_rows = _v10b_read_rows_if_exists(output_root / "tables" / "smoke_days_unit_2015_2024.csv")
+    smoke_vals = [round(float(v), 8) for r in smoke_unit_rows if (v := safe_float(r.get("smoke_days"))) is not None]
+    if len(set(smoke_vals)) <= 3 and unit_unique <= 4 and muni_unique <= 38:
+        return False, "Runtime matches forbidden V9D/V12H proxy signature (smoke/IECH uniqueness collapse)."
+
+    return True, (
+        f"OC-03 direct contract passed: unique_years={unique_years}, unique_dates={unique_dates}, "
+        f"IECH unit unique={unit_unique}, IECH municipio unique={muni_unique}"
+    )
+
+
 def _check_wrb_quality(output_root: Path) -> Tuple[bool, str]:
     p = output_root / "tables" / "wrb_context_nuts3.csv"
     if not p.exists():
@@ -434,13 +562,31 @@ def _v10b_v0_audit_not_blocked(output_root: Path) -> Tuple[bool, str]:
         return False, "smoke_route_v0_audit.tsv missing or unreadable."
     blocking = []
     for r in rows:
+        metric = str(r.get("metric") or "").strip()
+        value = str(r.get("value") or "").strip()
+        detail = str(r.get("detail") or "").strip()
         text = " ".join(str(v) for v in r.values()).strip()
         tl = text.lower()
         status = str(r.get("status") or r.get("gate_status") or "").strip().upper()
+        if metric == "health_exposure_claim" and status == "PASS":
+            continue
+        if metric == "unexplained_warnings_count":
+            unexplained = safe_float(value) or 0.0
+            if unexplained <= 0 and status == "PASS":
+                continue
         if status in ("HOLD", "BLOCKED", "FAIL", "NO-GO", "NO_GO"):
             blocking.append(text[:220])
             continue
-        if any(tok in tl for tok in ["failed", "probe not completed", "unexplained", "blocked", "decoder required", "gdalinfo failed", "rc=1", "warning"]):
+        if any(tok in tl for tok in ["failed", "probe not completed", "decoder required", "gdalinfo failed", "rc=1"]):
+            blocking.append(text[:220])
+            continue
+        if metric == "backend_gfas" and status != "PASS":
+            blocking.append(text[:220])
+            continue
+        if metric == "backend_era5" and status != "PASS":
+            blocking.append(text[:220])
+            continue
+        if metric == "portugal_crop_convention" and status != "PASS":
             blocking.append(text[:220])
     if blocking:
         return False, "smoke_route_v0_audit contains blocking decoder/probe findings: " + " | ".join(blocking[:4])
@@ -554,6 +700,9 @@ def objective_specific_check(obj_id: str, output_root: Path, inputs: Dict[str, o
         ok, decoder_reason = _v10b_oc03_decoder_contract(output_root, inputs)
         if not ok:
             return False, decoder_reason
+        ok, direct_reason = _check_oc03_v13_direct_contract(output_root, inputs)
+        if not ok:
+            return False, direct_reason
         smoke_unit = output_root / "tables" / "smoke_days_unit_2015_2024.csv"
         rows = read_csv_rows(smoke_unit) if smoke_unit.exists() else []
         vals = [safe_float(r.get("smoke_days")) for r in rows]
@@ -562,7 +711,7 @@ def objective_specific_check(obj_id: str, output_root: Path, inputs: Dict[str, o
             return False, "smoke_days table has no numeric values."
         if max(vals) <= 0:
             return False, "smoke_days table degenerate (max <= 0)."
-        return True, decoder_reason
+        return True, direct_reason
     if obj_id == "OC-05":
         return _v10b_iech_non_degenerate(output_root)
     if obj_id == "OC-07":

@@ -282,6 +282,29 @@ def evaluate_output_root(output_root: Path) -> Tuple[str, str, List[str], List[D
             holds.append("HOLD OBJECTIVES CANON")
             notes.append(f"could not parse inputs_resolved.json canon meta: {exc}")
 
+    scientific_gate_tsv = output_root / "qa/scientific_validation_gate.tsv"
+    if not scientific_gate_tsv.exists():
+        holds.append("HOLD SCIENTIFIC GATE")
+        notes.append("scientific_validation_gate.tsv missing")
+    else:
+        try:
+            gate_rows = read_csv_rows(scientific_gate_tsv)
+            blocked = [
+                r
+                for r in gate_rows
+                if (r.get("gate_status") or "").strip().upper().startswith("BLOCKED")
+                and (r.get("final_decision_effect") or "").strip().upper() != "NONE"
+            ]
+            if blocked:
+                holds.append("HOLD SCIENTIFIC GATE")
+                notes.append(
+                    "scientific gate blocked states: "
+                    + ", ".join(f"{r.get('threshold_id') or '?'}:{r.get('gate_status') or '?'}" for r in blocked[:8])
+                )
+        except Exception as exc:
+            holds.append("HOLD SCIENTIFIC GATE")
+            notes.append(f"could not parse scientific_validation_gate.tsv: {exc}")
+
     # deduplicate while preserving order
     unique_holds: List[str] = []
     seen = set()

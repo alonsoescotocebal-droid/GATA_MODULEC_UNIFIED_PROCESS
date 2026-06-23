@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import csv
+import os
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence
 
 
 ROUTE_PRIORITY = [
-    "v1_moduleA_validated",
     "v0_gfas_era5_real",
+    "v1_moduleA_validated",
     "BLOCKED_DECODER_REQUIRED",
     "v0_parquet_proxy_degraded",
     "NO-GO_SMOKE_ROUTE",
@@ -18,6 +19,35 @@ MODULEA_HINT_KEYS: Sequence[str] = (
     "smoke_modulea_catalog",
     "smoke_catalog_v1",
     "smoke_catalog",
+)
+
+RECOVERY_ROOT_ENV_KEYS: Sequence[str] = (
+    "MODULEC_OC03_GFAS_ERA5_RECOVERY_ROOT",
+    "MODULEC_OC03_ALLOWED_DATA_ROOTS",
+)
+
+ORIGINAL_ROOT_ENV_KEYS: Sequence[str] = (
+    "MODULEC_OC03_ORIGINAL_DATOS_ROOT",
+    "GATA_EXTERNAL_DATOS_MODC",
+    "MODULEC_DATA_ROOT",
+    "GATA_MODULEC_DATA_ROOT",
+    "DATA_ROOT",
+)
+
+RECOVERY_ROOT_NAMES: Sequence[str] = (
+    "Datos_RECOVERY_2015_2024_PIPELINE_GRIB",
+    "Datos_RECOVERY_PORTUGUESE_AGENCIES_2015_2024",
+    "Datos_RECOVERY_2015_2024",
+)
+
+FORBIDDEN_PRIMARY_SOURCE_TOKENS: Sequence[str] = (
+    "parquetfiles 2017.zip",
+    "parquetfiles 2022.zip",
+    "era5_d016a6f04c5e420341cf0e7293fcfb56.zip",
+    "\\oc03_v9d",
+    "\\oc03_v11",
+    "\\oc03_v12",
+    "\\03_outputs\\oc03_v",
 )
 
 
@@ -47,6 +77,111 @@ def _is_modulea_smoke_catalog(path: Path) -> bool:
 
 def _norm(path_value: Path) -> str:
     return str(path_value).replace("/", "\\").lower()
+
+
+def _parse_path_list(raw: object) -> List[Path]:
+    if raw is None:
+        return []
+    if isinstance(raw, (list, tuple, set)):
+        vals = [str(v).strip() for v in raw if str(v).strip()]
+    else:
+        vals = []
+        text = str(raw).strip()
+        if not text:
+            return []
+        for part in text.replace("\n", ";").split(";"):
+            p = part.strip().strip('"')
+            if p:
+                vals.append(p)
+    return [Path(v) for v in vals]
+
+
+def _dedupe_paths(paths: Iterable[Path]) -> List[Path]:
+    out: List[Path] = []
+    seen = set()
+    for path in paths:
+        try:
+            key = str(path.resolve())
+        except Exception:
+            key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(path)
+    return out
+
+
+def _env_paths(keys: Sequence[str]) -> List[Path]:
+    out: List[Path] = []
+    for key in keys:
+        out.extend(_parse_path_list(os.environ.get(key)))
+    return out
+
+
+def _looks_like_recovery_root(path_value: Path, original_root: Path) -> bool:
+    norm = _norm(path_value)
+    if any(name.lower() in norm for name in RECOVERY_ROOT_NAMES):
+        return True
+    if original_root and original_root.exists():
+        return not _norm(path_value).startswith(_norm(original_root))
+    return False
+
+
+def _is_forbidden_primary_source(path_value: Path, original_root: Path) -> bool:
+    norm = _norm(path_value)
+    if any(tok in norm for tok in FORBIDDEN_PRIMARY_SOURCE_TOKENS):
+        return True
+    root_norm = _norm(original_root) if original_root else ""
+    if root_norm and (norm == root_norm or norm.startswith(root_norm + "\\")):
+        if "\\cam-gfas (ads)" in norm or "\\era5_d016a6f04c5e420341cf0e7293fcfb56.zip" in norm:
+            return True
+    return False
+
+
+def _candidate_data_roots(modulec_datos: Path, inputs: Dict[str, object]) -> List[Path]:
+    paths = inputs.get("paths", {}) if isinstance(inputs, dict) else {}
+    meta = inputs.get("meta", {}) if isinstance(inputs, dict) else {}
+    if not isinstance(paths, dict):
+        paths = {}
+    if not isinstance(meta, dict):
+        meta = {}
+
+    roots: List[Path] = [modulec_datos]
+    roots.extend(_env_paths(RECOVERY_ROOT_ENV_KEYS))
+    roots.extend(_env_paths(ORIGINAL_ROOT_ENV_KEYS))
+    roots.extend(_parse_path_list(paths.get("smoke_data_roots")))
+    roots.extend(_parse_path_list(meta.get("smoke_data_roots")))
+
+    parent = modulec_datos.parent
+    for name in RECOVERY_ROOT_NAMES:
+        roots.append(parent / name)
+    roots.append(parent / "Datos")
+    return [p for p in _dedupe_paths(roots) if str(p).strip()]
+
+
+def _detect_gfas_dir(root: Path) -> Optional[Path]:
+    if not root.exists():
+        return None
+    direct_gribs = [p for p in sorted(root.glob("*.grib")) if "pm2p5fire" in p.name.lower()]
+    if direct_gribs:
+        return root
+    if (root / "_grib_summary.csv").exists() or (root / "_grib_edge_summary.csv").exists():
+        return root
+    legacy_child = root / "CAM-GFAS (ADS)"
+    if legacy_child.exists():
+        return legacy_child
+    for child in sorted(p for p in root.iterdir() if p.is_dir()):
+        child_gribs = [p for p in sorted(child.rglob("*.grib")) if "pm2p5fire" in p.name.lower()]
+        if child_gribs or (child / "_grib_summary.csv").exists() or (child / "_grib_edge_summary.csv").exists():
+            return child
+    return None
+
+
+def _detect_era5_zip(root: Path) -> Optional[Path]:
+    if not root.exists():
+        return None
+    matches = sorted(root.glob("*ERA5*.zip"))
+    return matches[0] if matches else None
 
 
 def detect_smoke_sources(modulec_datos: Path, inputs: Dict[str, object]) -> Dict[str, object]:
@@ -82,31 +217,80 @@ def detect_smoke_sources(modulec_datos: Path, inputs: Dict[str, object]) -> Dict
             modulea_validated_path = cand
             break
 
-    gfas_dir = modulec_datos / "CAM-GFAS (ADS)"
-    gfas_gribs = sorted(gfas_dir.glob("*.grib")) if gfas_dir.exists() else []
+    original_root = _parse_path_list(os.environ.get("MODULEC_OC03_ORIGINAL_DATOS_ROOT"))
+    original_datos_root = original_root[0] if original_root else modulec_datos
+
+    candidate_roots = _candidate_data_roots(modulec_datos, inputs)
+    root_rows: List[Dict[str, object]] = []
+    effective_root: Optional[Path] = None
+    effective_gfas_dir: Optional[Path] = None
+    effective_era5_zip: Optional[Path] = None
+
+    for root in candidate_roots:
+        gfas_dir = _detect_gfas_dir(root)
+        era5_zip = _detect_era5_zip(root)
+        gfas_gribs = sorted(gfas_dir.rglob("*.grib")) if gfas_dir is not None and gfas_dir.exists() else []
+        row = {
+            "root": str(root),
+            "recovery_root": _looks_like_recovery_root(root, original_datos_root),
+            "gfas_dir": str(gfas_dir) if gfas_dir else "",
+            "gfas_grib_count": len(gfas_gribs),
+            "era5_zip": str(era5_zip) if era5_zip else "",
+            "has_complete_pair": bool(gfas_gribs) and era5_zip is not None and era5_zip.exists(),
+        }
+        root_rows.append(row)
+        if effective_root is None and bool(row["has_complete_pair"]) and bool(row["recovery_root"]):
+            effective_root = root
+            effective_gfas_dir = gfas_dir
+            effective_era5_zip = era5_zip
+
+    if effective_root is None:
+        for row in root_rows:
+            if bool(row["has_complete_pair"]):
+                effective_root = Path(str(row["root"]))
+                effective_gfas_dir = Path(str(row["gfas_dir"])) if str(row["gfas_dir"]).strip() else None
+                effective_era5_zip = Path(str(row["era5_zip"])) if str(row["era5_zip"]).strip() else None
+                break
+
+    gfas_gribs = sorted(effective_gfas_dir.rglob("*.grib")) if effective_gfas_dir is not None and effective_gfas_dir.exists() else []
     gfas_total_bytes = sum(int(p.stat().st_size) for p in gfas_gribs) if gfas_gribs else 0
 
-    era5_candidates = sorted(modulec_datos.glob("*ERA5*.zip"))
-    era5_zip = era5_candidates[0] if era5_candidates else None
-
-    parquet_candidates = [
-        modulec_datos / "ParquetFiles 2017.zip",
-        modulec_datos / "ParquetFiles 2022.zip",
-    ]
+    parquet_roots = _dedupe_paths([modulec_datos, original_datos_root] + candidate_roots)
+    parquet_candidates: List[Path] = []
+    for root in parquet_roots:
+        parquet_candidates.extend(
+            [
+                root / "ParquetFiles 2017.zip",
+                root / "ParquetFiles 2022.zip",
+            ]
+        )
     parquet_existing = [p for p in parquet_candidates if p.exists()]
+
+    effective_smoke_source_path = effective_gfas_dir or effective_era5_zip or modulea_validated_path or smoke_csv_path
+    effective_source_is_recovery = bool(effective_root) and _looks_like_recovery_root(effective_root, original_datos_root)
+    forbidden_primary_source = (
+        _is_forbidden_primary_source(effective_smoke_source_path, original_datos_root) if effective_smoke_source_path else False
+    )
 
     return {
         "smoke_csv_input": str(smoke_csv_path) if smoke_csv_path else "",
         "modulea_validated": modulea_validated_path is not None,
         "modulea_catalog_path": str(modulea_validated_path) if modulea_validated_path else "",
-        "gfas_dir": str(gfas_dir) if gfas_dir.exists() else "",
-        "gfas_exists": gfas_dir.exists(),
+        "candidate_data_roots": [str(p) for p in candidate_roots],
+        "candidate_source_rows": root_rows,
+        "original_datos_root": str(original_datos_root),
+        "effective_data_root": str(effective_root) if effective_root else "",
+        "effective_source_is_recovery": effective_source_is_recovery,
+        "effective_smoke_source_path": str(effective_smoke_source_path) if effective_smoke_source_path else "",
+        "forbidden_primary_source": forbidden_primary_source,
+        "gfas_dir": str(effective_gfas_dir) if effective_gfas_dir is not None and effective_gfas_dir.exists() else "",
+        "gfas_exists": effective_gfas_dir is not None and effective_gfas_dir.exists(),
         "gfas_grib_count": len(gfas_gribs),
         "gfas_total_bytes": int(gfas_total_bytes),
-        "era5_zip": str(era5_zip) if era5_zip else "",
-        "era5_exists": era5_zip is not None and era5_zip.exists(),
+        "era5_zip": str(effective_era5_zip) if effective_era5_zip else "",
+        "era5_exists": effective_era5_zip is not None and effective_era5_zip.exists(),
         "parquet_zip_count": len(parquet_existing),
-        "parquet_zip_paths": [str(p) for p in parquet_existing],
+        "parquet_zip_paths": [str(p) for p in _dedupe_paths(parquet_existing)],
     }
 
 
@@ -115,6 +299,10 @@ def select_smoke_route(sources: Dict[str, object], decoder_available: bool = Fal
     gfas_ok = bool(sources.get("gfas_exists")) and int(sources.get("gfas_grib_count") or 0) > 0
     era5_ok = bool(sources.get("era5_exists"))
     parquet_ok = int(sources.get("parquet_zip_count") or 0) > 0
+    recovery_ok = bool(sources.get("effective_source_is_recovery"))
+    forbidden_primary = bool(sources.get("forbidden_primary_source"))
+    effective_source = str(sources.get("effective_smoke_source_path") or "").strip()
+    source_root = str(sources.get("effective_data_root") or "").strip()
 
     result = {
         "route_priority_order": ">".join(ROUTE_PRIORITY),
@@ -134,25 +322,44 @@ def select_smoke_route(sources: Dict[str, object], decoder_available: bool = Fal
         "forbidden_use": "",
     }
 
-    if modulea_ok:
-        result.update(
-            {
-                "route_selected": "v1_moduleA_validated",
-                "smoke_route_status": "SCIENTIFIC_PRIMARY",
-                "smoke_route_decision": "THRESHOLD_DEFINED_AS_INDEXED_METHOD",
-                "health_exposure_claim": "BLOCKED_HEALTH_EXPOSURE_CLAIM",
-                "iech_decision": "IECH_ROUTE_VALIDATED_UPSTREAM",
-                "causal_matrix_decision": "PENDING_DOWNSTREAM_VALIDATION",
-                "brief_decision": "PENDING_DOWNSTREAM_VALIDATION",
-                "final_scientific_decision": "PENDING_DOWNSTREAM_GATES",
-                "reason": "Validated module A smoke catalog available.",
-                "allowed_use": "scientific_route",
-                "forbidden_use": "",
-            }
-        )
-        return result
-
     if gfas_ok and era5_ok:
+        if forbidden_primary:
+            result.update(
+                {
+                    "route_selected": "NO-GO_SMOKE_ROUTE",
+                    "smoke_route_status": "BLOCKED",
+                    "smoke_route_decision": "BLOCKED_FORBIDDEN_PRIMARY_SMOKE_SOURCE",
+                    "health_exposure_claim": "BLOCKED_HEALTH_EXPOSURE_CLAIM",
+                    "iech_decision": "NO-GO_IECH",
+                    "causal_matrix_decision": "NO-GO_CAUSAL_MATRIX",
+                    "brief_decision": "NO-GO_BRIEF",
+                    "final_scientific_decision": "NO-GO_SCIENTIFIC_THRESHOLD",
+                    "reason": f"Forbidden primary smoke source detected: {effective_source}",
+                    "allowed_use": "",
+                    "forbidden_use": "All closure claims",
+                }
+            )
+            return result
+        if not recovery_ok:
+            result.update(
+                {
+                    "route_selected": "BLOCKED_DECODER_REQUIRED",
+                    "smoke_route_status": "BLOCKED",
+                    "smoke_route_decision": "BLOCKED_NON_RECOVERY_SMOKE_SOURCE",
+                    "health_exposure_claim": "BLOCKED_HEALTH_EXPOSURE_CLAIM",
+                    "iech_decision": "IECH_OPERATIONAL_PROXY_ONLY",
+                    "causal_matrix_decision": "HOLD_OR_NO_GO",
+                    "brief_decision": "HOLD_OR_NO_GO",
+                    "final_scientific_decision": "NO-GO_SCIENTIFIC_THRESHOLD",
+                    "required_decoder": "GFAS_GRIB_TO_DAILY_PT_GRID",
+                    "required_inputs": "Recovered GFAS/ERA5 2015-2024 roots",
+                    "reason": f"GFAS/ERA5 pair detected outside recovery roots: {source_root or effective_source}",
+                    "operational_fallback_route": "v1_moduleA_validated" if modulea_ok else ("v0_parquet_proxy_degraded" if parquet_ok else ""),
+                    "allowed_use": "diagnostic_only",
+                    "forbidden_use": "Direct 2015-2024 closure, IECH final cientifico, GO",
+                }
+            )
+            return result
         if decoder_available:
             result.update(
                 {
@@ -164,7 +371,7 @@ def select_smoke_route(sources: Dict[str, object], decoder_available: bool = Fal
                     "causal_matrix_decision": "PENDING_DOWNSTREAM_VALIDATION",
                     "brief_decision": "PENDING_DOWNSTREAM_VALIDATION",
                     "final_scientific_decision": "PENDING_DOWNSTREAM_GATES",
-                    "reason": "GFAS + ERA5 detected and decoder is available.",
+                    "reason": f"Recovered GFAS + ERA5 detected under {source_root} and decoder is available.",
                     "allowed_use": "scientific_route",
                     "forbidden_use": "",
                 }
@@ -183,10 +390,28 @@ def select_smoke_route(sources: Dict[str, object], decoder_available: bool = Fal
                 "final_scientific_decision": "NO-GO_SCIENTIFIC_THRESHOLD",
                 "required_decoder": "GFAS_GRIB_TO_DAILY_PT_GRID",
                 "required_inputs": "GFAS + ERA5 u10/v10",
-                "reason": "GFAS and ERA5 exist but no robust decoder is wired in runtime.",
-                "operational_fallback_route": "v0_parquet_proxy_degraded" if parquet_ok else "",
+                "reason": f"Recovered GFAS and ERA5 exist under {source_root} but no robust decoder is wired in runtime.",
+                "operational_fallback_route": "v1_moduleA_validated" if modulea_ok else ("v0_parquet_proxy_degraded" if parquet_ok else ""),
                 "allowed_use": "diagnostic_only" if parquet_ok else "",
                 "forbidden_use": "IECH final cientifico, matriz causal final, brief final, GO",
+            }
+        )
+        return result
+
+    if modulea_ok:
+        result.update(
+            {
+                "route_selected": "v1_moduleA_validated",
+                "smoke_route_status": "SCIENTIFIC_PRIMARY",
+                "smoke_route_decision": "THRESHOLD_DEFINED_AS_INDEXED_METHOD",
+                "health_exposure_claim": "BLOCKED_HEALTH_EXPOSURE_CLAIM",
+                "iech_decision": "IECH_ROUTE_VALIDATED_UPSTREAM",
+                "causal_matrix_decision": "PENDING_DOWNSTREAM_VALIDATION",
+                "brief_decision": "PENDING_DOWNSTREAM_VALIDATION",
+                "final_scientific_decision": "PENDING_DOWNSTREAM_GATES",
+                "reason": "Validated module A smoke catalog available.",
+                "allowed_use": "scientific_route",
+                "forbidden_use": "",
             }
         )
         return result
@@ -234,6 +459,9 @@ def apply_route_meta(inputs: Dict[str, object], sources: Dict[str, object], deci
 
     paths["smoke_gfas_dir"] = str(sources.get("gfas_dir", ""))
     paths["smoke_era5_zip"] = str(sources.get("era5_zip", ""))
+    paths["smoke_effective_data_root"] = str(sources.get("effective_data_root", ""))
+    paths["smoke_effective_source_path"] = str(sources.get("effective_smoke_source_path", ""))
+    paths["smoke_original_datos_root"] = str(sources.get("original_datos_root", ""))
     if sources.get("modulea_catalog_path"):
         paths["smoke_modulea_catalog"] = str(sources.get("modulea_catalog_path"))
     payload["paths"] = paths
@@ -256,6 +484,13 @@ def apply_route_meta(inputs: Dict[str, object], sources: Dict[str, object], deci
     meta["smoke_route_detected_sources"] = {
         "modulea_validated": bool(sources.get("modulea_validated")),
         "modulea_catalog_path": str(sources.get("modulea_catalog_path", "")),
+        "candidate_data_roots": list(sources.get("candidate_data_roots", [])),
+        "candidate_source_rows": list(sources.get("candidate_source_rows", [])),
+        "original_datos_root": str(sources.get("original_datos_root", "")),
+        "effective_data_root": str(sources.get("effective_data_root", "")),
+        "effective_source_is_recovery": bool(sources.get("effective_source_is_recovery")),
+        "effective_smoke_source_path": str(sources.get("effective_smoke_source_path", "")),
+        "forbidden_primary_source": bool(sources.get("forbidden_primary_source")),
         "gfas_dir": str(sources.get("gfas_dir", "")),
         "gfas_grib_count": int(sources.get("gfas_grib_count") or 0),
         "gfas_total_bytes": int(sources.get("gfas_total_bytes") or 0),
