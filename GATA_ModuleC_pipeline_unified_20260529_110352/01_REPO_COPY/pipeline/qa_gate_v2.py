@@ -11,6 +11,19 @@ from typing import Dict, List, Tuple
 
 
 GO_REQUIRED = [
+    Path("qa/oc03c_path_scope_preflight.tsv"),
+    Path("qa/portuguese_aq_input_inventory.tsv"),
+    Path("qa/portuguese_aq_file_format_audit.tsv"),
+    Path("qa/portuguese_aq_station_inventory.tsv"),
+    Path("qa/portuguese_aq_timeseries_inventory.tsv"),
+    Path("qa/portuguese_aq_normalization_audit.tsv"),
+    Path("qa/portuguese_aq_station_to_unit_assignment.tsv"),
+    Path("qa/gfas_era5_vs_portuguese_aq_concordance.tsv"),
+    Path("qa/portuguese_aq_validation_gate.tsv"),
+    Path("qa/portuguese_aq_claim_disposition.md"),
+    Path("tables/portuguese_aq_daily_station_2015_2024.csv"),
+    Path("tables/portuguese_aq_daily_unit_2015_2024.csv"),
+    Path("tables/smoke_proxy_aq_concordance_by_unit.csv"),
     Path("tables/IECH_unit_2015_2024.csv"),
     Path("tables/smoke_days_unit_2015_2024.csv"),
     Path("tables/pop_unit_2015_2025_2030.csv"),
@@ -28,6 +41,22 @@ CANON_REQUIRED = [
     Path("tables/IECH_municipio_2015_2024.csv"),
     Path("tables/wrb_context_nuts3.csv"),
     Path("tables/territorial_context_nuts3.csv"),
+]
+
+OC03C_REQUIRED = [
+    Path("qa/oc03c_path_scope_preflight.tsv"),
+    Path("qa/portuguese_aq_input_inventory.tsv"),
+    Path("qa/portuguese_aq_file_format_audit.tsv"),
+    Path("qa/portuguese_aq_station_inventory.tsv"),
+    Path("qa/portuguese_aq_timeseries_inventory.tsv"),
+    Path("qa/portuguese_aq_normalization_audit.tsv"),
+    Path("qa/portuguese_aq_station_to_unit_assignment.tsv"),
+    Path("qa/gfas_era5_vs_portuguese_aq_concordance.tsv"),
+    Path("qa/portuguese_aq_validation_gate.tsv"),
+    Path("qa/portuguese_aq_claim_disposition.md"),
+    Path("tables/portuguese_aq_daily_station_2015_2024.csv"),
+    Path("tables/portuguese_aq_daily_unit_2015_2024.csv"),
+    Path("tables/smoke_proxy_aq_concordance_by_unit.csv"),
 ]
 
 CORE_NO_GO = [
@@ -138,6 +167,43 @@ def evaluate_output_root(output_root: Path) -> Tuple[str, str, List[str], List[D
             _record_check(check_rows, "CANON_REQUIRED", rel, "PASS", "artifact exists")
         else:
             _record_check(check_rows, "CANON_REQUIRED", rel, "FAIL", "artifact missing")
+
+    for rel in OC03C_REQUIRED:
+        abs_path = output_root / rel
+        if abs_path.exists():
+            _record_check(check_rows, "OC03C_REQUIRED", rel, "PASS", "artifact exists")
+        else:
+            _record_check(check_rows, "OC03C_REQUIRED", rel, "FAIL", "artifact missing")
+
+    oc03c_missing = [rel.as_posix() for rel in OC03C_REQUIRED if not (output_root / rel).exists()]
+    if oc03c_missing:
+        holds.append("HOLD OC-03C AQ VALIDATION")
+        notes.append("OC-03C artifacts missing: " + ", ".join(oc03c_missing[:8]))
+    else:
+        try:
+            gate_rows = read_csv_rows(output_root / "qa/portuguese_aq_validation_gate.tsv")
+            gate_map = {str(row.get("metric") or "").strip(): str(row.get("value") or "").strip() for row in gate_rows}
+            oc03c_status = gate_map.get("portuguese_aq_validation_status", "")
+            health_status = gate_map.get("health_exposure_claim_status", "")
+            if not oc03c_status:
+                holds.append("HOLD OC-03C AQ VALIDATION")
+                notes.append("portuguese_aq_validation_gate.tsv missing portuguese_aq_validation_status")
+            else:
+                notes.append(f"oc03c_status={oc03c_status}")
+            if health_status == "HEALTH_EXPOSURE_VALIDATED":
+                holds.append("HOLD OC-03C AQ VALIDATION")
+                notes.append("OC-03C reported HEALTH_EXPOSURE_VALIDATED without dedicated threshold-comparison artifacts")
+            scope_rows = read_csv_rows(output_root / "qa/oc03c_path_scope_preflight.tsv")
+            summary_row = next((row for row in scope_rows if str(row.get("check_id") or "").strip() == "OC03C_SUMMARY"), None)
+            if summary_row is None:
+                holds.append("HOLD OC-03C AQ VALIDATION")
+                notes.append("oc03c_path_scope_preflight.tsv missing OC03C_SUMMARY row")
+            elif str(summary_row.get("status") or "").strip().upper() != "PATH_SCOPE_PASS":
+                holds.append("HOLD OC-03C AQ VALIDATION")
+                notes.append("OC-03C path-scope summary is not PATH_SCOPE_PASS")
+        except Exception as exc:
+            holds.append("HOLD OC-03C AQ VALIDATION")
+            notes.append(f"could not parse OC-03C audit artifacts: {exc}")
 
     for rel in CORE_NO_GO:
         if not (output_root / rel).exists():

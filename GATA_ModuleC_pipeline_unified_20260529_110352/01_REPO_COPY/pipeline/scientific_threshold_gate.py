@@ -166,6 +166,29 @@ def evaluate_health_claim_support(smoke_csv: Path) -> Tuple[str, str]:
     return "BLOCKED_FOR_HEALTH_EXPOSURE_CLAIM", "Proxy-only smoke table; pollutant concentration thresholds unavailable."
 
 
+def evaluate_portuguese_aq_validation(qa_dir: Path) -> Tuple[str, str, Dict[str, str]]:
+    gate_path = qa_dir / "portuguese_aq_validation_gate.tsv"
+    if not gate_path.exists():
+        return "BLOCKED_FOR_REQUIRED_VARIABLE", "portuguese_aq_validation_gate.tsv missing", {}
+    rows = read_csv_rows(gate_path)
+    gate_map = {str(row.get("metric") or "").strip(): str(row.get("value") or "").strip() for row in rows}
+    status = gate_map.get("portuguese_aq_validation_status", "").strip()
+    protocol = gate_map.get("aq_protocol_decision", "").strip()
+    claim_disposition = gate_map.get("claim_disposition", "").strip()
+    health_status = gate_map.get("health_exposure_claim_status", "").strip()
+    if not status:
+        return "BLOCKED_FOR_REQUIRED_VARIABLE", "portuguese_aq_validation_status missing", gate_map
+    observed = (
+        f"portuguese_aq_validation_status={status}; "
+        f"aq_protocol_decision={protocol or 'EMPTY'}; "
+        f"claim_disposition={claim_disposition or 'EMPTY'}; "
+        f"health_exposure_claim_status={health_status or 'EMPTY'}"
+    )
+    if health_status == "HEALTH_EXPOSURE_VALIDATED":
+        return "BLOCKED_FOR_HEALTH_EXPOSURE_CLAIM", observed, gate_map
+    return status, observed, gate_map
+
+
 def evaluate_smoke_route_trace(inputs_json: Path) -> Tuple[str, str, str]:
     if not inputs_json.exists():
         return "BLOCKED_FOR_REQUIRED_VARIABLE", "inputs_resolved.json missing", ""
@@ -531,6 +554,22 @@ def main() -> int:
         "NO-GO_SCIENTIFIC_THRESHOLD" if direct_contract_status.startswith("BLOCKED") else "NONE",
     )
 
+    portuguese_aq_status, portuguese_aq_obs, portuguese_aq_gate = evaluate_portuguese_aq_validation(qa_dir)
+    add_gate(
+        "OC03C-AQ-001",
+        "Portuguese AQ validation overlay",
+        str(qa_dir / "portuguese_aq_validation_gate.tsv"),
+        "portuguese_aq_validation_status, aq_protocol_decision, claim_disposition, health_exposure_claim_status",
+        portuguese_aq_obs,
+        "OC-03C may upgrade only to a locally AQ-anchored proxy when direct station/pollutant concordance exists; health exposure stays blocked unless threshold comparisons are audited.",
+        "SRC-GATE-OC03C-AQ",
+        "LOCAL_VALIDATION_GATE",
+        portuguese_aq_status,
+        "A non-health local AQ support statement is allowed when concordance evidence exists.",
+        "Health exposure or unsupported AQ-upgrade claims without audited thresholds.",
+        "NONE",
+    )
+
     health_status, health_obs = evaluate_health_claim_support(smoke_csv)
     add_gate(
         "SMOKE-001",
@@ -622,6 +661,8 @@ def main() -> int:
     add_evidence("causal_matrix_csv", causal_csv)
     add_evidence("brief_md", brief_path)
     add_evidence("warning_inventory", warning_inventory)
+    add_evidence("portuguese_aq_validation_gate", qa_dir / "portuguese_aq_validation_gate.tsv")
+    add_evidence("portuguese_aq_concordance", qa_dir / "gfas_era5_vs_portuguese_aq_concordance.tsv")
 
     gate_header = [
         "threshold_id",
@@ -762,6 +803,12 @@ def main() -> int:
             f"- reason: {route_scope.get('reason') or 'n/a'}",
             f"- allowed_use: {route_scope.get('allowed_use') or 'n/a'}",
             f"- forbidden_use: {route_scope.get('forbidden_use') or 'n/a'}",
+            "",
+            "## Portuguese AQ Validation",
+            f"- portuguese_aq_validation_status: {portuguese_aq_gate.get('portuguese_aq_validation_status') or 'n/a'}",
+            f"- aq_protocol_decision: {portuguese_aq_gate.get('aq_protocol_decision') or 'n/a'}",
+            f"- claim_disposition: {portuguese_aq_gate.get('claim_disposition') or 'n/a'}",
+            f"- health_exposure_claim_status: {portuguese_aq_gate.get('health_exposure_claim_status') or 'n/a'}",
             "",
             "## Contracts",
             "- scientific_validation_gate.tsv generated",

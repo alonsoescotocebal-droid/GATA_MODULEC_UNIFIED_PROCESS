@@ -53,6 +53,28 @@ OBJECTIVES: List[Dict[str, object]] = [
         "validation_rule": "Fuente humo no contaminada por 03_outputs/tables; tablas no degeneradas.",
     },
     {
+        "objective_id": "OC-03C",
+        "objective_name": "Validacion AQ portuguesa/EEA del proxy de humo",
+        "required_database": "Datos_RECOVERY_PORTUGUESE_AGENCIES_2015_2024",
+        "required_output": [
+            "qa/oc03c_path_scope_preflight.tsv",
+            "qa/portuguese_aq_input_inventory.tsv",
+            "qa/portuguese_aq_file_format_audit.tsv",
+            "qa/portuguese_aq_station_inventory.tsv",
+            "qa/portuguese_aq_timeseries_inventory.tsv",
+            "qa/portuguese_aq_normalization_audit.tsv",
+            "qa/portuguese_aq_station_to_unit_assignment.tsv",
+            "qa/gfas_era5_vs_portuguese_aq_concordance.tsv",
+            "qa/portuguese_aq_validation_gate.tsv",
+            "qa/portuguese_aq_claim_disposition.md",
+            "tables/portuguese_aq_daily_station_2015_2024.csv",
+            "tables/portuguese_aq_daily_unit_2015_2024.csv",
+            "tables/smoke_proxy_aq_concordance_by_unit.csv",
+        ],
+        "producer_script": "moduleC_pipeline_v2.py + portuguese_aq_validation.py",
+        "validation_rule": "AQ portuguesa inventariada y auditada; solo sube a proxy anclado si hay concordancia estacion/polutante; salud bloqueada sin umbrales.",
+    },
+    {
         "objective_id": "OC-04",
         "objective_name": "Población GHSL",
         "required_database": "GHSL POP 2015/2020/2025/2030",
@@ -692,6 +714,78 @@ def _v10b_iech_non_degenerate(output_root: Path) -> Tuple[bool, str]:
     return True, "IECH non-degenerate: " + "; ".join(findings)
 
 
+def _read_metric_value_map(path: Path) -> Dict[str, str]:
+    rows = _v10b_read_rows_if_exists(path)
+    values: Dict[str, str] = {}
+    for row in rows:
+        key = str(row.get("metric") or row.get("check_id") or "").strip()
+        if key and key not in values:
+            values[key] = str(row.get("value") or row.get("status") or row.get("observed") or "").strip()
+    return values
+
+
+def _check_oc03c_aq_validation(output_root: Path) -> Tuple[bool, str]:
+    qa_dir = output_root / "qa"
+    scope_rows = _v10b_read_rows_if_exists(qa_dir / "oc03c_path_scope_preflight.tsv")
+    if not scope_rows:
+        return False, "OC-03C path-scope audit missing or unreadable."
+    summary_row = next((row for row in scope_rows if str(row.get("check_id") or "").strip() == "OC03C_SUMMARY"), None)
+    if summary_row is None:
+        return False, "OC-03C path-scope audit missing OC03C_SUMMARY row."
+    scope_status = str(summary_row.get("status") or "").strip().upper()
+    if scope_status != "PATH_SCOPE_PASS":
+        detail = str(summary_row.get("detail") or summary_row.get("observed") or "").strip()
+        return False, "OC-03C path-scope guard failed: " + (detail or scope_status)
+
+    gate_map = _read_metric_value_map(qa_dir / "portuguese_aq_validation_gate.tsv")
+    gate_status = gate_map.get("portuguese_aq_validation_status", "").strip()
+    protocol = gate_map.get("aq_protocol_decision", "").strip()
+    claim_disposition = gate_map.get("claim_disposition", "").strip()
+    health_status = gate_map.get("health_exposure_claim_status", "").strip()
+
+    allowed_statuses = {
+        "NO_PORTUGUESE_AQ_DATA_FOUND",
+        "PORTUGUESE_AQ_INVENTORIED_ONLY",
+        "PORTUGUESE_AQ_CONCORDANCE_INSUFFICIENT",
+        "LOCAL_AQ_ANCHORED_PROXY",
+        "HEALTH_EXPOSURE_VALIDATED_CANDIDATE",
+    }
+    if gate_status not in allowed_statuses:
+        return False, f"Unrecognized OC-03C gate status: {gate_status or 'EMPTY'}"
+
+    if health_status == "HEALTH_EXPOSURE_VALIDATED":
+        return False, "OC-03C must not declare validated health exposure without explicit threshold-comparison artifacts."
+
+    degraded_statuses = {
+        "NO_PORTUGUESE_AQ_DATA_FOUND",
+        "PORTUGUESE_AQ_INVENTORIED_ONLY",
+        "PORTUGUESE_AQ_CONCORDANCE_INSUFFICIENT",
+    }
+    if gate_status in degraded_statuses:
+        if protocol != "GO_DIRECT_2015_2024_FOR_PROSPECTIVE_PROXY_SCREENING":
+            return False, f"OC-03C degraded state requires prospective proxy protocol, found {protocol or 'EMPTY'}"
+        if health_status != "HEALTH_EXPOSURE_CLAIM_BLOCKED":
+            return False, f"OC-03C degraded state must keep health claim blocked, found {health_status or 'EMPTY'}"
+        return True, f"OC-03C audited without local upgrade: status={gate_status}; protocol={protocol}"
+
+    concordance_rows = _v10b_read_rows_if_exists(qa_dir / "gfas_era5_vs_portuguese_aq_concordance.tsv")
+    positive_rows = [
+        row
+        for row in concordance_rows
+        if str(row.get("scope") or "").strip() == "SPATIAL_MATCHED"
+        and str(row.get("concordance_signal") or "").strip().upper() == "POSITIVE"
+    ]
+    if not positive_rows:
+        return False, "OC-03C anchored proxy requires positive spatial concordance evidence."
+    if protocol != "GO_WITH_PORTUGUESE_AQ_ANCHORED_PROXY_PROTOCOL":
+        return False, f"OC-03C anchored state requires anchored proxy protocol, found {protocol or 'EMPTY'}"
+    if health_status != "HEALTH_EXPOSURE_NOT_DECLARED":
+        return False, f"OC-03C anchored state must keep health exposure undeclared, found {health_status or 'EMPTY'}"
+    if "locally supported" not in claim_disposition.lower():
+        return False, "OC-03C anchored state missing the allowed local-support claim language."
+    return True, f"OC-03C anchored proxy validated: status={gate_status}; protocol={protocol}; health={health_status}"
+
+
 def objective_specific_check(obj_id: str, output_root: Path, inputs: Dict[str, object]) -> Tuple[bool, str]:
     if obj_id == "OC-03":
         ok, reason = _check_smoke_inputs_clean(inputs)
@@ -712,6 +806,8 @@ def objective_specific_check(obj_id: str, output_root: Path, inputs: Dict[str, o
         if max(vals) <= 0:
             return False, "smoke_days table degenerate (max <= 0)."
         return True, direct_reason
+    if obj_id == "OC-03C":
+        return _check_oc03c_aq_validation(output_root)
     if obj_id == "OC-05":
         return _v10b_iech_non_degenerate(output_root)
     if obj_id == "OC-07":

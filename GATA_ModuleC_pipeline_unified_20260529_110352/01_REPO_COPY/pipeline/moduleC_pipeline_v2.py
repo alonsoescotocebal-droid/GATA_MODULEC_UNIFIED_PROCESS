@@ -241,11 +241,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
+from portuguese_aq_validation import run_portuguese_aq_validation
 from smoke_route_selector import apply_route_meta, detect_smoke_sources, select_smoke_route
 
 YEARS_HIST = list(range(2015, 2025))
 YEARS_SCEN = list(range(2026, 2031))
-OBJECTIVE_IDS = [f"OC-{i:02d}" for i in range(1, 13)]
+OBJECTIVE_IDS = ["OC-01", "OC-02", "OC-03", "OC-03C"] + [f"OC-{i:02d}" for i in range(4, 13)]
 
 
 class StageError(RuntimeError):
@@ -3887,6 +3888,16 @@ def collect_final_outputs(output_root: Path, scientific_decision_path: Path, inc
         output_root / "qa" / "scientific_claim_gate.tsv",
         output_root / "qa" / "causal_matrix_scientific_gate_audit.tsv",
         output_root / "qa" / "brief_claim_scientific_gate_audit.tsv",
+        output_root / "qa" / "oc03c_path_scope_preflight.tsv",
+        output_root / "qa" / "portuguese_aq_input_inventory.tsv",
+        output_root / "qa" / "portuguese_aq_file_format_audit.tsv",
+        output_root / "qa" / "portuguese_aq_station_inventory.tsv",
+        output_root / "qa" / "portuguese_aq_timeseries_inventory.tsv",
+        output_root / "qa" / "portuguese_aq_normalization_audit.tsv",
+        output_root / "qa" / "portuguese_aq_station_to_unit_assignment.tsv",
+        output_root / "qa" / "gfas_era5_vs_portuguese_aq_concordance.tsv",
+        output_root / "qa" / "portuguese_aq_validation_gate.tsv",
+        output_root / "qa" / "portuguese_aq_claim_disposition.md",
         output_root / "tables" / "IECH_unit_2015_2024.csv",
         output_root / "tables" / "IECH_unit_2015_2024_mean.csv",
         output_root / "tables" / "IECH_municipio_2015_2024.csv",
@@ -3895,6 +3906,9 @@ def collect_final_outputs(output_root: Path, scientific_decision_path: Path, inc
         output_root / "tables" / "smoke_days_municipio_2015_2024.csv",
         output_root / "tables" / "smoke_day_score_nuts3_daily.csv",
         output_root / "tables" / "smoke_day_score_municipio_daily.csv",
+        output_root / "tables" / "portuguese_aq_daily_station_2015_2024.csv",
+        output_root / "tables" / "portuguese_aq_daily_unit_2015_2024.csv",
+        output_root / "tables" / "smoke_proxy_aq_concordance_by_unit.csv",
         output_root / "tables" / "wrb_context_nuts3.csv",
         output_root / "tables" / "territorial_context_nuts3.csv",
         output_root / "brief" / "Brief_Politica_IECH_2030.md",
@@ -3913,7 +3927,13 @@ def collect_final_outputs(output_root: Path, scientific_decision_path: Path, inc
     return outputs
 
 
-def complete_post_smoke_runtime(gata_root: Path, output_root: Path, report: Report, rerun_step7: bool = True) -> None:
+def complete_post_smoke_runtime(
+    gata_root: Path,
+    modulec_datos: Path,
+    output_root: Path,
+    report: Report,
+    rerun_step7: bool = True,
+) -> None:
     tables_dir = output_root / "tables"
     brief_dir = output_root / "brief"
     deliver_dir = output_root / "deliverables_step9"
@@ -3924,6 +3944,34 @@ def complete_post_smoke_runtime(gata_root: Path, output_root: Path, report: Repo
         report.log("STEP7 outputs already present; reusing post-smoke artifacts.")
     refresh_smoke_route_v0_audit(output_root)
     write_oc03_v11_decoder_contract_validation(output_root)
+    oc03c_meta = run_portuguese_aq_validation(
+        modulec_datos=modulec_datos,
+        output_root=output_root,
+        repo_root=Path(__file__).resolve().parents[1],
+        report_log=report.log,
+    )
+    inputs_path = output_root / "qa" / "inputs_resolved.json"
+    payload: Dict[str, object] = {}
+    if inputs_path.exists():
+        try:
+            payload = json.loads(inputs_path.read_text(encoding="utf-8-sig"))
+        except Exception:
+            payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    meta = payload.get("meta", {})
+    if not isinstance(meta, dict):
+        meta = {}
+    meta.update(oc03c_meta)
+    meta["objectives_recognized"] = OBJECTIVE_IDS
+    payload["meta"] = meta
+    paths = payload.get("paths", {})
+    if not isinstance(paths, dict):
+        paths = {}
+    paths["portuguese_aq_root"] = str(oc03c_meta.get("portuguese_aq_root") or "")
+    payload["paths"] = paths
+    ensure_dir(inputs_path.parent)
+    inputs_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     brief_path = brief_dir / "Brief_Politica_IECH_2030.md"
     if not brief_path.exists():
@@ -4020,6 +4068,7 @@ def main() -> int:
             write_gfas_era5_presence_audit(qa_dir, sources)
             complete_post_smoke_runtime(
                 Path(args.gata_root),
+                Path(args.modulec_datos),
                 out_dir,
                 report,
                 rerun_step7=not _step7_outputs_ready(out_dir),
@@ -4154,7 +4203,7 @@ def main() -> int:
         if not scen_rows:
             report.fail("IECH_scenarios_2026_2030.csv has 0 rows")
 
-        complete_post_smoke_runtime(Path(args.gata_root), out_dir, report)
+        complete_post_smoke_runtime(Path(args.gata_root), Path(args.modulec_datos), out_dir, report)
         if qgs:
             qgs.exitQgis()
         return 0
