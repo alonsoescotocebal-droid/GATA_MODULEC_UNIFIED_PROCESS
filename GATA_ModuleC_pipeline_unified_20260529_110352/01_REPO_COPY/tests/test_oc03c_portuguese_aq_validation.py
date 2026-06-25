@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import json
 import sys
 import zipfile
@@ -90,7 +91,11 @@ def _write_minimal_qualar_xlsx(path: Path) -> None:
         zf.writestr("xl/worksheets/sheet1.xml", sheet)
 
 
-def _seed_minimal_runtime(output_root: Path, oc03c_status: str = "PORTUGUESE_AQ_CONCORDANCE_INSUFFICIENT") -> None:
+def _seed_minimal_runtime(
+    output_root: Path,
+    oc03c_status: str = "PORTUGUESE_AQ_CONSUMED_BUT_SPATIALLY_INSUFFICIENT_FOR_LOCAL_AQ_ANCHOR",
+    base_smoke_status: str = "BASE_SMOKE_CONTRACT_FOR_OC03C_PASS",
+) -> None:
     qa_dir = output_root / "qa"
     tables_dir = output_root / "tables"
     brief_dir = output_root / "brief" / "causal_matrix"
@@ -150,10 +155,21 @@ def _seed_minimal_runtime(output_root: Path, oc03c_status: str = "PORTUGUESE_AQ_
         encoding="utf-8",
     )
 
+    base_status_column = "PASS" if base_smoke_status == "BASE_SMOKE_CONTRACT_FOR_OC03C_PASS" else base_smoke_status
+    (qa_dir / "oc03c_base_smoke_contract_gate.tsv").write_text(
+        "metric\tvalue\tstatus\tdetail\n"
+        f"base_smoke_contract_for_oc03c_status\t{base_smoke_status}\t{base_status_column}\tBase smoke contract state\n"
+        f"final_state\t{base_smoke_status}\t{base_status_column}\tFinal state\n",
+        encoding="utf-8",
+    )
+
     claim_disposition = "PORTUGUESE_AQ_VALIDATION_NOT_CONSUMED_OR_INSUFFICIENT"
     protocol = "GO_DIRECT_2015_2024_FOR_PROSPECTIVE_PROXY_SCREENING"
     health_status = "HEALTH_EXPOSURE_CLAIM_BLOCKED"
-    if oc03c_status == "LOCAL_AQ_ANCHORED_PROXY":
+    if oc03c_status == "BLOCKED_BASE_SMOKE_REGRESSION":
+        claim_disposition = "BLOCKED_BASE_SMOKE_REGRESSION"
+        protocol = "BLOCKED_BASE_SMOKE_REGRESSION"
+    elif oc03c_status == "LOCAL_AQ_ANCHORED_PROXY":
         claim_disposition = "GFAS/ERA5 smoke proxy is locally supported by Portuguese/EEA air-quality observations"
         protocol = "GO_WITH_PORTUGUESE_AQ_ANCHORED_PROXY_PROTOCOL"
         health_status = "HEALTH_EXPOSURE_NOT_DECLARED"
@@ -173,6 +189,69 @@ def _seed_minimal_runtime(output_root: Path, oc03c_status: str = "PORTUGUESE_AQ_
         encoding="utf-8",
     )
 
+
+def _seed_base_smoke_contract_inputs(output_root: Path, valid: bool) -> None:
+    qa_dir = output_root / "qa"
+    tables_dir = output_root / "tables"
+    qa_dir.mkdir(parents=True, exist_ok=True)
+    tables_dir.mkdir(parents=True, exist_ok=True)
+
+    if valid:
+        decoder_metrics = {
+            "daily_rows": 24180,
+            "unique_dates": 930,
+            "unique_years": 10,
+            "unique_units": 26,
+            "homogeneous_years": 0,
+        }
+        route_methods = {year: "gfas_era5_proxy_p60_unit_daily_spatial_direct_year" for year in range(2015, 2025)}
+        daily_dates = [dt.date(year, 1, 1) + dt.timedelta(days=offset) for year in range(2015, 2025) for offset in range(93)]
+        spatial_assignment_method = "POINT_IN_POLYGON_GFAS_PORTUGAL_XYZ"
+    else:
+        decoder_metrics = {
+            "daily_rows": 2418,
+            "unique_dates": 93,
+            "unique_years": 1,
+            "unique_units": 26,
+            "homogeneous_years": 0,
+        }
+        route_methods = {
+            year: (
+                "gfas_era5_proxy_p60_unit_daily_spatial_direct_year"
+                if year == 2017
+                else "gfas_era5_proxy_p60_unit_daily_spatial_flat_single_anchor"
+            )
+            for year in range(2015, 2025)
+        }
+        daily_dates = [dt.date(2017, 1, 1) + dt.timedelta(days=offset) for offset in range(93)]
+        spatial_assignment_method = "CENTROID_FALLBACK_LIMITED"
+
+    (qa_dir / "gfas_era5_decoder_daily_spatial_audit.tsv").write_text(
+        "metric\tvalue\tstatus\tdetail\n"
+        + "".join(f"{metric}\t{value}\tPASS\tseeded\n" for metric, value in decoder_metrics.items()),
+        encoding="utf-8",
+    )
+
+    route_lines = [
+        "year\tunique_values\tmethod\tspatial_homogeneous_flag\troute_selected\tsmoke_route_status\tsmoke_route_decision\thealth_exposure_claim\tiech_decision\tcausal_matrix_decision\tbrief_decision\tfinal_scientific_decision"
+    ]
+    for year in range(2015, 2025):
+        route_lines.append(
+            f"{year}\t5\t{route_methods[year]}\t0\tv0_gfas_era5_real\tPASS\tTHRESHOLD_DEFINED_AS_INDEXED_METHOD\tBLOCKED\tPASS\tPASS\tPASS\tPASS"
+        )
+    (qa_dir / "smoke_route_audit.tsv").write_text("\n".join(route_lines) + "\n", encoding="utf-8")
+
+    units = [f"PT{index:02d}" for index in range(1, 27)]
+    daily_lines = [
+        "unit_id;unit_name;unit_level;date;year;source_file;band_index;pm2p5fire_mean;pm2p5fire_max;pm2p5fire_sum;valid_pixel_count;smoke_day_score;threshold_id;threshold_value;smoke_day_proxy;smoke_day_equivalent;spatial_assignment_method;qa_flag"
+    ]
+    for date_value in daily_dates:
+        for idx, unit_id in enumerate(units, start=1):
+            score = float(idx)
+            daily_lines.append(
+                f"{unit_id};Unit {idx};NUTS3;{date_value.isoformat()};{date_value.year};seed.grib;1;{score};{score};{score};10;{score};GFAS_ERA5_PROXY_SMOKE_DAY_P60;1;1;1;{spatial_assignment_method};0"
+            )
+    (tables_dir / "smoke_day_score_nuts3_daily.csv").write_text("\n".join(daily_lines) + "\n", encoding="utf-8")
 
 def test_normalize_pollutant_name_maps_known_aliases():
     mod = _load_aq_module()
@@ -260,20 +339,82 @@ def test_collect_final_outputs_includes_oc03c_artifacts(tmp_path):
 
     outputs = {path.as_posix() for path in mod.collect_final_outputs(output_root, scientific_decision)}
 
+    assert (output_root / "qa" / "oc03c_base_smoke_contract_gate.tsv").as_posix() in outputs
     assert (output_root / "qa" / "oc03c_path_scope_preflight.tsv").as_posix() in outputs
     assert (output_root / "qa" / "portuguese_aq_validation_gate.tsv").as_posix() in outputs
     assert (output_root / "tables" / "portuguese_aq_daily_unit_2015_2024.csv").as_posix() in outputs
 
 
+def test_base_smoke_contract_gate_passes_with_validated_direct_runtime(tmp_path):
+    mod = _load_pipeline_module()
+    output_root = tmp_path / "runtime"
+    _seed_base_smoke_contract_inputs(output_root, valid=True)
+
+    result = mod.run_base_smoke_contract_for_oc03c(output_root)
+
+    assert result["base_smoke_contract_for_oc03c_status"] == "BASE_SMOKE_CONTRACT_FOR_OC03C_PASS"
+    assert result["base_smoke_contract_for_oc03c_passed"] is True
+    gate_text = (output_root / "qa" / "oc03c_base_smoke_contract_gate.tsv").read_text(encoding="utf-8")
+    assert "base_smoke_contract_for_oc03c_status	BASE_SMOKE_CONTRACT_FOR_OC03C_PASS" in gate_text
+
+
+def test_base_smoke_contract_gate_blocks_regressed_smoke_runtime(tmp_path):
+    mod = _load_pipeline_module()
+    output_root = tmp_path / "runtime"
+    _seed_base_smoke_contract_inputs(output_root, valid=False)
+
+    result = mod.run_base_smoke_contract_for_oc03c(output_root)
+
+    assert result["base_smoke_contract_for_oc03c_status"] == "BLOCKED_BASE_SMOKE_REGRESSION"
+    assert result["base_smoke_contract_for_oc03c_passed"] is False
+    gate_text = (output_root / "qa" / "oc03c_base_smoke_contract_gate.tsv").read_text(encoding="utf-8")
+    assert "forbidden_smoke_methods" in gate_text
+    assert "BLOCKED_BASE_SMOKE_REGRESSION" in gate_text
+
+
+def test_write_blocked_base_smoke_regression_outputs_preserves_blocked_state(monkeypatch, tmp_path):
+    mod = _load_aq_module()
+    repo_root, modulec_datos, _aq_root, output_root = _prepare_oc03c_runner_fixture(tmp_path)
+    monkeypatch.chdir(repo_root)
+
+    result = mod.write_blocked_base_smoke_regression_outputs(
+        modulec_datos=modulec_datos,
+        output_root=output_root,
+        repo_root=repo_root,
+    )
+
+    assert result["portuguese_aq_validation_status"] == "BLOCKED_BASE_SMOKE_REGRESSION"
+    gate_text = (output_root / "qa" / "portuguese_aq_validation_gate.tsv").read_text(encoding="utf-8")
+    claim_text = (output_root / "qa" / "portuguese_aq_claim_disposition.md").read_text(encoding="utf-8")
+    assert "BLOCKED_BASE_SMOKE_REGRESSION" in gate_text
+    assert "No Portuguese AQ insufficiency conclusion may be drawn from this runtime." in claim_text
+    assert "Portuguese AQ was consumed, but direct station/pollutant evidence was spatially insufficient for a local AQ anchor." not in claim_text
+
+
 def test_oc03c_objective_check_accepts_insufficient_aq_without_upgrading(tmp_path):
     mod = _load_validator_module()
     output_root = tmp_path / "runtime"
-    _seed_minimal_runtime(output_root, oc03c_status="PORTUGUESE_AQ_CONCORDANCE_INSUFFICIENT")
+    _seed_minimal_runtime(output_root, oc03c_status="PORTUGUESE_AQ_CONSUMED_BUT_SPATIALLY_INSUFFICIENT_FOR_LOCAL_AQ_ANCHOR")
 
     ok, reason = mod._check_oc03c_aq_validation(output_root)
 
     assert ok is True
     assert "without local upgrade" in reason
+
+
+def test_oc03c_objective_check_accepts_blocked_base_smoke_state(tmp_path):
+    mod = _load_validator_module()
+    output_root = tmp_path / "runtime"
+    _seed_minimal_runtime(
+        output_root,
+        oc03c_status="BLOCKED_BASE_SMOKE_REGRESSION",
+        base_smoke_status="BLOCKED_BASE_SMOKE_REGRESSION",
+    )
+
+    ok, reason = mod._check_oc03c_aq_validation(output_root)
+
+    assert ok is True
+    assert "correctly blocked AQ consumption" in reason
 
 
 def test_oc03c_objective_check_requires_positive_concordance_for_anchored_upgrade(tmp_path):
@@ -303,10 +444,25 @@ def test_qa_gate_holds_when_oc03c_artifacts_missing(tmp_path):
     assert "HOLD OC-03C AQ VALIDATION" in holds
 
 
+def test_qa_gate_does_not_hold_on_blocked_base_smoke_state_when_artifacts_exist(tmp_path):
+    mod = _load_qa_gate_module()
+    output_root = tmp_path / "runtime"
+    _seed_minimal_runtime(
+        output_root,
+        oc03c_status="BLOCKED_BASE_SMOKE_REGRESSION",
+        base_smoke_status="BLOCKED_BASE_SMOKE_REGRESSION",
+    )
+
+    decision, _summary, holds, _rows = mod.evaluate_output_root(output_root)
+
+    assert "HOLD OC-03C AQ VALIDATION" not in holds
+    assert decision == "GO"
+
+
 def test_qa_gate_does_not_hold_on_oc03c_insufficient_status_when_artifacts_exist(tmp_path):
     mod = _load_qa_gate_module()
     output_root = tmp_path / "runtime"
-    _seed_minimal_runtime(output_root, oc03c_status="PORTUGUESE_AQ_CONCORDANCE_INSUFFICIENT")
+    _seed_minimal_runtime(output_root, oc03c_status="PORTUGUESE_AQ_CONSUMED_BUT_SPATIALLY_INSUFFICIENT_FOR_LOCAL_AQ_ANCHOR")
 
     decision, _summary, holds, _rows = mod.evaluate_output_root(output_root)
 

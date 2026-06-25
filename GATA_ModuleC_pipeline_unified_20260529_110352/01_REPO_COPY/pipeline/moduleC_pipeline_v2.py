@@ -241,12 +241,25 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-from portuguese_aq_validation import run_portuguese_aq_validation
+from portuguese_aq_validation import (
+    BASE_SMOKE_CONTRACT_FOR_OC03C_PASS,
+    PORTUGUESE_AQ_BASE_SMOKE_BLOCKED,
+    run_portuguese_aq_validation,
+    write_blocked_base_smoke_regression_outputs,
+)
 from smoke_route_selector import apply_route_meta, detect_smoke_sources, select_smoke_route
 
 YEARS_HIST = list(range(2015, 2025))
 YEARS_SCEN = list(range(2026, 2031))
 OBJECTIVE_IDS = ["OC-01", "OC-02", "OC-03", "OC-03C"] + [f"OC-{i:02d}" for i in range(4, 13)]
+
+OC03C_BASE_SMOKE_EXPECTED_DAILY_ROWS = 24180
+OC03C_BASE_SMOKE_EXPECTED_UNIQUE_DATES = 930
+OC03C_BASE_SMOKE_EXPECTED_UNIQUE_YEARS = 10
+OC03C_BASE_SMOKE_EXPECTED_UNIQUE_UNITS = 26
+OC03C_BASE_SMOKE_EXPECTED_HOMOGENEOUS_YEARS = 0
+OC03C_BASE_SMOKE_FORBIDDEN_METHOD_TOKENS = ("flat_single_anchor", "interpolated_from_anchors", "extrapolated_from_anchors")
+OC03C_BASE_SMOKE_FORBIDDEN_ASSIGNMENT_TOKENS = ("fallback",)
 
 
 class StageError(RuntimeError):
@@ -3860,6 +3873,175 @@ def refresh_smoke_route_v0_audit(output_root: Path) -> None:
     )
 
 
+def _metric_value_lookup(rows: Sequence[Dict[str, str]]) -> Dict[str, Dict[str, str]]:
+    out: Dict[str, Dict[str, str]] = {}
+    for row in rows:
+        key = str(row.get("metric") or row.get("check_id") or "").strip().lower()
+        if key and key not in out:
+            out[key] = row
+    return out
+
+
+def _metric_int(metric_lookup: Dict[str, Dict[str, str]], *keys: str) -> Optional[int]:
+    for key in keys:
+        row = metric_lookup.get(key.strip().lower())
+        if not row:
+            continue
+        value = safe_float(row.get("value") or row.get("observed") or row.get("status"))
+        if value is not None:
+            return int(value)
+    return None
+
+
+def _extract_years(rows: Sequence[Dict[str, str]], field: str = "year") -> List[int]:
+    years = sorted({int(safe_float(row.get(field)) or -1) for row in rows if safe_float(row.get(field)) is not None})
+    return [year for year in years if year >= 0]
+
+
+def run_base_smoke_contract_for_oc03c(output_root: Path) -> Dict[str, object]:
+    qa_dir = output_root / "qa"
+    tables_dir = output_root / "tables"
+    decoder_audit_path = qa_dir / "gfas_era5_decoder_daily_spatial_audit.tsv"
+    smoke_audit_path = qa_dir / "smoke_route_audit.tsv"
+    smoke_daily_path = tables_dir / "smoke_day_score_nuts3_daily.csv"
+    gate_path = qa_dir / "oc03c_base_smoke_contract_gate.tsv"
+
+    rows_out: List[List[object]] = []
+    failures: List[str] = []
+
+    def add(metric: str, value: object, passed: bool, expected: object, detail: str) -> None:
+        status = "PASS" if passed else PORTUGUESE_AQ_BASE_SMOKE_BLOCKED
+        rows_out.append([metric, value, status, detail if passed else f"expected={expected}; {detail}"])
+        if not passed:
+            failures.append(metric)
+
+    add("decoder_audit_exists", int(decoder_audit_path.exists()), decoder_audit_path.exists(), 1, str(decoder_audit_path))
+    add("smoke_route_audit_exists", int(smoke_audit_path.exists()), smoke_audit_path.exists(), 1, str(smoke_audit_path))
+    add("smoke_day_score_daily_exists", int(smoke_daily_path.exists()), smoke_daily_path.exists(), 1, str(smoke_daily_path))
+
+    decoder_rows = read_csv_rows(decoder_audit_path)[1] if decoder_audit_path.exists() else []
+    smoke_rows = read_csv_rows(smoke_audit_path)[1] if smoke_audit_path.exists() else []
+    daily_rows = read_csv_rows(smoke_daily_path)[1] if smoke_daily_path.exists() else []
+    decoder_lookup = _metric_value_lookup(decoder_rows)
+
+    daily_rows_metric = _metric_int(decoder_lookup, "daily_rows", "dailyrows")
+    unique_dates_metric = _metric_int(decoder_lookup, "unique_dates", "uniquedates")
+    unique_years_metric = _metric_int(decoder_lookup, "unique_years", "uniqueyears")
+    unique_units_metric = _metric_int(decoder_lookup, "unique_units", "uniqueunits")
+    homogeneous_years_metric = _metric_int(decoder_lookup, "homogeneous_years", "homogeneousyears")
+
+    add(
+        "daily_rows",
+        daily_rows_metric if daily_rows_metric is not None else "MISSING",
+        daily_rows_metric == OC03C_BASE_SMOKE_EXPECTED_DAILY_ROWS,
+        OC03C_BASE_SMOKE_EXPECTED_DAILY_ROWS,
+        "Decoder daily spatial audit rows.",
+    )
+    add(
+        "unique_dates",
+        unique_dates_metric if unique_dates_metric is not None else "MISSING",
+        unique_dates_metric == OC03C_BASE_SMOKE_EXPECTED_UNIQUE_DATES,
+        OC03C_BASE_SMOKE_EXPECTED_UNIQUE_DATES,
+        "Decoder daily spatial audit unique_dates.",
+    )
+    add(
+        "unique_years",
+        unique_years_metric if unique_years_metric is not None else "MISSING",
+        unique_years_metric == OC03C_BASE_SMOKE_EXPECTED_UNIQUE_YEARS,
+        OC03C_BASE_SMOKE_EXPECTED_UNIQUE_YEARS,
+        "Decoder daily spatial audit unique_years.",
+    )
+    add(
+        "unique_units",
+        unique_units_metric if unique_units_metric is not None else "MISSING",
+        unique_units_metric == OC03C_BASE_SMOKE_EXPECTED_UNIQUE_UNITS,
+        OC03C_BASE_SMOKE_EXPECTED_UNIQUE_UNITS,
+        "Decoder daily spatial audit unique_units.",
+    )
+    add(
+        "homogeneous_years",
+        homogeneous_years_metric if homogeneous_years_metric is not None else "MISSING",
+        homogeneous_years_metric == OC03C_BASE_SMOKE_EXPECTED_HOMOGENEOUS_YEARS,
+        OC03C_BASE_SMOKE_EXPECTED_HOMOGENEOUS_YEARS,
+        "Decoder daily spatial audit homogeneous_years.",
+    )
+
+    daily_years = _extract_years(daily_rows)
+    route_years = _extract_years(smoke_rows)
+    expected_years = list(YEARS_HIST)
+    years_present = daily_years == expected_years and route_years == expected_years
+    add(
+        "years_2015_2024_present",
+        "PASS" if years_present else "FAIL",
+        years_present,
+        "2015|2016|2017|2018|2019|2020|2021|2022|2023|2024",
+        f"route_years={route_years}; daily_years={daily_years}",
+    )
+
+    daily_table_row_count = len(daily_rows)
+    daily_table_ok = daily_table_row_count == OC03C_BASE_SMOKE_EXPECTED_DAILY_ROWS and daily_rows_metric == daily_table_row_count
+    add(
+        "daily_table_rows",
+        daily_table_row_count,
+        daily_table_ok,
+        OC03C_BASE_SMOKE_EXPECTED_DAILY_ROWS,
+        f"decoder_daily_rows={daily_rows_metric if daily_rows_metric is not None else 'MISSING'}",
+    )
+
+    route_methods = sorted({str(row.get("smoke_method") or row.get("method") or "").strip() for row in smoke_rows if str(row.get("smoke_method") or row.get("method") or "").strip()})
+    forbidden_methods = sorted({method for method in route_methods if any(token in method.lower() for token in OC03C_BASE_SMOKE_FORBIDDEN_METHOD_TOKENS)})
+    add(
+        "forbidden_smoke_methods",
+        "NONE" if not forbidden_methods else "|".join(forbidden_methods),
+        not forbidden_methods,
+        "NONE",
+        "Smoke route audit methods must stay on the validated direct contract.",
+    )
+
+    single_year_fallback_detected = bool((unique_years_metric or 0) <= 1 or len(daily_years) <= 1)
+    add(
+        "single_year_fallback_detected",
+        int(single_year_fallback_detected),
+        not single_year_fallback_detected,
+        0,
+        f"decoder_unique_years={unique_years_metric}; daily_years={daily_years}",
+    )
+
+    assignment_methods = sorted({str(row.get("spatial_assignment_method") or "").strip() for row in daily_rows if str(row.get("spatial_assignment_method") or "").strip()})
+    flat_anchor_reconstruction_detected = bool(
+        forbidden_methods
+        or any(any(token in method.lower() for token in OC03C_BASE_SMOKE_FORBIDDEN_ASSIGNMENT_TOKENS) for method in assignment_methods)
+    )
+    add(
+        "flat_anchor_reconstruction_detected",
+        int(flat_anchor_reconstruction_detected),
+        not flat_anchor_reconstruction_detected,
+        0,
+        "assignment_methods=" + ("|".join(assignment_methods) if assignment_methods else "NONE"),
+    )
+
+    summary_status = BASE_SMOKE_CONTRACT_FOR_OC03C_PASS if not failures else PORTUGUESE_AQ_BASE_SMOKE_BLOCKED
+    detail = "Base smoke contract passed." if summary_status == BASE_SMOKE_CONTRACT_FOR_OC03C_PASS else "Failed checks: " + ", ".join(failures)
+    rows_out.append(["base_smoke_contract_for_oc03c_status", summary_status, summary_status, detail])
+    rows_out.append(["final_state", summary_status, summary_status, detail])
+    write_tsv(gate_path, ["metric", "value", "status", "detail"], rows_out)
+
+    return {
+        "base_smoke_contract_for_oc03c_status": summary_status,
+        "base_smoke_contract_for_oc03c_passed": summary_status == BASE_SMOKE_CONTRACT_FOR_OC03C_PASS,
+        "base_smoke_contract_for_oc03c_failures": failures,
+        "base_smoke_contract_for_oc03c_daily_rows": daily_rows_metric or 0,
+        "base_smoke_contract_for_oc03c_unique_dates": unique_dates_metric or 0,
+        "base_smoke_contract_for_oc03c_unique_years": unique_years_metric or 0,
+        "base_smoke_contract_for_oc03c_unique_units": unique_units_metric or 0,
+        "base_smoke_contract_for_oc03c_homogeneous_years": homogeneous_years_metric or 0,
+        "base_smoke_contract_for_oc03c_route_years": route_years,
+        "base_smoke_contract_for_oc03c_daily_years": daily_years,
+        "base_smoke_contract_for_oc03c_route_methods": route_methods,
+        "base_smoke_contract_for_oc03c_assignment_methods": assignment_methods,
+    }
+
+
 def collect_final_outputs(output_root: Path, scientific_decision_path: Path, include_global_scan: bool = True) -> List[Path]:
     outputs = [
         output_root / "qa" / "inputs_resolved.json",
@@ -3882,6 +4064,7 @@ def collect_final_outputs(output_root: Path, scientific_decision_path: Path, inc
         output_root / "qa" / "gfas_era5_decoder_checkpoints.tsv",
         output_root / "qa" / "gfas_era5_presence_audit.tsv",
         output_root / "qa" / "oc03_v11_decoder_contract_validation.tsv",
+        output_root / "qa" / "oc03c_base_smoke_contract_gate.tsv",
         output_root / "qa" / "scientific_validation_gate.tsv",
         output_root / "qa" / "scientific_threshold_evidence_register.tsv",
         output_root / "qa" / "blocked_claims_register.tsv",
@@ -3944,12 +4127,22 @@ def complete_post_smoke_runtime(
         report.log("STEP7 outputs already present; reusing post-smoke artifacts.")
     refresh_smoke_route_v0_audit(output_root)
     write_oc03_v11_decoder_contract_validation(output_root)
-    oc03c_meta = run_portuguese_aq_validation(
-        modulec_datos=modulec_datos,
-        output_root=output_root,
-        repo_root=Path(__file__).resolve().parents[1],
-        report_log=report.log,
-    )
+    base_smoke_meta = run_base_smoke_contract_for_oc03c(output_root)
+    if bool(base_smoke_meta.get("base_smoke_contract_for_oc03c_passed")):
+        oc03c_meta = run_portuguese_aq_validation(
+            modulec_datos=modulec_datos,
+            output_root=output_root,
+            repo_root=Path(__file__).resolve().parents[1],
+            report_log=report.log,
+        )
+    else:
+        report.log("OC-03C AQ validation blocked before AQ consumption: base smoke contract regressed.")
+        oc03c_meta = write_blocked_base_smoke_regression_outputs(
+            modulec_datos=modulec_datos,
+            output_root=output_root,
+            repo_root=Path(__file__).resolve().parents[1],
+            report_log=report.log,
+        )
     inputs_path = output_root / "qa" / "inputs_resolved.json"
     payload: Dict[str, object] = {}
     if inputs_path.exists():
@@ -3962,6 +4155,7 @@ def complete_post_smoke_runtime(
     meta = payload.get("meta", {})
     if not isinstance(meta, dict):
         meta = {}
+    meta.update(base_smoke_meta)
     meta.update(oc03c_meta)
     meta["objectives_recognized"] = OBJECTIVE_IDS
     payload["meta"] = meta

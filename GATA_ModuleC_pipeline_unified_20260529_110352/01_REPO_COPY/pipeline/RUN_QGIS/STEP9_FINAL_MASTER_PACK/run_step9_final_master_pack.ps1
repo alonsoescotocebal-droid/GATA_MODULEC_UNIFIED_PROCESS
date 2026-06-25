@@ -126,6 +126,7 @@ $requiredRel = @(
   "qa\blocked_claims_register.tsv",
   "qa\causal_matrix_scientific_gate_audit.tsv",
   "qa\brief_claim_scientific_gate_audit.tsv",
+  "qa\oc03c_base_smoke_contract_gate.tsv",
   "qa\oc03c_path_scope_preflight.tsv",
   "qa\portuguese_aq_input_inventory.tsv",
   "qa\portuguese_aq_file_format_audit.tsv",

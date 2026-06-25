@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
 FORBIDDEN_DIRECT_METHOD_TOKENS = ("flat_single_anchor", "interpolated_from_anchors", "extrapolated_from_anchors")
+BASE_SMOKE_CONTRACT_FOR_OC03C_PASS = "BASE_SMOKE_CONTRACT_FOR_OC03C_PASS"
+PORTUGUESE_AQ_BASE_SMOKE_BLOCKED = "BLOCKED_BASE_SMOKE_REGRESSION"
 FORBIDDEN_PRIMARY_SOURCE_TOKENS = (
     "parquetfiles 2017.zip",
     "parquetfiles 2022.zip",
@@ -164,6 +166,19 @@ def evaluate_health_claim_support(smoke_csv: Path) -> Tuple[str, str]:
     if keys.intersection(health_cols):
         return "THRESHOLD_DEFINED_AS_OFFICIAL_HEALTH_STANDARD", "Pollutant concentration columns detected."
     return "BLOCKED_FOR_HEALTH_EXPOSURE_CLAIM", "Proxy-only smoke table; pollutant concentration thresholds unavailable."
+
+
+def evaluate_oc03c_base_smoke_contract(qa_dir: Path) -> Tuple[str, str, Dict[str, str]]:
+    gate_path = qa_dir / "oc03c_base_smoke_contract_gate.tsv"
+    if not gate_path.exists():
+        return "BLOCKED_FOR_REQUIRED_VARIABLE", "oc03c_base_smoke_contract_gate.tsv missing", {}
+    rows = read_csv_rows(gate_path)
+    gate_map = {str(row.get("metric") or "").strip(): str(row.get("value") or "").strip() for row in rows}
+    status = (gate_map.get("base_smoke_contract_for_oc03c_status", "") or gate_map.get("final_state", "")).strip()
+    if not status:
+        return "BLOCKED_FOR_REQUIRED_VARIABLE", "base_smoke_contract_for_oc03c_status missing", gate_map
+    observed = f"base_smoke_contract_for_oc03c_status={status}"
+    return status, observed, gate_map
 
 
 def evaluate_portuguese_aq_validation(qa_dir: Path) -> Tuple[str, str, Dict[str, str]]:
@@ -554,6 +569,22 @@ def main() -> int:
         "NO-GO_SCIENTIFIC_THRESHOLD" if direct_contract_status.startswith("BLOCKED") else "NONE",
     )
 
+    oc03c_base_status, oc03c_base_obs, oc03c_base_gate = evaluate_oc03c_base_smoke_contract(qa_dir)
+    add_gate(
+        "BASE_SMOKE_CONTRACT_FOR_OC03C",
+        "OC-03C base smoke runtime contract",
+        str(qa_dir / "oc03c_base_smoke_contract_gate.tsv"),
+        "daily_rows, unique_dates, unique_years, unique_units, homogeneous_years, years_2015_2024_present",
+        oc03c_base_obs,
+        "Portuguese AQ validation may proceed only when the validated 2015-2024 direct smoke runtime contract remains intact.",
+        "SRC-GATE-OC03C-BASE-SMOKE",
+        "METHODOLOGICAL_GATE",
+        oc03c_base_status,
+        "Portuguese AQ may be consumed only after the base smoke contract passes.",
+        "Portuguese AQ consumption on a regressed smoke baseline.",
+        "NONE",
+    )
+
     portuguese_aq_status, portuguese_aq_obs, portuguese_aq_gate = evaluate_portuguese_aq_validation(qa_dir)
     add_gate(
         "OC03C-AQ-001",
@@ -805,6 +836,7 @@ def main() -> int:
             f"- forbidden_use: {route_scope.get('forbidden_use') or 'n/a'}",
             "",
             "## Portuguese AQ Validation",
+            f"- base_smoke_contract_for_oc03c_status: {oc03c_base_gate.get('base_smoke_contract_for_oc03c_status') or oc03c_base_gate.get('final_state') or 'n/a'}",
             f"- portuguese_aq_validation_status: {portuguese_aq_gate.get('portuguese_aq_validation_status') or 'n/a'}",
             f"- aq_protocol_decision: {portuguese_aq_gate.get('aq_protocol_decision') or 'n/a'}",
             f"- claim_disposition: {portuguese_aq_gate.get('claim_disposition') or 'n/a'}",

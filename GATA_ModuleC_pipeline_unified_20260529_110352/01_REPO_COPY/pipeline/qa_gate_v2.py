@@ -11,6 +11,7 @@ from typing import Dict, List, Tuple
 
 
 GO_REQUIRED = [
+    Path("qa/oc03c_base_smoke_contract_gate.tsv"),
     Path("qa/oc03c_path_scope_preflight.tsv"),
     Path("qa/portuguese_aq_input_inventory.tsv"),
     Path("qa/portuguese_aq_file_format_audit.tsv"),
@@ -44,6 +45,7 @@ CANON_REQUIRED = [
 ]
 
 OC03C_REQUIRED = [
+    Path("qa/oc03c_base_smoke_contract_gate.tsv"),
     Path("qa/oc03c_path_scope_preflight.tsv"),
     Path("qa/portuguese_aq_input_inventory.tsv"),
     Path("qa/portuguese_aq_file_format_audit.tsv"),
@@ -58,6 +60,10 @@ OC03C_REQUIRED = [
     Path("tables/portuguese_aq_daily_unit_2015_2024.csv"),
     Path("tables/smoke_proxy_aq_concordance_by_unit.csv"),
 ]
+
+BASE_SMOKE_CONTRACT_FOR_OC03C_PASS = "BASE_SMOKE_CONTRACT_FOR_OC03C_PASS"
+PORTUGUESE_AQ_BASE_SMOKE_BLOCKED = "BLOCKED_BASE_SMOKE_REGRESSION"
+
 
 CORE_NO_GO = [
     Path("tables/IECH_unit_2015_2024.csv"),
@@ -183,13 +189,28 @@ def evaluate_output_root(output_root: Path) -> Tuple[str, str, List[str], List[D
         try:
             gate_rows = read_csv_rows(output_root / "qa/portuguese_aq_validation_gate.tsv")
             gate_map = {str(row.get("metric") or "").strip(): str(row.get("value") or "").strip() for row in gate_rows}
+            base_rows = read_csv_rows(output_root / "qa/oc03c_base_smoke_contract_gate.tsv")
+            base_map = {str(row.get("metric") or "").strip(): str(row.get("value") or "").strip() for row in base_rows}
             oc03c_status = gate_map.get("portuguese_aq_validation_status", "")
             health_status = gate_map.get("health_exposure_claim_status", "")
+            base_status = base_map.get("base_smoke_contract_for_oc03c_status", "") or base_map.get("final_state", "")
             if not oc03c_status:
                 holds.append("HOLD OC-03C AQ VALIDATION")
                 notes.append("portuguese_aq_validation_gate.tsv missing portuguese_aq_validation_status")
             else:
                 notes.append(f"oc03c_status={oc03c_status}")
+            if not base_status:
+                holds.append("HOLD OC-03C AQ VALIDATION")
+                notes.append("oc03c_base_smoke_contract_gate.tsv missing base_smoke_contract_for_oc03c_status")
+            else:
+                notes.append(f"oc03c_base_smoke_status={base_status}")
+            if oc03c_status == PORTUGUESE_AQ_BASE_SMOKE_BLOCKED:
+                if base_status != PORTUGUESE_AQ_BASE_SMOKE_BLOCKED:
+                    holds.append("HOLD OC-03C AQ VALIDATION")
+                    notes.append("OC-03C reported BLOCKED_BASE_SMOKE_REGRESSION without matching base smoke gate state")
+            elif base_status != BASE_SMOKE_CONTRACT_FOR_OC03C_PASS:
+                holds.append("HOLD OC-03C AQ VALIDATION")
+                notes.append("OC-03C AQ artifacts were produced without a passing base smoke contract gate")
             if health_status == "HEALTH_EXPOSURE_VALIDATED":
                 holds.append("HOLD OC-03C AQ VALIDATION")
                 notes.append("OC-03C reported HEALTH_EXPOSURE_VALIDATED without dedicated threshold-comparison artifacts")

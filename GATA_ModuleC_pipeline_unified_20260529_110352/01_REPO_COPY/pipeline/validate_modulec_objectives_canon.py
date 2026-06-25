@@ -16,6 +16,9 @@ from typing import Dict, List, Tuple
 
 YEARS_HIST = list(range(2015, 2025))
 FORBIDDEN_DIRECT_METHOD_TOKENS = ("flat_single_anchor", "interpolated_from_anchors", "extrapolated_from_anchors")
+BASE_SMOKE_CONTRACT_FOR_OC03C_PASS = "BASE_SMOKE_CONTRACT_FOR_OC03C_PASS"
+PORTUGUESE_AQ_BASE_SMOKE_BLOCKED = "BLOCKED_BASE_SMOKE_REGRESSION"
+PORTUGUESE_AQ_SPATIALLY_INSUFFICIENT = "PORTUGUESE_AQ_CONSUMED_BUT_SPATIALLY_INSUFFICIENT_FOR_LOCAL_AQ_ANCHOR"
 FORBIDDEN_PRIMARY_SOURCE_TOKENS = (
     "parquetfiles 2017.zip",
     "parquetfiles 2022.zip",
@@ -57,6 +60,7 @@ OBJECTIVES: List[Dict[str, object]] = [
         "objective_name": "Validacion AQ portuguesa/EEA del proxy de humo",
         "required_database": "Datos_RECOVERY_PORTUGUESE_AGENCIES_2015_2024",
         "required_output": [
+            "qa/oc03c_base_smoke_contract_gate.tsv",
             "qa/oc03c_path_scope_preflight.tsv",
             "qa/portuguese_aq_input_inventory.tsv",
             "qa/portuguese_aq_file_format_audit.tsv",
@@ -738,15 +742,21 @@ def _check_oc03c_aq_validation(output_root: Path) -> Tuple[bool, str]:
         return False, "OC-03C path-scope guard failed: " + (detail or scope_status)
 
     gate_map = _read_metric_value_map(qa_dir / "portuguese_aq_validation_gate.tsv")
+    base_map = _read_metric_value_map(qa_dir / "oc03c_base_smoke_contract_gate.tsv")
     gate_status = gate_map.get("portuguese_aq_validation_status", "").strip()
     protocol = gate_map.get("aq_protocol_decision", "").strip()
     claim_disposition = gate_map.get("claim_disposition", "").strip()
     health_status = gate_map.get("health_exposure_claim_status", "").strip()
+    base_status = (base_map.get("base_smoke_contract_for_oc03c_status", "") or base_map.get("final_state", "")).strip()
+
+    if not base_status:
+        return False, "OC-03C base smoke contract gate missing base_smoke_contract_for_oc03c_status."
 
     allowed_statuses = {
+        PORTUGUESE_AQ_BASE_SMOKE_BLOCKED,
         "NO_PORTUGUESE_AQ_DATA_FOUND",
         "PORTUGUESE_AQ_INVENTORIED_ONLY",
-        "PORTUGUESE_AQ_CONCORDANCE_INSUFFICIENT",
+        PORTUGUESE_AQ_SPATIALLY_INSUFFICIENT,
         "LOCAL_AQ_ANCHORED_PROXY",
         "HEALTH_EXPOSURE_VALIDATED_CANDIDATE",
     }
@@ -756,10 +766,24 @@ def _check_oc03c_aq_validation(output_root: Path) -> Tuple[bool, str]:
     if health_status == "HEALTH_EXPOSURE_VALIDATED":
         return False, "OC-03C must not declare validated health exposure without explicit threshold-comparison artifacts."
 
+    if gate_status == PORTUGUESE_AQ_BASE_SMOKE_BLOCKED:
+        if base_status != PORTUGUESE_AQ_BASE_SMOKE_BLOCKED:
+            return False, f"OC-03C blocked state requires matching base smoke gate, found {base_status or 'EMPTY'}"
+        if protocol != PORTUGUESE_AQ_BASE_SMOKE_BLOCKED:
+            return False, f"OC-03C blocked state requires blocked protocol, found {protocol or 'EMPTY'}"
+        if claim_disposition != PORTUGUESE_AQ_BASE_SMOKE_BLOCKED:
+            return False, f"OC-03C blocked state requires blocked claim_disposition, found {claim_disposition or 'EMPTY'}"
+        if health_status != "HEALTH_EXPOSURE_CLAIM_BLOCKED":
+            return False, f"OC-03C blocked state must keep health claim blocked, found {health_status or 'EMPTY'}"
+        return True, "OC-03C correctly blocked AQ consumption after base smoke regression."
+
+    if base_status != BASE_SMOKE_CONTRACT_FOR_OC03C_PASS:
+        return False, f"OC-03C AQ validation requires passing base smoke contract, found {base_status or 'EMPTY'}"
+
     degraded_statuses = {
         "NO_PORTUGUESE_AQ_DATA_FOUND",
         "PORTUGUESE_AQ_INVENTORIED_ONLY",
-        "PORTUGUESE_AQ_CONCORDANCE_INSUFFICIENT",
+        PORTUGUESE_AQ_SPATIALLY_INSUFFICIENT,
     }
     if gate_status in degraded_statuses:
         if protocol != "GO_DIRECT_2015_2024_FOR_PROSPECTIVE_PROXY_SCREENING":

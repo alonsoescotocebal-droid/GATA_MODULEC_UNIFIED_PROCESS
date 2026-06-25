@@ -16,9 +16,11 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 
 PORTUGUESE_AQ_ROOT_NAME = "Datos_RECOVERY_PORTUGUESE_AGENCIES_2015_2024"
+BASE_SMOKE_CONTRACT_FOR_OC03C_PASS = "BASE_SMOKE_CONTRACT_FOR_OC03C_PASS"
+PORTUGUESE_AQ_BASE_SMOKE_BLOCKED = "BLOCKED_BASE_SMOKE_REGRESSION"
 PORTUGUESE_AQ_NO_DATA = "NO_PORTUGUESE_AQ_DATA_FOUND"
 PORTUGUESE_AQ_INVENTORIED_ONLY = "PORTUGUESE_AQ_INVENTORIED_ONLY"
-PORTUGUESE_AQ_INSUFFICIENT = "PORTUGUESE_AQ_CONCORDANCE_INSUFFICIENT"
+PORTUGUESE_AQ_INSUFFICIENT = "PORTUGUESE_AQ_CONSUMED_BUT_SPATIALLY_INSUFFICIENT_FOR_LOCAL_AQ_ANCHOR"
 PORTUGUESE_AQ_ANCHORED = "LOCAL_AQ_ANCHORED_PROXY"
 PORTUGUESE_AQ_HEALTH_CANDIDATE = "HEALTH_EXPOSURE_VALIDATED_CANDIDATE"
 
@@ -33,6 +35,8 @@ AQ_PROTOCOL_PROXY_NOTE = "PORTUGUESE_AQ_VALIDATION_NOT_CONSUMED_OR_INSUFFICIENT"
 AQ_PROTOCOL_ANCHORED = "GO_WITH_PORTUGUESE_AQ_ANCHORED_PROXY_PROTOCOL"
 
 AQ_ALLOWED_CLAIM = "GFAS/ERA5 smoke proxy is locally supported by Portuguese/EEA air-quality observations"
+AQ_PROXY_ONLY_CLAIM = "GFAS/ERA5 smoke proxy remains a prospective screening layer without Portuguese/EEA local AQ anchoring"
+AQ_BASE_SMOKE_BLOCKED_CLAIM = "Portuguese AQ validation was not consumed because the base smoke contract regressed"
 AQ_FORBIDDEN_CLAIM = "validated health exposure"
 
 _NS_MAIN = {"a": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
@@ -128,7 +132,7 @@ def normalize_text(text: object) -> str:
 
 def normalize_pollutant_name(raw: object) -> str:
     cleaned = normalize_text(raw).replace(" ug m3", "").replace(" ug m 3", "")
-    cleaned = cleaned.replace("µg m3", "").replace("µg m 3", "")
+    cleaned = cleaned.replace("Âµg m3", "").replace("Âµg m 3", "")
     cleaned = cleaned.strip()
     return _POLLUTANT_ALIASES.get(cleaned, str(raw or "").strip())
 
@@ -974,7 +978,60 @@ def determine_gate(
     }
 
 
+def _status_specific_allowed_claim(gate: Dict[str, str]) -> str:
+    status = str(gate.get("portuguese_aq_validation_status") or "").strip()
+    if status == PORTUGUESE_AQ_BASE_SMOKE_BLOCKED:
+        return AQ_BASE_SMOKE_BLOCKED_CLAIM
+    if status in (PORTUGUESE_AQ_NO_DATA, PORTUGUESE_AQ_INVENTORIED_ONLY, PORTUGUESE_AQ_INSUFFICIENT):
+        return AQ_PROXY_ONLY_CLAIM
+    return AQ_ALLOWED_CLAIM
+
+
+def _claim_language_sections(gate: Dict[str, str]) -> Tuple[List[str], List[str]]:
+    status = str(gate.get("portuguese_aq_validation_status") or "").strip()
+    if status == PORTUGUESE_AQ_BASE_SMOKE_BLOCKED:
+        allowed = [
+            f"- {AQ_BASE_SMOKE_BLOCKED_CLAIM}.",
+            f"- The only valid OC-03C runtime conclusion is `{PORTUGUESE_AQ_BASE_SMOKE_BLOCKED}`.",
+            "- No Portuguese AQ insufficiency conclusion may be drawn from this runtime.",
+        ]
+        forbidden = [
+            f"- {AQ_FORBIDDEN_CLAIM}",
+            "- Portuguese AQ is spatially insufficient for local anchoring in this runtime.",
+            "- Portuguese AQ findings refute the Portuguese agency recovery data.",
+        ]
+        return allowed, forbidden
+
+    if status in (PORTUGUESE_AQ_NO_DATA, PORTUGUESE_AQ_INVENTORIED_ONLY):
+        allowed = [
+            f"- {AQ_PROXY_ONLY_CLAIM}.",
+            "- The IECH remains a prospective territorial screening index.",
+            "- Portuguese AQ evidence did not justify a local AQ-anchored upgrade.",
+        ]
+    elif status == PORTUGUESE_AQ_INSUFFICIENT:
+        allowed = [
+            "- Portuguese AQ was consumed, but direct station/pollutant evidence was spatially insufficient for a local AQ anchor.",
+            f"- {AQ_PROXY_ONLY_CLAIM}.",
+            "- The IECH remains a prospective territorial screening index.",
+        ]
+    else:
+        allowed = [
+            f"- {AQ_ALLOWED_CLAIM}",
+            "- The IECH remains a prospective territorial screening index.",
+            "- The Portuguese AQ layer supports the plausibility of high smoke-score days as air-quality-relevant episodes.",
+        ]
+
+    forbidden = [
+        f"- {AQ_FORBIDDEN_CLAIM}",
+        "- The pipeline quantifies health exposure.",
+        "- The pipeline proves WHO/EU/EPA exceedances attributable to wildfire smoke.",
+        "- The pipeline estimates epidemiological risk, morbidity, mortality or clinical burden.",
+    ]
+    return allowed, forbidden
+
+
 def write_claim_disposition(path: Path, gate: Dict[str, str]) -> None:
+    allowed_lines, forbidden_lines = _claim_language_sections(gate)
     lines = [
         "# Portuguese AQ Claim Disposition",
         "",
@@ -986,15 +1043,10 @@ def write_claim_disposition(path: Path, gate: Dict[str, str]) -> None:
         f"- health_exposure_claim_status: **{gate['health_exposure_claim_status']}**",
         "",
         "## Allowed language",
-        f"- {AQ_ALLOWED_CLAIM}",
-        "- The IECH remains a prospective territorial screening index.",
-        "- The Portuguese AQ layer supports the plausibility of high smoke-score days as air-quality-relevant episodes.",
+        *allowed_lines,
         "",
         "## Forbidden language",
-        f"- {AQ_FORBIDDEN_CLAIM}",
-        "- The pipeline quantifies health exposure.",
-        "- The pipeline proves WHO/EU/EPA exceedances attributable to wildfire smoke.",
-        "- The pipeline estimates epidemiological risk, morbidity, mortality or clinical burden.",
+        *forbidden_lines,
         "",
         "## Sanitary closure rule",
         "- Full health-exposure closure remains blocked unless concentration variables, official thresholds, territorial assignment, and smoke attribution are all explicitly audited.",
@@ -1092,6 +1144,149 @@ def write_path_scope_preflight(
     rows.append([now_iso(), "OC03C_SUMMARY", decision, decision, "PATH_SCOPE_PASS", "All checks passed." if decision == "PATH_SCOPE_PASS" else " | ".join(sorted(set(blockers)))])
     write_tsv(path, ["timestamp", "check_id", "status", "observed", "expected", "detail"], rows)
     return decision
+
+
+def _write_empty_tsv(path: Path, header: Sequence[str]) -> None:
+    write_tsv(path, header, [])
+
+
+def _write_empty_csv(path: Path, header: Sequence[str]) -> None:
+    write_csv(path, header, [], delim=";")
+
+
+def write_blocked_base_smoke_regression_outputs(
+    modulec_datos: Path,
+    output_root: Path,
+    repo_root: Path,
+    report_log=None,
+) -> Dict[str, object]:
+    def log(message: str) -> None:
+        if report_log is not None:
+            report_log(message)
+
+    qa_dir = output_root / "qa"
+    tables_dir = output_root / "tables"
+    ensure_dir(qa_dir)
+    ensure_dir(tables_dir)
+
+    allowed_data_prefixes = _read_allowed_data_prefixes(repo_root, modulec_datos)
+    aq_root = resolve_portuguese_aq_root(modulec_datos)
+    aq_root_approved = _is_approved_portuguese_aq_root(aq_root, allowed_data_prefixes)
+
+    _write_empty_tsv(
+        qa_dir / "portuguese_aq_input_inventory.tsv",
+        ["path", "relative_path", "extension", "bytes", "classification"],
+    )
+    _write_empty_tsv(
+        qa_dir / "portuguese_aq_file_format_audit.tsv",
+        ["extension", "file_count", "supported", "detail"],
+    )
+    _write_empty_tsv(
+        qa_dir / "portuguese_aq_station_inventory.tsv",
+        ["station_id", "station_name", "latitude", "longitude", "country_code", "source_kind", "metadata_source", "aq_metadata_relevant", "municipio_id", "nuts3_id"],
+    )
+    _write_empty_tsv(
+        qa_dir / "portuguese_aq_timeseries_inventory.tsv",
+        ["file", "format", "status", "pollutant_raw", "pollutant", "unit", "station_count", "observation_rows", "layout", "datetime_field", "station_field", "value_field", "note"],
+    )
+    _write_empty_tsv(
+        qa_dir / "portuguese_aq_normalization_audit.tsv",
+        ["metric", "value", "status", "detail"],
+    )
+    _write_empty_tsv(
+        qa_dir / "portuguese_aq_station_to_unit_assignment.tsv",
+        ["station_id", "station_name", "latitude", "longitude", "municipio_id", "nuts3_id", "assignment_method", "assignment_confidence", "metadata_source", "aq_metadata_relevant"],
+    )
+    _write_empty_tsv(
+        qa_dir / "gfas_era5_vs_portuguese_aq_concordance.tsv",
+        [
+            "pollutant",
+            "scope",
+            "matched_day_count",
+            "high_gfas_day_count",
+            "non_high_day_count",
+            "median_pollutant_on_high_days",
+            "median_pollutant_on_non_high_days",
+            "delta_median",
+            "spearman_correlation",
+            "same_day_coincidence_count",
+            "plusminus1_coincidence_count",
+            "station_count",
+            "unit_count",
+            "concordance_signal",
+        ],
+    )
+    _write_empty_csv(
+        tables_dir / "portuguese_aq_daily_station_2015_2024.csv",
+        ["station_id", "station_name", "station_key", "pollutant", "pollutant_raw", "date", "unit", "daily_value", "observation_count", "municipio_id", "nuts3_id", "assignment_method", "assignment_confidence", "source_file", "quality_status"],
+    )
+    _write_empty_csv(
+        tables_dir / "portuguese_aq_daily_unit_2015_2024.csv",
+        ["unit_level", "unit_id", "pollutant", "date", "daily_value", "station_count"],
+    )
+    _write_empty_csv(
+        tables_dir / "smoke_proxy_aq_concordance_by_unit.csv",
+        ["unit_id", "pollutant", "mean_daily_value", "same_day_high_smoke_hits"],
+    )
+
+    gate = {
+        "portuguese_aq_validation_status": PORTUGUESE_AQ_BASE_SMOKE_BLOCKED,
+        "final_proxy_tier": PROXY_TIER_3,
+        "aq_protocol_decision": PORTUGUESE_AQ_BASE_SMOKE_BLOCKED,
+        "claim_disposition": PORTUGUESE_AQ_BASE_SMOKE_BLOCKED,
+        "health_exposure_claim_status": HEALTH_BLOCKED,
+    }
+    gate_rows = [
+        ["portuguese_aq_validation_status", gate["portuguese_aq_validation_status"], "PASS", "OC-03C blocked before AQ consumption because the base smoke contract regressed."],
+        ["final_proxy_tier", gate["final_proxy_tier"], "PASS", "Proxy tier remains unchanged when AQ is not consumed."],
+        ["aq_protocol_decision", gate["aq_protocol_decision"], "PASS", "AQ protocol is blocked by the base smoke regression."],
+        ["claim_disposition", gate["claim_disposition"], "PASS", "No AQ insufficiency conclusion is allowed when the smoke baseline regresses."],
+        ["health_exposure_claim_status", gate["health_exposure_claim_status"], "PASS", "Health exposure remains blocked."],
+        ["allowed_claim", _status_specific_allowed_claim(gate), "PASS", "Status-specific allowed OC-03C language."],
+        ["forbidden_claim", AQ_FORBIDDEN_CLAIM, "PASS", "Forbidden wording without full sanitary evidence."],
+    ]
+    write_tsv(qa_dir / "portuguese_aq_validation_gate.tsv", ["metric", "value", "status", "detail"], gate_rows)
+    write_claim_disposition(qa_dir / "portuguese_aq_claim_disposition.md", gate)
+
+    generated_paths = [
+        qa_dir / "portuguese_aq_input_inventory.tsv",
+        qa_dir / "portuguese_aq_file_format_audit.tsv",
+        qa_dir / "portuguese_aq_station_inventory.tsv",
+        qa_dir / "portuguese_aq_timeseries_inventory.tsv",
+        qa_dir / "portuguese_aq_normalization_audit.tsv",
+        qa_dir / "portuguese_aq_station_to_unit_assignment.tsv",
+        qa_dir / "gfas_era5_vs_portuguese_aq_concordance.tsv",
+        qa_dir / "portuguese_aq_validation_gate.tsv",
+        qa_dir / "portuguese_aq_claim_disposition.md",
+        tables_dir / "portuguese_aq_daily_station_2015_2024.csv",
+        tables_dir / "portuguese_aq_daily_unit_2015_2024.csv",
+        tables_dir / "smoke_proxy_aq_concordance_by_unit.csv",
+    ]
+    path_scope_decision = write_path_scope_preflight(
+        qa_dir / "oc03c_path_scope_preflight.tsv",
+        repo_root=repo_root,
+        output_root=output_root,
+        modulec_datos=modulec_datos,
+        aq_root=aq_root if aq_root_approved else None,
+        generated_paths=generated_paths,
+    )
+
+    result = {
+        "portuguese_aq_root": str(aq_root or ""),
+        "portuguese_aq_files_discovered": 0,
+        "portuguese_aq_station_files_normalized": 0,
+        "portuguese_aq_timeseries_files_normalized": 0,
+        "portuguese_aq_pollutants_detected": [],
+        "portuguese_aq_station_count": 0,
+        "portuguese_aq_daily_observation_count": 0,
+        "portuguese_aq_assigned_station_count": 0,
+        "portuguese_aq_matched_gfas_aq_day_count": 0,
+        "portuguese_aq_concordance_rows": 0,
+        "portuguese_aq_path_scope_decision": path_scope_decision,
+        **gate,
+    }
+    log("Portuguese AQ validation blocked before AQ consumption: status=BLOCKED_BASE_SMOKE_REGRESSION")
+    return result
 
 
 def run_portuguese_aq_validation(
@@ -1530,7 +1725,7 @@ def run_portuguese_aq_validation(
         ["aq_protocol_decision", gate["aq_protocol_decision"], "PASS", "Final AQ protocol language."],
         ["claim_disposition", gate["claim_disposition"], "PASS", "Allowed OC-03C claim language."],
         ["health_exposure_claim_status", gate["health_exposure_claim_status"], "PASS", "Health-exposure declaration remains blocked unless threshold logic is present."],
-        ["allowed_claim", AQ_ALLOWED_CLAIM, "PASS", "Allowed wording when AQ concordance succeeds."],
+        ["allowed_claim", _status_specific_allowed_claim(gate), "PASS", "Status-specific allowed OC-03C language."],
         ["forbidden_claim", AQ_FORBIDDEN_CLAIM, "PASS", "Forbidden wording without full sanitary evidence."],
     ]
     write_tsv(qa_dir / "portuguese_aq_validation_gate.tsv", ["metric", "value", "status", "detail"], gate_rows)
