@@ -156,19 +156,26 @@ def _seed_minimal_runtime(
     )
 
     base_status_column = "PASS" if base_smoke_status == "BASE_SMOKE_CONTRACT_FOR_OC03C_PASS" else base_smoke_status
-    (qa_dir / "oc03c_base_smoke_contract_gate.tsv").write_text(
-        "metric\tvalue\tstatus\tdetail\n"
-        f"base_smoke_contract_for_oc03c_status\t{base_smoke_status}\t{base_status_column}\tBase smoke contract state\n"
-        f"final_state\t{base_smoke_status}\t{base_status_column}\tFinal state\n",
+    base_gate_text = (
+        "metric	value	status	detail\n"
+        f"base_smoke_contract_for_oc03c_status	{base_smoke_status}	{base_status_column}	Base smoke contract state\n"
+        f"final_state	{base_smoke_status}	{base_status_column}	Final state\n"
+    )
+    (qa_dir / "oc03c_base_smoke_contract_gate.tsv").write_text(base_gate_text, encoding="utf-8")
+    (qa_dir / "oc03_base_smoke_contract_gate.tsv").write_text(base_gate_text, encoding="utf-8")
+    (qa_dir / "oc03_base_smoke_contract_report.md").write_text(
+        f"# OC-03 Base Smoke Contract Report\n\n- final_state: **{base_smoke_status}**\n",
         encoding="utf-8",
     )
 
-    claim_disposition = "PORTUGUESE_AQ_VALIDATION_NOT_CONSUMED_OR_INSUFFICIENT"
+    claim_disposition = "PORTUGUESE_AQ_CONSUMED_BUT_SPATIALLY_INSUFFICIENT_FOR_LOCAL_AQ_ANCHOR"
     protocol = "GO_DIRECT_2015_2024_FOR_PROSPECTIVE_PROXY_SCREENING"
     health_status = "HEALTH_EXPOSURE_CLAIM_BLOCKED"
     if oc03c_status == "BLOCKED_BASE_SMOKE_REGRESSION":
         claim_disposition = "BLOCKED_BASE_SMOKE_REGRESSION"
         protocol = "BLOCKED_BASE_SMOKE_REGRESSION"
+    elif oc03c_status in ("NO_PORTUGUESE_AQ_DATA_FOUND", "PORTUGUESE_AQ_INVENTORIED_ONLY"):
+        claim_disposition = "PORTUGUESE_AQ_VALIDATION_NOT_CONSUMED"
     elif oc03c_status == "LOCAL_AQ_ANCHORED_PROXY":
         claim_disposition = "GFAS/ERA5 smoke proxy is locally supported by Portuguese/EEA air-quality observations"
         protocol = "GO_WITH_PORTUGUESE_AQ_ANCHORED_PROXY_PROTOCOL"
@@ -305,8 +312,25 @@ def test_determine_gate_keeps_proxy_tier_when_aq_inventory_missing():
     assert gate["portuguese_aq_validation_status"] == "NO_PORTUGUESE_AQ_DATA_FOUND"
     assert gate["final_proxy_tier"] == "TIER_3_PEER_REVIEWED_OPERATIONAL_PROXY"
     assert gate["aq_protocol_decision"] == "GO_DIRECT_2015_2024_FOR_PROSPECTIVE_PROXY_SCREENING"
+    assert gate["claim_disposition"] == "PORTUGUESE_AQ_VALIDATION_NOT_CONSUMED"
     assert gate["health_exposure_claim_status"] == "HEALTH_EXPOSURE_CLAIM_BLOCKED"
 
+
+
+def test_determine_gate_distinguishes_consumed_insufficient_from_not_consumed():
+    mod = _load_aq_module()
+
+    gate = mod.determine_gate(
+        discovered_files=10,
+        timeseries_files_normalized=2,
+        daily_station_count=5,
+        assigned_station_count=0,
+        concordance_rows=[],
+        threshold_comparisons_present=False,
+    )
+
+    assert gate["portuguese_aq_validation_status"] == "PORTUGUESE_AQ_CONSUMED_BUT_SPATIALLY_INSUFFICIENT_FOR_LOCAL_AQ_ANCHOR"
+    assert gate["claim_disposition"] == "PORTUGUESE_AQ_CONSUMED_BUT_SPATIALLY_INSUFFICIENT_FOR_LOCAL_AQ_ANCHOR"
 
 def test_determine_gate_positive_concordance_only_reaches_local_anchored_proxy_without_thresholds():
     mod = _load_aq_module()
@@ -340,6 +364,8 @@ def test_collect_final_outputs_includes_oc03c_artifacts(tmp_path):
     outputs = {path.as_posix() for path in mod.collect_final_outputs(output_root, scientific_decision)}
 
     assert (output_root / "qa" / "oc03c_base_smoke_contract_gate.tsv").as_posix() in outputs
+    assert (output_root / "qa" / "oc03_base_smoke_contract_gate.tsv").as_posix() in outputs
+    assert (output_root / "qa" / "oc03_base_smoke_contract_report.md").as_posix() in outputs
     assert (output_root / "qa" / "oc03c_path_scope_preflight.tsv").as_posix() in outputs
     assert (output_root / "qa" / "portuguese_aq_validation_gate.tsv").as_posix() in outputs
     assert (output_root / "tables" / "portuguese_aq_daily_unit_2015_2024.csv").as_posix() in outputs
@@ -355,7 +381,12 @@ def test_base_smoke_contract_gate_passes_with_validated_direct_runtime(tmp_path)
     assert result["base_smoke_contract_for_oc03c_status"] == "BASE_SMOKE_CONTRACT_FOR_OC03C_PASS"
     assert result["base_smoke_contract_for_oc03c_passed"] is True
     gate_text = (output_root / "qa" / "oc03c_base_smoke_contract_gate.tsv").read_text(encoding="utf-8")
+    alias_text = (output_root / "qa" / "oc03_base_smoke_contract_gate.tsv").read_text(encoding="utf-8")
+    report_text = (output_root / "qa" / "oc03_base_smoke_contract_report.md").read_text(encoding="utf-8")
     assert "base_smoke_contract_for_oc03c_status	BASE_SMOKE_CONTRACT_FOR_OC03C_PASS" in gate_text
+    assert alias_text == gate_text
+    assert "final_state: **BASE_SMOKE_CONTRACT_FOR_OC03C_PASS**" in report_text
+    assert "`daily_rows` = `24180`" in report_text
 
 
 def test_base_smoke_contract_gate_blocks_regressed_smoke_runtime(tmp_path):

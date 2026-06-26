@@ -61,6 +61,8 @@ OBJECTIVES: List[Dict[str, object]] = [
         "required_database": "Datos_RECOVERY_PORTUGUESE_AGENCIES_2015_2024",
         "required_output": [
             "qa/oc03c_base_smoke_contract_gate.tsv",
+            "qa/oc03_base_smoke_contract_gate.tsv",
+            "qa/oc03_base_smoke_contract_report.md",
             "qa/oc03c_path_scope_preflight.tsv",
             "qa/portuguese_aq_input_inventory.tsv",
             "qa/portuguese_aq_file_format_audit.tsv",

@@ -3898,6 +3898,35 @@ def _extract_years(rows: Sequence[Dict[str, str]], field: str = "year") -> List[
     return [year for year in years if year >= 0]
 
 
+def _write_oc03_base_smoke_contract_report(
+    path: Path,
+    summary_status: str,
+    failures: Sequence[str],
+    rows_out: Sequence[Sequence[object]],
+    route_years: Sequence[int],
+    daily_years: Sequence[int],
+    route_methods: Sequence[str],
+    assignment_methods: Sequence[str],
+) -> None:
+    lines = [
+        '# OC-03 Base Smoke Contract Report',
+        '',
+        f'- generated: {now_iso()}',
+        f'- final_state: **{summary_status}**',
+        f"- failures: {', '.join(failures) if failures else 'NONE'}",
+        f"- route_years: {', '.join(str(year) for year in route_years) if route_years else 'NONE'}",
+        f"- daily_years: {', '.join(str(year) for year in daily_years) if daily_years else 'NONE'}",
+        f"- route_methods: {' | '.join(route_methods) if route_methods else 'NONE'}",
+        f"- spatial_assignment_methods: {' | '.join(assignment_methods) if assignment_methods else 'NONE'}",
+        '',
+        '## Gate rows',
+    ]
+    for metric, value, status, detail in rows_out:
+        lines.append(f'- `{metric}` = `{value}` | status=`{status}` | {detail}')
+    ensure_dir(path.parent)
+    path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+
+
 def run_base_smoke_contract_for_oc03c(output_root: Path) -> Dict[str, object]:
     qa_dir = output_root / "qa"
     tables_dir = output_root / "tables"
@@ -3905,6 +3934,8 @@ def run_base_smoke_contract_for_oc03c(output_root: Path) -> Dict[str, object]:
     smoke_audit_path = qa_dir / "smoke_route_audit.tsv"
     smoke_daily_path = tables_dir / "smoke_day_score_nuts3_daily.csv"
     gate_path = qa_dir / "oc03c_base_smoke_contract_gate.tsv"
+    gate_alias_path = qa_dir / "oc03_base_smoke_contract_gate.tsv"
+    report_path = qa_dir / "oc03_base_smoke_contract_report.md"
 
     rows_out: List[List[object]] = []
     failures: List[str] = []
@@ -4025,6 +4056,17 @@ def run_base_smoke_contract_for_oc03c(output_root: Path) -> Dict[str, object]:
     rows_out.append(["base_smoke_contract_for_oc03c_status", summary_status, summary_status, detail])
     rows_out.append(["final_state", summary_status, summary_status, detail])
     write_tsv(gate_path, ["metric", "value", "status", "detail"], rows_out)
+    write_tsv(gate_alias_path, ["metric", "value", "status", "detail"], rows_out)
+    _write_oc03_base_smoke_contract_report(
+        report_path,
+        summary_status=summary_status,
+        failures=failures,
+        rows_out=rows_out,
+        route_years=route_years,
+        daily_years=daily_years,
+        route_methods=route_methods,
+        assignment_methods=assignment_methods,
+    )
 
     return {
         "base_smoke_contract_for_oc03c_status": summary_status,
@@ -4065,6 +4107,8 @@ def collect_final_outputs(output_root: Path, scientific_decision_path: Path, inc
         output_root / "qa" / "gfas_era5_presence_audit.tsv",
         output_root / "qa" / "oc03_v11_decoder_contract_validation.tsv",
         output_root / "qa" / "oc03c_base_smoke_contract_gate.tsv",
+        output_root / "qa" / "oc03_base_smoke_contract_gate.tsv",
+        output_root / "qa" / "oc03_base_smoke_contract_report.md",
         output_root / "qa" / "scientific_validation_gate.tsv",
         output_root / "qa" / "scientific_threshold_evidence_register.tsv",
         output_root / "qa" / "blocked_claims_register.tsv",
@@ -4328,6 +4372,30 @@ def main() -> int:
             decoder_payload=decoder_payload,
         )
         write_smoke_route_audit(qa_dir, smoke_csv, route_decision)
+        smoke_daily_csv = tables_dir / "smoke_day_score_nuts3_daily.csv"
+        if smoke_daily_csv.exists():
+            write_gfas_era5_decoder_daily_spatial_audit(
+                output_root=out_dir,
+                smoke_daily_csv=smoke_daily_csv,
+                smoke_annual_csv=smoke_csv,
+            )
+            early_base_smoke_meta = run_base_smoke_contract_for_oc03c(out_dir)
+            if bool(early_base_smoke_meta.get("base_smoke_contract_for_oc03c_passed")):
+                report.log("OC-03 early base smoke contract PASS; running OC-03C AQ validation checkpoint.")
+                run_portuguese_aq_validation(
+                    modulec_datos=Path(args.modulec_datos),
+                    output_root=out_dir,
+                    repo_root=Path(__file__).resolve().parents[1],
+                    report_log=report.log,
+                )
+            else:
+                report.log("OC-03 early base smoke contract blocked; writing blocked OC-03C checkpoint outputs.")
+                write_blocked_base_smoke_regression_outputs(
+                    modulec_datos=Path(args.modulec_datos),
+                    output_root=out_dir,
+                    repo_root=Path(__file__).resolve().parents[1],
+                    report_log=report.log,
+                )
         pop_csv = pop_prepare(inputs, admin_gpkg, work_dir, tables_dir, report)
         rec_csv = recurrence_prepare(inputs, admin_gpkg, tables_dir, report)
 

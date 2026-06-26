@@ -31,7 +31,8 @@ HEALTH_NOT_DECLARED = "HEALTH_EXPOSURE_NOT_DECLARED"
 HEALTH_VALIDATED = "HEALTH_EXPOSURE_VALIDATED"
 
 AQ_PROTOCOL_PROXY = "GO_DIRECT_2015_2024_FOR_PROSPECTIVE_PROXY_SCREENING"
-AQ_PROTOCOL_PROXY_NOTE = "PORTUGUESE_AQ_VALIDATION_NOT_CONSUMED_OR_INSUFFICIENT"
+AQ_PROTOCOL_PROXY_NOT_CONSUMED_NOTE = "PORTUGUESE_AQ_VALIDATION_NOT_CONSUMED"
+AQ_PROTOCOL_PROXY_INSUFFICIENT_NOTE = PORTUGUESE_AQ_INSUFFICIENT
 AQ_PROTOCOL_ANCHORED = "GO_WITH_PORTUGUESE_AQ_ANCHORED_PROXY_PROTOCOL"
 
 AQ_ALLOWED_CLAIM = "GFAS/ERA5 smoke proxy is locally supported by Portuguese/EEA air-quality observations"
@@ -942,19 +943,19 @@ def determine_gate(
         status = PORTUGUESE_AQ_NO_DATA
         tier = PROXY_TIER_3
         claim = AQ_PROTOCOL_PROXY
-        claim_note = AQ_PROTOCOL_PROXY_NOTE
+        claim_note = AQ_PROTOCOL_PROXY_NOT_CONSUMED_NOTE
         health = HEALTH_BLOCKED
     elif timeseries_files_normalized <= 0 or daily_station_count <= 0:
         status = PORTUGUESE_AQ_INVENTORIED_ONLY
         tier = PROXY_TIER_3
         claim = AQ_PROTOCOL_PROXY
-        claim_note = AQ_PROTOCOL_PROXY_NOTE
+        claim_note = AQ_PROTOCOL_PROXY_NOT_CONSUMED_NOTE
         health = HEALTH_BLOCKED
     elif assigned_station_count <= 0 or not best_spatial:
         status = PORTUGUESE_AQ_INSUFFICIENT
         tier = PROXY_TIER_3
         claim = AQ_PROTOCOL_PROXY
-        claim_note = AQ_PROTOCOL_PROXY_NOTE
+        claim_note = AQ_PROTOCOL_PROXY_INSUFFICIENT_NOTE
         health = HEALTH_BLOCKED
     elif threshold_comparisons_present:
         status = PORTUGUESE_AQ_HEALTH_CANDIDATE
