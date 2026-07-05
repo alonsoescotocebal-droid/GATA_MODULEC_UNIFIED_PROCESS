@@ -197,6 +197,7 @@ def _seed_minimal_runtime(
     )
 
 
+
 def _seed_base_smoke_contract_inputs(output_root: Path, valid: bool) -> None:
     qa_dir = output_root / "qa"
     tables_dir = output_root / "tables"
@@ -204,22 +205,40 @@ def _seed_base_smoke_contract_inputs(output_root: Path, valid: bool) -> None:
     tables_dir.mkdir(parents=True, exist_ok=True)
 
     if valid:
+        daily_dates = [
+            dt.date(2015, 1, 2) + dt.timedelta(days=offset)
+            for offset in range((dt.date(2025, 1, 1) - dt.date(2015, 1, 2)).days + 1)
+        ]
         decoder_metrics = {
-            "daily_rows": 24180,
-            "unique_dates": 930,
+            "daily_rows": len(daily_dates) * 26,
+            "unique_dates": len(daily_dates),
             "unique_years": 10,
             "unique_units": 26,
+            "years_2015_2024_present": 1,
+            "all_months_present_each_year": 1,
+            "all_expected_dates_present": 1,
+            "date_unit_pairs": len(daily_dates) * 26,
+            "expected_daily_rows_from_dates_x_units": len(daily_dates) * 26,
             "homogeneous_years": 0,
         }
         route_methods = {year: "gfas_era5_proxy_p60_unit_daily_spatial_direct_year" for year in range(2015, 2025)}
-        daily_dates = [dt.date(year, 1, 1) + dt.timedelta(days=offset) for year in range(2015, 2025) for offset in range(93)]
+        months_present_by_year = "|".join(f"{year}:ALL12" for year in range(2015, 2025))
+        dates_per_year = "|".join(
+            f"{year}:{(dt.date(year + 1, 1, 1) - dt.date(year, 1, 1)).days}" for year in range(2015, 2025)
+        )
         spatial_assignment_method = "POINT_IN_POLYGON_GFAS_PORTUGAL_XYZ"
     else:
+        daily_dates = [dt.date(2017, 1, 1) + dt.timedelta(days=offset) for offset in range(93)]
         decoder_metrics = {
-            "daily_rows": 2418,
-            "unique_dates": 93,
+            "daily_rows": len(daily_dates) * 26,
+            "unique_dates": len(daily_dates),
             "unique_years": 1,
             "unique_units": 26,
+            "years_2015_2024_present": 0,
+            "all_months_present_each_year": 0,
+            "all_expected_dates_present": 0,
+            "date_unit_pairs": len(daily_dates) * 26,
+            "expected_daily_rows_from_dates_x_units": len(daily_dates) * 26,
             "homogeneous_years": 0,
         }
         route_methods = {
@@ -230,21 +249,25 @@ def _seed_base_smoke_contract_inputs(output_root: Path, valid: bool) -> None:
             )
             for year in range(2015, 2025)
         }
-        daily_dates = [dt.date(2017, 1, 1) + dt.timedelta(days=offset) for offset in range(93)]
+        months_present_by_year = "|".join(
+            f"{year}:{'Q1' if year == 2017 else 'NONE'}" for year in range(2015, 2025)
+        )
+        dates_per_year = "|".join(f"{year}:{93 if year == 2017 else 0}" for year in range(2015, 2025))
         spatial_assignment_method = "CENTROID_FALLBACK_LIMITED"
 
-    (qa_dir / "gfas_era5_decoder_daily_spatial_audit.tsv").write_text(
-        "metric\tvalue\tstatus\tdetail\n"
-        + "".join(f"{metric}\t{value}\tPASS\tseeded\n" for metric, value in decoder_metrics.items()),
-        encoding="utf-8",
-    )
+    decoder_lines = ["metric	value	status	detail"]
+    for metric, value in decoder_metrics.items():
+        decoder_lines.append(f"{metric}	{value}	PASS	seeded")
+    decoder_lines.append(f"months_present_by_year	{months_present_by_year}	{'PASS' if valid else 'HOLD'}	seeded")
+    decoder_lines.append(f"dates_per_year	{dates_per_year}	{'PASS' if valid else 'HOLD'}	seeded")
+    (qa_dir / "gfas_era5_decoder_daily_spatial_audit.tsv").write_text("\n".join(decoder_lines) + "\n", encoding="utf-8")
 
     route_lines = [
-        "year\tunique_values\tmethod\tspatial_homogeneous_flag\troute_selected\tsmoke_route_status\tsmoke_route_decision\thealth_exposure_claim\tiech_decision\tcausal_matrix_decision\tbrief_decision\tfinal_scientific_decision"
+        "year	unique_values	method	spatial_homogeneous_flag	route_selected	smoke_route_status	smoke_route_decision	health_exposure_claim	iech_decision	causal_matrix_decision	brief_decision	final_scientific_decision"
     ]
     for year in range(2015, 2025):
         route_lines.append(
-            f"{year}\t5\t{route_methods[year]}\t0\tv0_gfas_era5_real\tPASS\tTHRESHOLD_DEFINED_AS_INDEXED_METHOD\tBLOCKED\tPASS\tPASS\tPASS\tPASS"
+            f"{year}	5	{route_methods[year]}	0	v0_gfas_era5_real	PASS	THRESHOLD_DEFINED_AS_INDEXED_METHOD	BLOCKED	PASS	PASS	PASS	PASS"
         )
     (qa_dir / "smoke_route_audit.tsv").write_text("\n".join(route_lines) + "\n", encoding="utf-8")
 
@@ -259,6 +282,15 @@ def _seed_base_smoke_contract_inputs(output_root: Path, valid: bool) -> None:
                 f"{unit_id};Unit {idx};NUTS3;{date_value.isoformat()};{date_value.year};seed.grib;1;{score};{score};{score};10;{score};GFAS_ERA5_PROXY_SMOKE_DAY_P60;1;1;1;{spatial_assignment_method};0"
             )
     (tables_dir / "smoke_day_score_nuts3_daily.csv").write_text("\n".join(daily_lines) + "\n", encoding="utf-8")
+
+    annual_lines = ["unit_id;year;smoke_days"]
+    annual_years = range(2015, 2025) if valid else [2017]
+    for year in annual_years:
+        for idx, unit_id in enumerate(units, start=1):
+            smoke_days = float(idx) if valid else float(idx)
+            annual_lines.append(f"{unit_id};{year};{smoke_days}")
+    (tables_dir / "smoke_days_unit_2015_2024.csv").write_text("\n".join(annual_lines) + "\n", encoding="utf-8")
+
 
 def test_normalize_pollutant_name_maps_known_aliases():
     mod = _load_aq_module()
@@ -386,7 +418,7 @@ def test_base_smoke_contract_gate_passes_with_validated_direct_runtime(tmp_path)
     assert "base_smoke_contract_for_oc03c_status	BASE_SMOKE_CONTRACT_FOR_OC03C_PASS" in gate_text
     assert alias_text == gate_text
     assert "final_state: **BASE_SMOKE_CONTRACT_FOR_OC03C_PASS**" in report_text
-    assert "`daily_rows` = `24180`" in report_text
+    assert "`all_expected_dates_present` = `1`" in report_text
 
 
 def test_base_smoke_contract_gate_blocks_regressed_smoke_runtime(tmp_path):
@@ -401,6 +433,20 @@ def test_base_smoke_contract_gate_blocks_regressed_smoke_runtime(tmp_path):
     gate_text = (output_root / "qa" / "oc03c_base_smoke_contract_gate.tsv").read_text(encoding="utf-8")
     assert "forbidden_smoke_methods" in gate_text
     assert "BLOCKED_BASE_SMOKE_REGRESSION" in gate_text
+
+
+def test_base_smoke_contract_gate_accepts_bounded_2015_start_window(tmp_path):
+    mod = _load_pipeline_module()
+    output_root = tmp_path / "runtime"
+    _seed_base_smoke_contract_inputs(output_root, valid=True)
+
+    result = mod.run_base_smoke_contract_for_oc03c(output_root)
+
+    assert result["base_smoke_contract_for_oc03c_status"] == "BASE_SMOKE_CONTRACT_FOR_OC03C_PASS"
+    gate_text = (output_root / "qa" / "oc03c_base_smoke_contract_gate.tsv").read_text(encoding="utf-8")
+    assert "all_expected_dates_present	1	PASS" in gate_text
+    assert "single_year_fallback_detected	0	PASS" in gate_text
+    assert "dates_per_year=2015:364|2016:366|2017:365|2018:365|2019:365|2020:366|2021:365|2022:365|2023:365|2024:366" in gate_text
 
 
 def test_write_blocked_base_smoke_regression_outputs_preserves_blocked_state(monkeypatch, tmp_path):
@@ -640,6 +686,8 @@ def test_run_portuguese_aq_validation_from_approved_root_produces_anchored_proxy
     assert result["portuguese_aq_path_scope_decision"] == "PATH_SCOPE_PASS"
     assert (output_root / "qa" / "portuguese_aq_validation_gate.tsv").exists()
     assert (output_root / "tables" / "portuguese_aq_daily_unit_2015_2024.csv").exists()
+    normalization_text = (output_root / "qa" / "portuguese_aq_normalization_audit.tsv").read_text(encoding="utf-8")
+    assert "station_metadata_files_normalized	0	WARN_METADATA_FORMAL_FILE_NOT_NORMALIZED" in normalization_text
 
 
 
@@ -660,3 +708,49 @@ def test_run_portuguese_aq_validation_rejects_out_of_scope_env_root_before_inven
     assert result["portuguese_aq_files_discovered"] == 0
     assert result["portuguese_aq_validation_status"] == "NO_PORTUGUESE_AQ_DATA_FOUND"
     assert result["portuguese_aq_path_scope_decision"] == "BLOCKED_PATH_SCOPE_DESYNC"
+
+def test_oc03c_objective_check_prefers_tab_for_base_smoke_tsv_with_semicolon_detail(tmp_path):
+    mod = _load_validator_module()
+    output_root = tmp_path / "runtime"
+    _seed_minimal_runtime(output_root, oc03c_status="LOCAL_AQ_ANCHORED_PROXY")
+    (output_root / "qa" / "oc03c_base_smoke_contract_gate.tsv").write_text(
+        "metric\tvalue\tstatus\tdetail\n"
+        "base_smoke_contract_for_oc03c_status\tBASE_SMOKE_CONTRACT_FOR_OC03C_PASS\tPASS\tmonths=2015-01;2015-02;2015-03;2015-04;2015-05;2015-06;2015-07;2015-08\n"
+        "final_state\tBASE_SMOKE_CONTRACT_FOR_OC03C_PASS\tPASS\tcoverage=all_years; all_months; all_dates; route=recovery; method=direct\n",
+        encoding="utf-8",
+    )
+
+    ok, reason = mod._check_oc03c_aq_validation(output_root)
+
+    assert ok is True
+    assert "anchored proxy validated" in reason
+
+
+def test_qa_gate_prefers_tab_for_tsv_contracts_with_semicolon_detail(tmp_path):
+    mod = _load_qa_gate_module()
+    output_root = tmp_path / "runtime"
+    _seed_minimal_runtime(output_root, oc03c_status="LOCAL_AQ_ANCHORED_PROXY")
+    qa_dir = output_root / "qa"
+    deliver_dir = output_root / "deliverables_step9"
+
+    (qa_dir / "objectives_canon_alignment_report.tsv").write_text(
+        "objective_id\tobjective_name\trequired_database\trequired_output\tproducer_script\tvalidation_rule\tstatus\tevidence_path\tfailure_reason\n"
+        "OC-03\tGFAS decoder\tGFAS/ERA5\tqa/gfas_era5_decoder_daily_spatial_audit.tsv\tvalidator\trule\tPASS\tqa/gfas_era5_decoder_daily_spatial_audit.tsv\tcoverage=2015;2016;2017;2018;2019;2020;2021;2022;2023;2024\n"
+        "OC-03C\tPortuguese AQ\tAQ root\tqa/portuguese_aq_validation_gate.tsv\tvalidator\trule\tPASS\tqa/portuguese_aq_validation_gate.tsv\tvalidated; anchored; concordant; non-health claim only\n",
+        encoding="utf-8",
+    )
+    (qa_dir / "scientific_validation_gate.tsv").write_text(
+        "threshold_id\tcomponent\tinput_file_checked\tvariable_checked\tobserved_condition\tthreshold_value_or_rule\tthreshold_source_id\tsource_type\tgate_status\tallowed_claim\tforbidden_claim\tfinal_decision_effect\n"
+        "SMOKE-DIRECT-2015-2024\tDirect smoke\tqa/gfas_era5_decoder_daily_spatial_audit.tsv\tunique_years\tunique_years=10; unique_dates=3653; months=all12; dates=complete\trule\tsrc\tDIRECT_VALIDATION_GATE\tTHRESHOLD_DEFINED_AS_INDEXED_METHOD\tallowed\tforbidden\tNONE\n"
+        "OC03C-AQ-001\tPortuguese AQ\tqa/portuguese_aq_validation_gate.tsv\tstatus\tanchor=local; concordance=positive; protocol=go\trule\tsrc\tLOCAL_VALIDATION_GATE\tLOCAL_AQ_ANCHORED_PROXY\tallowed\tforbidden\tNONE\n",
+        encoding="utf-8",
+    )
+    (deliver_dir / "final_manifest.json").write_text("[]", encoding="utf-8")
+    (deliver_dir / "final_sha256_checkpoints.txt").write_text("stub\n", encoding="utf-8")
+    (deliver_dir / "ModuleC_ALL_FINAL_deliverables.zip").write_text("stub\n", encoding="utf-8")
+
+    decision, _summary, holds, _rows = mod.evaluate_output_root(output_root)
+
+    assert decision == "GO"
+    assert "HOLD OBJECTIVES CANON" not in holds
+    assert "HOLD SCIENTIFIC GATE" not in holds

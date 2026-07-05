@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 
@@ -24,5 +24,6 @@ def test_decoder_processes_payloads_in_process_with_progress_logging():
     assert "GFAS decoder progress:" in pipeline
     assert "GFAS decoder file complete:" in pipeline
     assert "GFAS decoder target direct years:" in pipeline
-    assert "GFAS decoder bounded direct window reached:" in pipeline
+    assert "GFAS decoder planned PM message count reached:" in pipeline
     assert "pm_stride_hint" in pipeline
+

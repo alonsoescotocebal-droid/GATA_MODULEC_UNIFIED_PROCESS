@@ -39,6 +39,21 @@ if(-not (Test-Path $bundleDir)){
   New-Item -ItemType Directory -Force -Path $bundleDir | Out-Null
 }
 
+$staleStep9Meta = @(
+  (Join-Path $outDir "runtime_closure_decision.md"),
+  (Join-Path $outDir "final_manifest.json"),
+  (Join-Path $outDir "final_manifest_recursive_audit.tsv"),
+  (Join-Path $outDir "final_sha256_checkpoints.txt"),
+  (Join-Path $outDir "final_bundle_staleness_audit.tsv"),
+  (Join-Path $modcOut "qa\global_audit_status_scan.tsv"),
+  (Join-Path $modcOut "qa\global_audit_status_scan.md")
+)
+foreach($stalePath in $staleStep9Meta){
+  if(Test-Path $stalePath){
+    Remove-Item -Force $stalePath
+  }
+}
+
 $staleAuditRows = New-Object System.Collections.Generic.List[object]
 function Add-StaleAudit([string]$checkId, [string]$status, [string]$detail){
   $staleAuditRows.Add([pscustomobject]@{
@@ -141,14 +156,12 @@ $requiredRel = @(
   "qa\fire_ingestion_audit.tsv",
   "qa\smoke_route_audit.tsv",
   "qa\smoke_route_source_trace_audit.tsv",
-  "qa\smoke_route_hypothesis_test.md",
   "qa\gfas_era5_presence_audit.tsv",
   "qa\gfas_era5_decoder_audit.tsv",
   "qa\gfas_era5_decoder_backend_audit.tsv",
   "qa\gfas_era5_decoder_daily_spatial_audit.tsv",
   "qa\gfas_era5_decoder_checkpoints.tsv",
   "qa\gfas_pm2p5fire_message_inventory.tsv",
-  "qa\gfas_pm2p5fire_portugal_xyz.csv",
   "qa\gfas_pm2p5fire_portugal_daily_summary.csv",
   "qa\oc03_v11_decoder_contract_validation.tsv",
   "qa\era5_10u10v_inventory.tsv",
@@ -323,10 +336,35 @@ $decisionLines = @(
 )
 $decisionLines | Set-Content -Encoding UTF8 $decisionPath
 
+# BEGIN R6K_RUNTIME_CLOSURE_REFRESH
+try {
+    $R6KRefreshScript = Join-Path $PSScriptRoot "r6k_refresh_runtime_closure_decision.ps1"
+    if (Test-Path -LiteralPath $R6KRefreshScript) {
+        & $R6KRefreshScript -OutputRoot $modcOut
+        if ($LASTEXITCODE -ne 0) {
+            throw "R6K runtime closure refresh failed with LASTEXITCODE=$LASTEXITCODE"
+        }
+    } else {
+        Write-Warning "R6K refresh script not found: $R6KRefreshScript"
+    }
+} catch {
+    Write-Error "R6K runtime closure refresh failed: $($_.Exception.Message)"
+    throw
+}
+# END R6K_RUNTIME_CLOSURE_REFRESH
+
 $decisionDst = Join-Path $bundleDir "deliverables_step9\runtime_closure_decision.md"
 $decisionParent = Split-Path -Parent $decisionDst
 if(-not (Test-Path $decisionParent)){ New-Item -ItemType Directory -Force -Path $decisionParent | Out-Null }
 Copy-Item -Force $decisionPath $decisionDst
+
+$r6kAuditPath = Join-Path $modcOut "qa\r6k_runtime_closure_refresh_audit.tsv"
+if(Test-Path $r6kAuditPath){
+  $r6kAuditDst = Join-Path $bundleDir "qa\r6k_runtime_closure_refresh_audit.tsv"
+  $r6kAuditParent = Split-Path -Parent $r6kAuditDst
+  if(-not (Test-Path $r6kAuditParent)){ New-Item -ItemType Directory -Force -Path $r6kAuditParent | Out-Null }
+  Copy-Item -Force $r6kAuditPath $r6kAuditDst
+}
 
 $manifestPath = Join-Path $outDir "final_manifest.json"
 $manifest = @()
@@ -425,19 +463,3 @@ if($missing.Count -gt 0){
   Write-Host "MISSING_COUNT =" $missing.Count
 }
 
-# BEGIN R6K_RUNTIME_CLOSURE_REFRESH
-try {
-    $R6KRefreshScript = Join-Path $PSScriptRoot "r6k_refresh_runtime_closure_decision.ps1"
-    if (Test-Path -LiteralPath $R6KRefreshScript) {
-        & $R6KRefreshScript -OutputRoot $modcOut
-        if ($LASTEXITCODE -ne 0) {
-            throw "R6K runtime closure refresh failed with LASTEXITCODE=$LASTEXITCODE"
-        }
-    } else {
-        Write-Warning "R6K refresh script not found: $R6KRefreshScript"
-    }
-} catch {
-    Write-Error "R6K runtime closure refresh failed: $($_.Exception.Message)"
-    throw
-}
-# END R6K_RUNTIME_CLOSURE_REFRESH

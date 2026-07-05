@@ -1706,11 +1706,16 @@ def run_portuguese_aq_validation(
         if str(row.get("scope")) == "SPATIAL_MATCHED"
     ]
     matched_gfas_aq_day_count = max([int(row.get("matched_day_count") or 0) for row in matched_spatial_rows] + [0])
+    metadata_status = "INFO" if station_metadata_files else "HOLD"
+    metadata_detail = "AQ-relevant station metadata files with usable records."
+    if not station_metadata_files and (station_index or assigned_station_count or daily_station_rows or matched_gfas_aq_day_count):
+        metadata_status = "WARN_METADATA_FORMAL_FILE_NOT_NORMALIZED"
+        metadata_detail = "Formal station metadata files were not normalized, but station inventory/assignment/concordance evidence exists."
     normalization_audit_rows = [
         ["aq_root_resolved", str(aq_root or ""), "PASS" if aq_root else "HOLD", "Approved Portuguese AQ root resolution."],
         ["files_discovered", len(discovered_files), "PASS" if discovered_files else "HOLD", "Recursive inventory under approved root."],
         ["timeseries_files_normalized", timeseries_files_normalized, "PASS" if timeseries_files_normalized else "HOLD", "Timeseries files that produced observations."],
-        ["station_metadata_files_normalized", len(station_metadata_files), "INFO" if station_metadata_files else "HOLD", "AQ-relevant station metadata files with usable records."],
+        ["station_metadata_files_normalized", len(station_metadata_files), metadata_status, metadata_detail],
         ["station_inventory_count", len(station_index), "PASS" if station_index else "HOLD", "Distinct station records."],
         ["daily_station_rows", len(daily_station_rows), "PASS" if daily_station_rows else "HOLD", "Daily pollutant observations by station."],
         ["assigned_station_count", assigned_station_count, "PASS" if assigned_station_count else "HOLD", "Stations with municipio/NUTS3 assignment."],

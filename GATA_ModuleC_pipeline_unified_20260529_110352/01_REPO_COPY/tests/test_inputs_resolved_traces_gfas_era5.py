@@ -15,7 +15,7 @@ def test_apply_route_meta_writes_gfas_era5_trace(tmp_path):
     recovery.mkdir(parents=True, exist_ok=True)
     gfas_dir = recovery
     (gfas_dir / "dummy.grib").write_bytes(b"grib")
-    (gfas_dir / "_grib_summary.csv").write_text("file,minDate,message_count,pm_stride_hint\nx.grib,20150101,93,1\n", encoding="utf-8")
+    (gfas_dir / "_grib_summary.csv").write_text("file,minDate,message_count,pm_stride_hint\nx.grib,20150101,365,1\n", encoding="utf-8")
     era5_zip = recovery / "ERA5_demo.zip"
     era5_zip.write_bytes(b"zip")
     (data / "ParquetFiles 2022.zip").write_bytes(b"zip")

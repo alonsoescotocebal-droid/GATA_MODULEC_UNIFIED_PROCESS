@@ -205,7 +205,13 @@ def sha256_file(path: Path, chunk: int = 1024 * 1024) -> str:
 def sniff_delim(path: Path) -> str:
     data = path.read_bytes()[:65536]
     text = data.decode("utf-8-sig", errors="replace")
-    counts = {";": text.count(";"), ",": text.count(","), "\t": text.count("\t")}
+    suffix = path.suffix.lower()
+    if suffix == ".tsv":
+        return "	"
+    if suffix == ".csv":
+        counts = {";": text.count(";"), ",": text.count(",")}
+        return ";" if counts[";"] >= counts[","] and counts[";"] > 0 else ","
+    counts = {";": text.count(";"), ",": text.count(","), "	": text.count("	")}
     best = max(counts, key=lambda k: counts[k])
     return best if counts[best] > 0 else ","
 
@@ -318,6 +324,29 @@ def _count_unique_numeric(rows: List[Dict[str, str]], preferred_cols: List[str])
     return len(set(vals))
 
 
+
+
+def _metric_map_int(metric_map: Dict[str, Dict[str, str]], *keys: str) -> int:
+    for key in keys:
+        row = metric_map.get(key.strip().lower())
+        if not row:
+            continue
+        value = safe_float(row.get("value") or row.get("observed") or row.get("status"))
+        if value is not None:
+            return int(value)
+    return 0
+
+
+def _metric_map_text(metric_map: Dict[str, Dict[str, str]], *keys: str) -> str:
+    for key in keys:
+        row = metric_map.get(key.strip().lower())
+        if not row:
+            continue
+        value = str(row.get("value") or row.get("observed") or row.get("detail") or "").strip()
+        if value:
+            return value
+    return ""
+
 def _check_oc03_v13_direct_contract(output_root: Path, inputs: Dict[str, object]) -> Tuple[bool, str]:
     qa_dir = output_root / "qa"
     smoke_audit_path = qa_dir / "smoke_route_audit.tsv"
@@ -368,12 +397,24 @@ def _check_oc03_v13_direct_contract(output_root: Path, inputs: Dict[str, object]
         return False, f"smoke_route_audit.tsv still has homogeneous direct years: min unique_values={min(smoke_unique_counts)}"
 
     decoder_map = {str(r.get("metric") or "").strip().lower(): r for r in decoder_rows}
-    unique_years = int(safe_float(decoder_map.get("uniqueyears", {}).get("value")) or safe_float(decoder_map.get("unique_years", {}).get("value")) or 0)
-    unique_dates = int(safe_float(decoder_map.get("uniquedates", {}).get("value")) or safe_float(decoder_map.get("unique_dates", {}).get("value")) or 0)
+    unique_years = _metric_map_int(decoder_map, "uniqueyears", "unique_years")
+    unique_dates = _metric_map_int(decoder_map, "uniquedates", "unique_dates")
+    unique_units = _metric_map_int(decoder_map, "uniqueunits", "unique_units")
+    all_years_present = _metric_map_int(decoder_map, "years_2015_2024_present")
+    all_months_present = _metric_map_int(decoder_map, "all_months_present_each_year")
+    all_expected_dates_present = _metric_map_int(decoder_map, "all_expected_dates_present")
+    dates_per_year = _metric_map_text(decoder_map, "dates_per_year")
+    months_present_by_year = _metric_map_text(decoder_map, "months_present_by_year")
     if unique_years < 10:
         return False, f"Decoder daily spatial audit unique_years={unique_years} < 10"
-    if unique_dates <= 900:
-        return False, f"Decoder daily spatial audit unique_dates={unique_dates} <= 900"
+    if unique_units < 26:
+        return False, f"Decoder daily spatial audit unique_units={unique_units} < 26"
+    if all_years_present != 1:
+        return False, f"Decoder daily spatial audit years_2015_2024_present={all_years_present}; dates_per_year={dates_per_year or 'EMPTY'}"
+    if all_months_present != 1:
+        return False, f"Decoder daily spatial audit months_present_by_year={months_present_by_year or 'EMPTY'}"
+    if all_expected_dates_present != 1:
+        return False, f"Decoder daily spatial audit all_expected_dates_present={all_expected_dates_present}; dates_per_year={dates_per_year or 'EMPTY'}"
 
     iech_unit_rows = _v10b_read_rows_if_exists(output_root / "tables" / "IECH_unit_2015_2024_mean.csv")
     iech_muni_rows = _v10b_read_rows_if_exists(output_root / "tables" / "IECH_municipio_2015_2024_mean.csv")
@@ -391,6 +432,7 @@ def _check_oc03_v13_direct_contract(output_root: Path, inputs: Dict[str, object]
 
     return True, (
         f"OC-03 direct contract passed: unique_years={unique_years}, unique_dates={unique_dates}, "
+        f"unique_units={unique_units}, all_expected_dates_present={all_expected_dates_present}, "
         f"IECH unit unique={unit_unique}, IECH municipio unique={muni_unique}"
     )
 
@@ -542,21 +584,8 @@ def _v10b_read_rows_if_exists(path: Path) -> List[Dict[str, str]]:
     except Exception:
         rows = []
     try:
-        import csv
         with path.open("r", encoding="utf-8-sig", newline="") as fh:
-            sample = fh.read(8192)
-            fh.seek(0)
-            delimiter = ","
-            try:
-                dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
-                delimiter = dialect.delimiter
-            except Exception:
-                first_line = sample.splitlines()[0] if sample.splitlines() else ""
-                counts = {",": first_line.count(","), ";": first_line.count(";"), "\t": first_line.count("\t"), "|": first_line.count("|")}
-                delimiter = max(counts, key=counts.get)
-                if counts.get(delimiter, 0) <= 0:
-                    delimiter = ","
-            reader = csv.DictReader(fh, delimiter=delimiter)
+            reader = csv.DictReader(fh, delimiter=sniff_delim(path))
             out: List[Dict[str, str]] = []
             for row in reader:
                 clean = {str(k): ("" if v is None else str(v)) for k, v in row.items() if k is not None}

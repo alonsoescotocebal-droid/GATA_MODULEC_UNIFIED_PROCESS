@@ -82,7 +82,13 @@ def now_iso() -> str:
 def sniff_delimiter(path: Path, sample_bytes: int = 65536) -> str:
     data = path.read_bytes()[:sample_bytes]
     text = data.decode("utf-8-sig", errors="replace")
-    counts = {";": text.count(";"), ",": text.count(","), "\t": text.count("\t")}
+    suffix = path.suffix.lower()
+    if suffix == ".tsv":
+        return "	"
+    if suffix == ".csv":
+        counts = {";": text.count(";"), ",": text.count(",")}
+        return ";" if counts[";"] >= counts[","] and counts[";"] > 0 else ","
+    counts = {";": text.count(";"), ",": text.count(","), "	": text.count("	")}
     best = max(counts, key=lambda k: counts[k])
     return best if counts[best] > 0 else ","
 

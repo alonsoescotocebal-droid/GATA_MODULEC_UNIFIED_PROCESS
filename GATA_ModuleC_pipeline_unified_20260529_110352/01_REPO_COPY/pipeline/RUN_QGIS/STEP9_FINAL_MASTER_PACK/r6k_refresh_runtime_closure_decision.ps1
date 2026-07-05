@@ -6,19 +6,16 @@
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
-$ExpectedFinal = "GO_WITH_LOCAL_AQ_ANCHOR_AND_LOW_N_DIRECTIONAL_CONCORDANCE"
-$ExpectedTier = "TIER_2L_LOCAL_AQ_ANCHOR_LOW_N_DIRECTIONAL_CONCORDANCE"
-$ExpectedLowN = "LOCAL_AQ_ANCHOR_AVAILABLE_LOW_N_DIRECTIONAL_LIMITED"
+$ExpectedFinal = "GO_WITH_PORTUGUESE_AQ_ANCHORED_PROXY_PROTOCOL"
+$ExpectedTier = "TIER_2_LOCAL_SMOKE_PROXY_VALIDATED_BY_AQ"
+$ExpectedAnchorStatus = "LOCAL_AQ_ANCHORED_PROXY"
 
 $RuntimeDecision = Join-Path $OutputRoot "deliverables_step9\runtime_closure_decision.md"
 $ScientificDecision = Join-Path $OutputRoot "deliverables_step9\runtime_scientific_closure_decision.md"
 $Manifest = Join-Path $OutputRoot "deliverables_step9\final_manifest.json"
 $Sha = Join-Path $OutputRoot "deliverables_step9\final_sha256_checkpoints.txt"
 
-$InventoryTsv = Join-Path $OutputRoot "qa\local_aq_dataset_inventory.tsv"
-$GateTsv = Join-Path $OutputRoot "qa\scientific_claim_gate.tsv"
-$WarningInventory = Join-Path $OutputRoot "qa\warning_inventory.tsv"
-$TierRegister = Join-Path $OutputRoot "docs\canon\SCIENTIFIC_EVIDENCE_TIER_REGISTER.tsv"
+$PortugueseGateTsv = Join-Path $OutputRoot "qa\portuguese_aq_validation_gate.tsv"
 
 $AuditTsv = Join-Path $OutputRoot "qa\r6k_runtime_closure_refresh_audit.tsv"
 
@@ -56,33 +53,31 @@ function Write-Audit {
     $lines += "scientific_decision`t$ScientificDecision"
     $lines += "expected_final`t$ExpectedFinal"
     $lines += "expected_tier`t$ExpectedTier"
+    $lines += "expected_anchor_status`t$ExpectedAnchorStatus"
     $lines | Set-Content -LiteralPath $Path -Encoding UTF8
 }
 
 $ScientificText = Read-Text-Safe $ScientificDecision
-$InventoryText = Read-Text-Safe $InventoryTsv
-$GateText = Read-Text-Safe $GateTsv
-$WarningText = Read-Text-Safe $WarningInventory
-$TierText = Read-Text-Safe $TierRegister
+$PortugueseGateText = Read-Text-Safe $PortugueseGateTsv
 
 if (-not (Has-Token $ScientificText $ExpectedFinal)) {
     Write-Audit -Path $AuditTsv -Decision "NO_GO" -Message "Scientific closure lacks expected final token."
     throw "Scientific closure lacks expected final token."
 }
 
-if (-not (Has-Token $ScientificText $ExpectedTier) -and -not (Has-Token $TierText $ExpectedTier)) {
-    Write-Audit -Path $AuditTsv -Decision "NO_GO" -Message "TIER_2L not present in scientific closure or tier register."
-    throw "TIER_2L not present."
+if (-not (Has-Token $ScientificText $ExpectedTier) -and -not (Has-Token $PortugueseGateText $ExpectedTier)) {
+    Write-Audit -Path $AuditTsv -Decision "NO_GO" -Message "Current AQ-anchored proxy tier not present in scientific closure or Portuguese AQ gate."
+    throw "Current AQ-anchored proxy tier missing."
 }
 
-if (-not (Has-Token $InventoryText $ExpectedLowN)) {
-    Write-Audit -Path $AuditTsv -Decision "NO_GO" -Message "Inventory does not contain expected low-N anchor status."
-    throw "Inventory low-N anchor status missing."
+if (-not (Has-Token $ScientificText $ExpectedAnchorStatus) -and -not (Has-Token $PortugueseGateText $ExpectedAnchorStatus)) {
+    Write-Audit -Path $AuditTsv -Decision "NO_GO" -Message "Current Portuguese AQ anchored proxy status not present in scientific closure or Portuguese AQ gate."
+    throw "Portuguese AQ anchored proxy status missing."
 }
 
-if (-not (Has-Token $GateText "LOCAL_AQ_LOW_N_DIRECTIONAL_CONCORDANCE_ALLOWED")) {
-    Write-Audit -Path $AuditTsv -Decision "NO_GO" -Message "Scientific gate does not allow low-N directional concordance."
-    throw "Gate low-N permission missing."
+if (-not (Has-Token $PortugueseGateText $ExpectedFinal)) {
+    Write-Audit -Path $AuditTsv -Decision "NO_GO" -Message "Portuguese AQ validation gate lacks expected anchored proxy protocol token."
+    throw "Portuguese AQ protocol token missing."
 }
 
 $runtimeContent = @"
@@ -91,12 +86,13 @@ $runtimeContent = @"
 decision: $ExpectedFinal
 decision_source: runtime_scientific_closure_decision.md
 evidence_tier_selected: $ExpectedTier
-local_aq_anchor_status: $ExpectedLowN
-low_n_directional_concordance: SUPPORTED_WITH_LIMITATION
+local_aq_anchor_status: $ExpectedAnchorStatus
+aq_protocol_decision: $ExpectedFinal
+proxy_validation_scope: PORTUGUESE_AQ_ANCHORED_PROXY_ONLY
 
 health_exposure_claim: BLOCKED
 regulatory_exceedance_claim: BLOCKED
-robust_correlation_claim: BLOCKED_LOW_N
+robust_correlation_claim: NOT_DECLARED
 causal_claim: BLOCKED
 proxy_claim: ALLOWED
 
@@ -106,14 +102,14 @@ local_database_only: true
 external_downloads_attempted: false
 external_api_calls_attempted: false
 
-interpretation: El Módulo C cierra como sistema territorial autónomo con proxy GFAS/ERA5 localmente anclado por concordancia direccional limitada con PM2.5 local disponible en la base, n bajo. No cierra como exposición sanitaria validada, superación regulatoria, correlación estadística robusta ni causalidad epidemiológica.
+interpretation: El M?dulo C cierra como sistema territorial aut?nomo con proxy GFAS/ERA5 anclado por validaci?n AQ portuguesa/EEA. No cierra como exposici?n sanitaria validada, superaci?n regulatoria, correlaci?n estad?stica robusta ni causalidad epidemiol?gica.
 
 required_limitations:
 - no_health_exposure_validation
 - no_regulatory_exceedance_attribution
-- no_robust_statistical_correlation_low_n
+- no_robust_statistical_correlation_claim
 - no_epidemiological_causality
-- proxy_locally_anchored_low_n_only
+- proxy_locally_anchored_by_portuguese_aq_only
 
 generated_by: MICROFASE_R6K_RUNTIME_CLOSURE_REFRESH
 generated_at: $((Get-Date).ToString('s'))
