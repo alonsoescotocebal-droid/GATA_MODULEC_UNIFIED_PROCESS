@@ -1303,7 +1303,7 @@ def _smoke_spatial_homogeneous(smoke_csv: Path) -> bool:
         return True
     rows = read_csv_rows(smoke_csv)[1]
     by_year: Dict[int, set] = defaultdict(set)
-    direct_years: set[int] = set()
+    positive_signal_direct_years: set[int] = set()
     for r in rows:
         y = safe_float(r.get("year"))
         v = safe_float(r.get("smoke_days"))
@@ -1312,11 +1312,12 @@ def _smoke_spatial_homogeneous(smoke_csv: Path) -> bool:
             continue
         year_int = int(y)
         if ("direct_year" in method) or (not method):
-            direct_years.add(year_int)
             by_year[year_int].add(round(v, 8))
-    if not direct_years:
+            if v > 0:
+                positive_signal_direct_years.add(year_int)
+    if not positive_signal_direct_years:
         return True
-    return any(len(by_year.get(year_int, set())) <= 1 for year_int in direct_years)
+    return any(len(by_year.get(year_int, set())) <= 1 for year_int in positive_signal_direct_years)
 
 
 def _iech_population_cancellation(iech_hist_csv: Path) -> bool:

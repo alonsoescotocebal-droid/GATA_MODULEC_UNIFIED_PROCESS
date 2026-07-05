@@ -12,6 +12,9 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
 FORBIDDEN_DIRECT_METHOD_TOKENS = ("flat_single_anchor", "interpolated_from_anchors", "extrapolated_from_anchors")
+MIN_OC03_DIRECT_UNIQUE_UNITS = 26
+BASE_SMOKE_CONTRACT_FOR_OC03C_PASS = "BASE_SMOKE_CONTRACT_FOR_OC03C_PASS"
+PORTUGUESE_AQ_BASE_SMOKE_BLOCKED = "BLOCKED_BASE_SMOKE_REGRESSION"
 FORBIDDEN_PRIMARY_SOURCE_TOKENS = (
     "parquetfiles 2017.zip",
     "parquetfiles 2022.zip",
@@ -29,7 +32,13 @@ def now_iso() -> str:
 
 def sniff_delim(path: Path) -> str:
     text = path.read_bytes()[:65536].decode("utf-8-sig", errors="replace")
-    counts = {";": text.count(";"), ",": text.count(","), "\t": text.count("\t")}
+    suffix = path.suffix.lower()
+    if suffix == ".tsv":
+        return "	"
+    if suffix == ".csv":
+        counts = {";": text.count(";"), ",": text.count(",")}
+        return ";" if counts[";"] >= counts[","] and counts[";"] > 0 else ","
+    counts = {";": text.count(";"), ",": text.count(","), "	": text.count("	")}
     best = max(counts, key=lambda k: counts[k])
     return best if counts[best] > 0 else ","
 
@@ -105,7 +114,7 @@ def evaluate_smoke_spatial(smoke_csv: Path) -> Tuple[str, str, Dict[int, int]]:
     if not rows:
         return "BLOCKED_FOR_REQUIRED_VARIABLE", "smoke_days_unit_2015_2024.csv empty", {}
     by_year: Dict[int, set] = {}
-    direct_years: set[int] = set()
+    positive_signal_direct_years: set[int] = set()
     for r in rows:
         y = safe_float(r.get("year"))
         v = safe_float(r.get("smoke_days"))
@@ -114,11 +123,12 @@ def evaluate_smoke_spatial(smoke_csv: Path) -> Tuple[str, str, Dict[int, int]]:
             continue
         year_int = int(y)
         if ("direct_year" in method) or (not method):
-            direct_years.add(year_int)
             by_year.setdefault(year_int, set()).add(round(v, 8))
-    if not direct_years:
+            if v > 0:
+                positive_signal_direct_years.add(year_int)
+    if not positive_signal_direct_years:
         return "BLOCKED_FOR_REQUIRED_VARIABLE", "No direct-signal smoke years with positive smoke_days", {}
-    unique_counts = {y: len(by_year.get(y, set())) for y in sorted(direct_years)}
+    unique_counts = {y: len(by_year.get(y, set())) for y in sorted(positive_signal_direct_years)}
     blocked_years = [y for y, n in unique_counts.items() if n <= 1]
     if blocked_years:
         return (
@@ -164,6 +174,42 @@ def evaluate_health_claim_support(smoke_csv: Path) -> Tuple[str, str]:
     if keys.intersection(health_cols):
         return "THRESHOLD_DEFINED_AS_OFFICIAL_HEALTH_STANDARD", "Pollutant concentration columns detected."
     return "BLOCKED_FOR_HEALTH_EXPOSURE_CLAIM", "Proxy-only smoke table; pollutant concentration thresholds unavailable."
+
+
+def evaluate_oc03c_base_smoke_contract(qa_dir: Path) -> Tuple[str, str, Dict[str, str]]:
+    gate_path = qa_dir / "oc03c_base_smoke_contract_gate.tsv"
+    if not gate_path.exists():
+        return "BLOCKED_FOR_REQUIRED_VARIABLE", "oc03c_base_smoke_contract_gate.tsv missing", {}
+    rows = read_csv_rows(gate_path)
+    gate_map = {str(row.get("metric") or "").strip(): str(row.get("value") or "").strip() for row in rows}
+    status = (gate_map.get("base_smoke_contract_for_oc03c_status", "") or gate_map.get("final_state", "")).strip()
+    if not status:
+        return "BLOCKED_FOR_REQUIRED_VARIABLE", "base_smoke_contract_for_oc03c_status missing", gate_map
+    observed = f"base_smoke_contract_for_oc03c_status={status}"
+    return status, observed, gate_map
+
+
+def evaluate_portuguese_aq_validation(qa_dir: Path) -> Tuple[str, str, Dict[str, str]]:
+    gate_path = qa_dir / "portuguese_aq_validation_gate.tsv"
+    if not gate_path.exists():
+        return "BLOCKED_FOR_REQUIRED_VARIABLE", "portuguese_aq_validation_gate.tsv missing", {}
+    rows = read_csv_rows(gate_path)
+    gate_map = {str(row.get("metric") or "").strip(): str(row.get("value") or "").strip() for row in rows}
+    status = gate_map.get("portuguese_aq_validation_status", "").strip()
+    protocol = gate_map.get("aq_protocol_decision", "").strip()
+    claim_disposition = gate_map.get("claim_disposition", "").strip()
+    health_status = gate_map.get("health_exposure_claim_status", "").strip()
+    if not status:
+        return "BLOCKED_FOR_REQUIRED_VARIABLE", "portuguese_aq_validation_status missing", gate_map
+    observed = (
+        f"portuguese_aq_validation_status={status}; "
+        f"aq_protocol_decision={protocol or 'EMPTY'}; "
+        f"claim_disposition={claim_disposition or 'EMPTY'}; "
+        f"health_exposure_claim_status={health_status or 'EMPTY'}"
+    )
+    if health_status == "HEALTH_EXPOSURE_VALIDATED":
+        return "BLOCKED_FOR_HEALTH_EXPOSURE_CLAIM", observed, gate_map
+    return status, observed, gate_map
 
 
 def evaluate_smoke_route_trace(inputs_json: Path) -> Tuple[str, str, str]:
@@ -233,6 +279,29 @@ def read_smoke_route_scope(inputs_json: Path) -> Dict[str, str]:
     }
 
 
+
+
+def _metric_int_value(metric_map: Dict[str, Dict[str, str]], *keys: str) -> int:
+    for key in keys:
+        row = metric_map.get(key.strip().lower())
+        if not row:
+            continue
+        value = safe_float(row.get("value") or row.get("observed") or row.get("status"))
+        if value is not None:
+            return int(value)
+    return 0
+
+
+def _metric_text_value(metric_map: Dict[str, Dict[str, str]], *keys: str) -> str:
+    for key in keys:
+        row = metric_map.get(key.strip().lower())
+        if not row:
+            continue
+        value = str(row.get("value") or row.get("observed") or row.get("detail") or "").strip()
+        if value:
+            return value
+    return ""
+
 def evaluate_direct_decoder_contract(output_root: Path) -> Tuple[str, str]:
     inputs_json = output_root / "qa" / "inputs_resolved.json"
     decoder_audit = output_root / "qa" / "gfas_era5_decoder_daily_spatial_audit.tsv"
@@ -266,18 +335,24 @@ def evaluate_direct_decoder_contract(output_root: Path) -> Tuple[str, str]:
 
     decoder_rows = read_csv_rows(decoder_audit)
     decoder_map = {str(r.get("metric") or "").strip().lower(): r for r in decoder_rows}
-    unique_years = int(
-        safe_float(decoder_map.get("uniqueyears", {}).get("value"))
-        or safe_float(decoder_map.get("unique_years", {}).get("value"))
-        or 0
-    )
-    unique_dates = int(
-        safe_float(decoder_map.get("uniquedates", {}).get("value"))
-        or safe_float(decoder_map.get("unique_dates", {}).get("value"))
-        or 0
-    )
-    if unique_years < 10 or unique_dates <= 900:
+    unique_years = _metric_int_value(decoder_map, "uniqueyears", "unique_years")
+    unique_dates = _metric_int_value(decoder_map, "uniquedates", "unique_dates")
+    unique_units = _metric_int_value(decoder_map, "uniqueunits", "unique_units")
+    all_years_present = _metric_int_value(decoder_map, "years_2015_2024_present")
+    all_months_present = _metric_int_value(decoder_map, "all_months_present_each_year")
+    all_expected_dates_present = _metric_int_value(decoder_map, "all_expected_dates_present")
+    dates_per_year = _metric_text_value(decoder_map, "dates_per_year")
+    months_present_by_year = _metric_text_value(decoder_map, "months_present_by_year")
+    if unique_years < 10:
         return "BLOCKED_SPATIAL_SMOKE_CLAIM", f"direct decoder depth insufficient: unique_years={unique_years}, unique_dates={unique_dates}"
+    if unique_units < MIN_OC03_DIRECT_UNIQUE_UNITS:
+        return "BLOCKED_SPATIAL_SMOKE_CLAIM", f"direct decoder unit coverage insufficient: unique_units={unique_units}"
+    if all_years_present != 1:
+        return "BLOCKED_SPATIAL_SMOKE_CLAIM", f"direct decoder missing required years: years_2015_2024_present={all_years_present}; dates_per_year={dates_per_year or 'EMPTY'}"
+    if all_months_present != 1:
+        return "BLOCKED_SPATIAL_SMOKE_CLAIM", f"direct decoder missing months: months_present_by_year={months_present_by_year or 'EMPTY'}"
+    if all_expected_dates_present != 1:
+        return "BLOCKED_SPATIAL_SMOKE_CLAIM", f"direct decoder missing expected annual dates: dates_per_year={dates_per_year or 'EMPTY'}"
 
     smoke_rows = read_csv_rows(smoke_audit)
     bad_methods = sorted(
@@ -290,7 +365,11 @@ def evaluate_direct_decoder_contract(output_root: Path) -> Tuple[str, str]:
     if bad_methods:
         return "BLOCKED_SPATIAL_SMOKE_CLAIM", "forbidden direct smoke methods present: " + ", ".join(bad_methods[:6])
 
-    return "THRESHOLD_DEFINED_AS_INDEXED_METHOD", f"direct decoder depth passed: unique_years={unique_years}, unique_dates={unique_dates}"
+    return "THRESHOLD_DEFINED_AS_INDEXED_METHOD", (
+        f"direct decoder depth passed: unique_years={unique_years}, unique_dates={unique_dates}, "
+        f"unique_units={unique_units}, all_expected_dates_present={all_expected_dates_present}, dates_per_year={dates_per_year}, "
+        f"months_present_by_year={months_present_by_year}"
+    )
 
 
 def evaluate_population_cancellation(iech_hist_csv: Path) -> Tuple[str, str]:
@@ -522,13 +601,45 @@ def main() -> int:
         str(output_root / "qa" / "gfas_era5_decoder_daily_spatial_audit.tsv"),
         "unique_years, unique_dates, smoke_method, effective recovery root",
         direct_contract_obs,
-        "Requires route_selected=v0_gfas_era5_real, recovery root trace, unique_years>=10, unique_dates>900, no anchored/interpolated/extrapolated methods.",
+        "Requires route_selected=v0_gfas_era5_real, recovery root trace, unique_years>=10, unique_units>=26, all years 2015-2024, all 12 months per year, full expected annual date coverage, and no anchored/interpolated/extrapolated methods.",
         "SRC-GATE-SMOKE-DIRECT-2015-2024",
         "METHODOLOGICAL_GATE",
         direct_contract_status,
         "Direct recovered smoke closure for 2015-2024.",
         "Direct 2015-2024 smoke closure when recovered source or decoder depth is insufficient.",
         "NO-GO_SCIENTIFIC_THRESHOLD" if direct_contract_status.startswith("BLOCKED") else "NONE",
+    )
+
+    oc03c_base_status, oc03c_base_obs, oc03c_base_gate = evaluate_oc03c_base_smoke_contract(qa_dir)
+    add_gate(
+        "BASE_SMOKE_CONTRACT_FOR_OC03C",
+        "OC-03C base smoke runtime contract",
+        str(qa_dir / "oc03c_base_smoke_contract_gate.tsv"),
+        "daily_rows, unique_dates, unique_years, unique_units, homogeneous_years, years_2015_2024_present",
+        oc03c_base_obs,
+        "Portuguese AQ validation may proceed only when the validated 2015-2024 direct smoke runtime contract remains intact.",
+        "SRC-GATE-OC03C-BASE-SMOKE",
+        "METHODOLOGICAL_GATE",
+        oc03c_base_status,
+        "Portuguese AQ may be consumed only after the base smoke contract passes.",
+        "Portuguese AQ consumption on a regressed smoke baseline.",
+        "NONE",
+    )
+
+    portuguese_aq_status, portuguese_aq_obs, portuguese_aq_gate = evaluate_portuguese_aq_validation(qa_dir)
+    add_gate(
+        "OC03C-AQ-001",
+        "Portuguese AQ validation overlay",
+        str(qa_dir / "portuguese_aq_validation_gate.tsv"),
+        "portuguese_aq_validation_status, aq_protocol_decision, claim_disposition, health_exposure_claim_status",
+        portuguese_aq_obs,
+        "OC-03C may upgrade only to a locally AQ-anchored proxy when direct station/pollutant concordance exists; health exposure stays blocked unless threshold comparisons are audited.",
+        "SRC-GATE-OC03C-AQ",
+        "LOCAL_VALIDATION_GATE",
+        portuguese_aq_status,
+        "A non-health local AQ support statement is allowed when concordance evidence exists.",
+        "Health exposure or unsupported AQ-upgrade claims without audited thresholds.",
+        "NONE",
     )
 
     health_status, health_obs = evaluate_health_claim_support(smoke_csv)
@@ -622,6 +733,8 @@ def main() -> int:
     add_evidence("causal_matrix_csv", causal_csv)
     add_evidence("brief_md", brief_path)
     add_evidence("warning_inventory", warning_inventory)
+    add_evidence("portuguese_aq_validation_gate", qa_dir / "portuguese_aq_validation_gate.tsv")
+    add_evidence("portuguese_aq_concordance", qa_dir / "gfas_era5_vs_portuguese_aq_concordance.tsv")
 
     gate_header = [
         "threshold_id",
@@ -762,6 +875,13 @@ def main() -> int:
             f"- reason: {route_scope.get('reason') or 'n/a'}",
             f"- allowed_use: {route_scope.get('allowed_use') or 'n/a'}",
             f"- forbidden_use: {route_scope.get('forbidden_use') or 'n/a'}",
+            "",
+            "## Portuguese AQ Validation",
+            f"- base_smoke_contract_for_oc03c_status: {oc03c_base_gate.get('base_smoke_contract_for_oc03c_status') or oc03c_base_gate.get('final_state') or 'n/a'}",
+            f"- portuguese_aq_validation_status: {portuguese_aq_gate.get('portuguese_aq_validation_status') or 'n/a'}",
+            f"- aq_protocol_decision: {portuguese_aq_gate.get('aq_protocol_decision') or 'n/a'}",
+            f"- claim_disposition: {portuguese_aq_gate.get('claim_disposition') or 'n/a'}",
+            f"- health_exposure_claim_status: {portuguese_aq_gate.get('health_exposure_claim_status') or 'n/a'}",
             "",
             "## Contracts",
             "- scientific_validation_gate.tsv generated",

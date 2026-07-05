@@ -225,6 +225,7 @@ _r7q_runtime_cli_contract_patch()
 
 
 import argparse
+import calendar
 import csv
 import datetime as dt
 import hashlib
@@ -241,11 +242,25 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
+from portuguese_aq_validation import (
+    BASE_SMOKE_CONTRACT_FOR_OC03C_PASS,
+    PORTUGUESE_AQ_BASE_SMOKE_BLOCKED,
+    run_portuguese_aq_validation,
+    write_blocked_base_smoke_regression_outputs,
+)
 from smoke_route_selector import apply_route_meta, detect_smoke_sources, select_smoke_route
 
 YEARS_HIST = list(range(2015, 2025))
 YEARS_SCEN = list(range(2026, 2031))
-OBJECTIVE_IDS = [f"OC-{i:02d}" for i in range(1, 13)]
+OBJECTIVE_IDS = ["OC-01", "OC-02", "OC-03", "OC-03C"] + [f"OC-{i:02d}" for i in range(4, 13)]
+
+GFAS_PM_MESSAGE_COUNT_BLOCKER = "NO-GO_GFAS_PM2P5FIRE_MESSAGE_COUNT_NOT_DETERMINED"
+OC03C_BASE_SMOKE_EXPECTED_UNIQUE_YEARS = len(YEARS_HIST)
+OC03C_BASE_SMOKE_MIN_UNIQUE_UNITS = 26
+OC03C_BASE_SMOKE_EXPECTED_HOMOGENEOUS_YEARS = 0
+OC03C_BASE_SMOKE_REQUIRED_MONTH_COUNT = 12
+OC03C_BASE_SMOKE_FORBIDDEN_METHOD_TOKENS = ("flat_single_anchor", "interpolated_from_anchors", "extrapolated_from_anchors")
+OC03C_BASE_SMOKE_FORBIDDEN_ASSIGNMENT_TOKENS = ("fallback",)
 
 
 class StageError(RuntimeError):
@@ -278,7 +293,13 @@ def sniff_delimiter(path: Path, sample_bytes: int = 65536) -> str:
         s = data.decode("utf-8-sig", errors="replace")
     except Exception:
         s = data.decode(errors="replace")
-    counts = {";": s.count(";"), ",": s.count(","), "\t": s.count("\t")}
+    suffix = path.suffix.lower()
+    if suffix == ".tsv":
+        return "	"
+    if suffix == ".csv":
+        counts = {";": s.count(";"), ",": s.count(",")}
+        return ";" if counts[";"] >= counts[","] and counts[";"] > 0 else ","
+    counts = {";": s.count(";"), ",": s.count(","), "	": s.count("	")}
     best = max(counts, key=lambda k: counts[k])
     return best if counts[best] > 0 else ","
 
@@ -1507,6 +1528,7 @@ def write_spatial_collapse_root_cause_audit(
     out_md.write_text("\n".join(md_lines) + "\n", encoding="utf-8")
 
 
+
 def write_gfas_era5_decoder_daily_spatial_audit(
     output_root: Path,
     smoke_daily_csv: Path,
@@ -1518,9 +1540,7 @@ def write_gfas_era5_decoder_daily_spatial_audit(
 
     daily_rows = read_csv_rows(smoke_daily_csv)[1] if smoke_daily_csv.exists() else []
     annual_rows = read_csv_rows(smoke_annual_csv)[1] if smoke_annual_csv.exists() else []
-    unique_dates = sorted({str(r.get("date") or "").strip() for r in daily_rows if str(r.get("date") or "").strip()})
-    unique_units = sorted({str(r.get("unit_id") or "").strip() for r in daily_rows if str(r.get("unit_id") or "").strip()})
-    unique_years = sorted({int(safe_float(r.get("year")) or -1) for r in daily_rows if safe_float(r.get("year")) is not None})
+    coverage = _compute_daily_smoke_temporal_coverage(daily_rows)
     threshold_ids = sorted({str(r.get("threshold_id") or "").strip() for r in daily_rows if str(r.get("threshold_id") or "").strip()})
     threshold_values = sorted({str(r.get("threshold_value") or "").strip() for r in daily_rows if str(r.get("threshold_value") or "").strip()})
 
@@ -1535,30 +1555,97 @@ def write_gfas_era5_decoder_daily_spatial_audit(
         if len(scores) <= 1:
             same_score_dates += 1
 
-    homogeneous_years = 0
-    by_year: Dict[int, set] = defaultdict(set)
-    for r in annual_rows:
-        y = safe_float(r.get("year"))
-        sd = safe_float(r.get("smoke_days"))
-        if y is None or sd is None:
-            continue
-        by_year[int(y)].add(round(sd, 8))
-    for scores in by_year.values():
-        if len(scores) <= 1:
-            homogeneous_years += 1
+    homogeneous_years = _compute_annual_smoke_homogeneous_years(annual_rows)
+    daily_rows_count = len(daily_rows)
+    unique_date_count = int(coverage["unique_date_count"])
+    unique_unit_count = int(coverage["unique_unit_count"])
+    unique_year_count = len(list(coverage["years_present"]))
+    date_unit_pair_count = int(coverage["date_unit_pair_count"])
+    expected_row_count = int(coverage["expected_row_count"])
+    all_years_present = bool(coverage["all_years_present"])
+    all_months_present = bool(coverage["all_months_present_each_year"])
+    all_expected_dates_present = bool(coverage["all_expected_dates_present"])
 
     rows = [
         ["metric", "value", "status", "detail"],
-        ["daily_rows", len(daily_rows), "PASS" if len(daily_rows) > 10 else "HOLD", str(smoke_daily_csv)],
-        ["unique_dates", len(unique_dates), "PASS" if len(unique_dates) > 10 else "HOLD", ",".join(unique_dates[:12])],
-        ["unique_units", len(unique_units), "PASS" if len(unique_units) > 1 else "HOLD", "Distinct NUTS3 units in daily output."],
-        ["unique_years", len([y for y in unique_years if y >= 0]), "PASS" if unique_years else "HOLD", ",".join(str(y) for y in unique_years if y >= 0)],
+        [
+            "daily_rows",
+            daily_rows_count,
+            "PASS" if daily_rows_count > 0 and daily_rows_count == date_unit_pair_count == expected_row_count else "HOLD",
+            f"{smoke_daily_csv}; date_unit_pairs={date_unit_pair_count}; expected_rows_from_dates_x_units={expected_row_count}",
+        ],
+        [
+            "unique_dates",
+            unique_date_count,
+            "PASS" if all_expected_dates_present else "HOLD",
+            str(coverage["dates_per_year_str"]),
+        ],
+        [
+            "unique_units",
+            unique_unit_count,
+            "PASS" if unique_unit_count >= OC03C_BASE_SMOKE_MIN_UNIQUE_UNITS else "HOLD",
+            "Distinct NUTS3 units in daily output.",
+        ],
+        [
+            "unique_years",
+            unique_year_count,
+            "PASS" if all_years_present and unique_year_count == OC03C_BASE_SMOKE_EXPECTED_UNIQUE_YEARS else "HOLD",
+            ",".join(str(year) for year in coverage["years_present"]),
+        ],
+        [
+            "years_2015_2024_present",
+            int(all_years_present),
+            "PASS" if all_years_present else "HOLD",
+            "missing=" + ("NONE" if not coverage["missing_years"] else ",".join(str(year) for year in coverage["missing_years"])),
+        ],
+        [
+            "months_present_by_year",
+            str(coverage["months_present_by_year_str"]),
+            "PASS" if all_months_present else "HOLD",
+            "missing=" + str(coverage["missing_months_by_year_str"]),
+        ],
+        [
+            "all_months_present_each_year",
+            int(all_months_present),
+            "PASS" if all_months_present else "HOLD",
+            str(coverage["missing_months_by_year_str"]),
+        ],
+        [
+            "dates_per_year",
+            str(coverage["dates_per_year_str"]),
+            "PASS" if all_expected_dates_present else "HOLD",
+            "expected=" + str(coverage["expected_dates_per_year_str"]),
+        ],
+        [
+            "all_expected_dates_present",
+            int(all_expected_dates_present),
+            "PASS" if all_expected_dates_present else "HOLD",
+            "missing_days=" + str(coverage["missing_days_by_year_str"]),
+        ],
+        [
+            "date_unit_pairs",
+            date_unit_pair_count,
+            "PASS" if date_unit_pair_count == daily_rows_count else "HOLD",
+            "Distinct date/unit pairs in daily output.",
+        ],
+        [
+            "expected_daily_rows_from_dates_x_units",
+            expected_row_count,
+            "PASS" if expected_row_count == daily_rows_count else "HOLD",
+            f"unique_dates={unique_date_count}; unique_units={unique_unit_count}",
+        ],
         ["threshold_id", "|".join(threshold_ids), "PASS" if threshold_ids else "HOLD", "Daily smoke threshold identifiers."],
         ["threshold_value", "|".join(threshold_values), "PASS" if threshold_values else "HOLD", "Daily smoke threshold values."],
         ["same_score_dates", same_score_dates, "PASS" if same_score_dates < len(by_date) else "HOLD", "Dates with only one unique daily score across units."],
-        ["homogeneous_years", homogeneous_years, "PASS" if homogeneous_years < len(by_year) else "HOLD", "Years with one unique smoke_days value across units."],
+        [
+            "homogeneous_years",
+            homogeneous_years,
+            "PASS" if homogeneous_years == OC03C_BASE_SMOKE_EXPECTED_HOMOGENEOUS_YEARS else "HOLD",
+            "Years with one unique smoke_days value across units.",
+        ],
     ]
     write_tsv(out_tsv, rows[0], rows[1:])
+
 
 
 def write_oc03_v11_decoder_contract_validation(output_root: Path) -> None:
@@ -1828,6 +1915,16 @@ def _iter_grib_messages_by_next_grib(
         raise RuntimeError(f"Trailing undecoded GRIB buffer remained for {src}")
 
 
+
+
+def _count_gfas_pm_messages_from_grib(src_grib: Path) -> int:
+    message_count = 0
+    for message_count, _payload, _payload_bytes in _iter_grib_messages_by_next_grib(src_grib):
+        pass
+    if message_count <= 0:
+        raise RuntimeError(f"{GFAS_PM_MESSAGE_COUNT_BLOCKER}: no GRIB messages decoded from {src_grib}")
+    return message_count
+
 def _grib_comment_is_pm2p5fire(comment: str) -> bool:
     c = (comment or "").strip().lower()
     return "wildfire flux of particulate matter pm2.5" in c or ("wildfire" in c and "pm2.5" in c)
@@ -1867,11 +1964,12 @@ def _fallback_gfas_pm_rows_from_gribs(gfas_dir: Path) -> List[Dict[str, str]]:
     pm_rows: List[Dict[str, str]] = []
     for year in sorted(preferred_by_year):
         grib_path = preferred_by_year[year]
+        message_count = _count_gfas_pm_messages_from_grib(grib_path)
         pm_rows.append(
             {
                 "file": str(grib_path.relative_to(gfas_dir)).replace("/", "\\"),
                 "minDate": f"{year}0101",
-                "message_count": "93",
+                "message_count": str(message_count),
                 "pm_stride_hint": "1",
             }
         )
@@ -1941,10 +2039,19 @@ def _percentile(values: List[float], q: float) -> Optional[float]:
 
 
 def _planned_pm_message_count(message_count: object, pm_stride: object) -> int:
-    total = max(1, int(safe_float(message_count) or 0))
-    stride = max(1, int(safe_float(pm_stride) or 1))
+    total = int(safe_float(message_count) or 0)
+    stride = int(safe_float(pm_stride) or 0)
+    if total <= 0 or stride <= 0:
+        raise RuntimeError(
+            f"{GFAS_PM_MESSAGE_COUNT_BLOCKER}: message_count={message_count!r}; pm_stride={pm_stride!r}"
+        )
     planned = (total + stride - 1) // stride
-    return max(1, min(93, planned))
+    if planned <= 0:
+        raise RuntimeError(
+            f"{GFAS_PM_MESSAGE_COUNT_BLOCKER}: derived planned_pm_messages={planned} from "
+            f"message_count={message_count!r}; pm_stride={pm_stride!r}"
+        )
+    return planned
 
 
 def _direct_unit_smoke_score(pm_mean: float, pm_max: float) -> float:
@@ -2160,10 +2267,29 @@ def _probe_gfas_pm_message_pattern(src_grib: Path, min_date_hint: str) -> Tuple[
     base_date = _epoch_seconds_to_iso_date(probe[pm_start_index].get("GRIB_VALID_TIME")) or _epoch_seconds_to_iso_date(
         probe[pm_start_index].get("GRIB_REF_TIME")
     )
-    base_date = base_date or min_date_hint
+    hint_date = _yyyymmdd_to_date(str(min_date_hint).replace("-", "")) if min_date_hint else None
+    meta_date = _yyyymmdd_to_date(str(base_date).replace("-", "")) if base_date else None
+    # Some annual GFAS PM files expose the first valid time as day+1 even though the
+    # runtime inventory and file-year contract anchor the series at YYYY-01-01.
+    if hint_date and meta_date and meta_date == hint_date + dt.timedelta(days=1):
+        base_date = hint_date.isoformat()
+    else:
+        base_date = base_date or min_date_hint
     if not base_date:
         raise RuntimeError(f"Could not determine base GFAS PM date for {src_grib}")
     return pm_start_index, base_date
+
+
+def _resolve_gfas_pm_date(actual_date_iso: str, fallback_date_iso: str) -> str:
+    actual_date = _yyyymmdd_to_date(str(actual_date_iso).replace("-", "")) if actual_date_iso else None
+    fallback_date = _yyyymmdd_to_date(str(fallback_date_iso).replace("-", "")) if fallback_date_iso else None
+    if fallback_date and actual_date and actual_date == fallback_date + dt.timedelta(days=1):
+        return fallback_date.isoformat()
+    if actual_date:
+        return actual_date.isoformat()
+    if fallback_date:
+        return fallback_date.isoformat()
+    return ""
 
 
 def _decode_gfas_pm_payload_to_unit_rows(
@@ -2189,7 +2315,7 @@ def _decode_gfas_pm_payload_to_unit_rows(
                 raise RuntimeError(f"GFAS PM payload missing band1: {file_name} message={msg_index}")
             md = band.GetMetadata() or {}
             actual_date = _epoch_seconds_to_iso_date(md.get("GRIB_VALID_TIME")) or _epoch_seconds_to_iso_date(md.get("GRIB_REF_TIME"))
-            date_iso = actual_date or fallback_date_iso
+            date_iso = _resolve_gfas_pm_date(actual_date, fallback_date_iso)
             if not date_iso:
                 raise RuntimeError(f"GFAS PM payload has no date: {file_name} message={msg_index}")
             geotransform = ds.GetGeoTransform(can_return_null=True)
@@ -3859,6 +3985,386 @@ def refresh_smoke_route_v0_audit(output_root: Path) -> None:
     )
 
 
+def _metric_value_lookup(rows: Sequence[Dict[str, str]]) -> Dict[str, Dict[str, str]]:
+    out: Dict[str, Dict[str, str]] = {}
+    for row in rows:
+        key = str(row.get("metric") or row.get("check_id") or "").strip().lower()
+        if key and key not in out:
+            out[key] = row
+    return out
+
+
+def _metric_int(metric_lookup: Dict[str, Dict[str, str]], *keys: str) -> Optional[int]:
+    for key in keys:
+        row = metric_lookup.get(key.strip().lower())
+        if not row:
+            continue
+        value = safe_float(row.get("value") or row.get("observed") or row.get("status"))
+        if value is not None:
+            return int(value)
+    return None
+
+
+def _extract_years(rows: Sequence[Dict[str, str]], field: str = "year") -> List[int]:
+    years = sorted({int(safe_float(row.get(field)) or -1) for row in rows if safe_float(row.get(field)) is not None})
+    return [year for year in years if year >= 0]
+
+
+
+
+def _calendar_day_count(year: int) -> int:
+    return 366 if calendar.isleap(year) else 365
+
+
+def _parse_iso_date(value: object) -> Optional[dt.date]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return dt.date.fromisoformat(text[:10])
+    except Exception:
+        return None
+
+
+def _format_year_value_map(values: Dict[int, int]) -> str:
+    return "|".join(f"{year}:{values.get(year, 0)}" for year in YEARS_HIST)
+
+
+def _format_year_month_map(values: Dict[int, Sequence[int]]) -> str:
+    formatted: List[str] = []
+    for year in YEARS_HIST:
+        months = sorted({int(month) for month in values.get(year, []) if 1 <= int(month) <= 12})
+        month_text = ",".join(f"{month:02d}" for month in months) if months else "NONE"
+        formatted.append(f"{year}:{month_text}")
+    return "|".join(formatted)
+
+
+def _compute_annual_smoke_homogeneous_years(rows: Sequence[Dict[str, str]]) -> int:
+    by_year: Dict[int, set] = defaultdict(set)
+    for row in rows:
+        year_value = safe_float(row.get("year"))
+        smoke_days = safe_float(row.get("smoke_days"))
+        if year_value is None or smoke_days is None:
+            continue
+        by_year[int(year_value)].add(round(smoke_days, 8))
+    return sum(1 for scores in by_year.values() if len(scores) <= 1)
+
+
+def _compute_daily_smoke_temporal_coverage(rows: Sequence[Dict[str, str]]) -> Dict[str, object]:
+    unique_dates: set[str] = set()
+    unique_units: set[str] = set()
+    years_present: set[int] = set()
+    months_by_year: Dict[int, set] = defaultdict(set)
+    dates_by_year: Dict[int, set] = defaultdict(set)
+    date_unit_pairs: set[Tuple[str, str]] = set()
+
+    for row in rows:
+        unit_id = str(row.get("unit_id") or "").strip()
+        if unit_id:
+            unique_units.add(unit_id)
+        parsed_date = _parse_iso_date(row.get("date"))
+        if parsed_date is None:
+            continue
+        date_text = parsed_date.isoformat()
+        unique_dates.add(date_text)
+        years_present.add(parsed_date.year)
+        months_by_year[parsed_date.year].add(parsed_date.month)
+        dates_by_year[parsed_date.year].add(date_text)
+        if unit_id:
+            date_unit_pairs.add((date_text, unit_id))
+
+    observed_date_bounds = sorted(
+        {
+            parsed_date
+            for parsed_date in (_parse_iso_date(date_text) for date_text in unique_dates)
+            if parsed_date is not None
+        }
+    )
+    observed_min_date = observed_date_bounds[0] if observed_date_bounds else None
+    observed_max_date = observed_date_bounds[-1] if observed_date_bounds else None
+
+    def _expected_year_date_count(year: int) -> int:
+        lower = dt.date(year, 1, 1)
+        upper = dt.date(year, 12, 31)
+        if observed_min_date is not None and observed_min_date.year == year and observed_min_date > lower:
+            lower = observed_min_date
+        if observed_max_date is not None and observed_max_date.year == year and observed_max_date < upper:
+            upper = observed_max_date
+        if upper < lower:
+            return 0
+        return (upper - lower).days + 1
+
+    expected_dates_by_year = {year: _expected_year_date_count(year) for year in YEARS_HIST}
+    actual_dates_by_year = {year: len(dates_by_year.get(year, set())) for year in YEARS_HIST}
+    missing_years = [year for year in YEARS_HIST if year not in years_present]
+    missing_months_by_year = {
+        year: [month for month in range(1, OC03C_BASE_SMOKE_REQUIRED_MONTH_COUNT + 1) if month not in months_by_year.get(year, set())]
+        for year in YEARS_HIST
+        if any(month not in months_by_year.get(year, set()) for month in range(1, OC03C_BASE_SMOKE_REQUIRED_MONTH_COUNT + 1))
+    }
+    missing_days_by_year = {
+        year: expected_dates_by_year[year] - actual_dates_by_year[year]
+        for year in YEARS_HIST
+        if actual_dates_by_year[year] != expected_dates_by_year[year]
+    }
+    all_years_present = not missing_years
+    all_months_present_each_year = all_years_present and not missing_months_by_year
+    all_expected_dates_present = all_years_present and not missing_days_by_year
+    missing_months_by_year_str = _format_year_month_map(missing_months_by_year) if missing_months_by_year else "NONE"
+    missing_days_by_year_str = (
+        "|".join(f"{year}:{missing_days_by_year[year]}" for year in YEARS_HIST if year in missing_days_by_year)
+        if missing_days_by_year
+        else "NONE"
+    )
+    months_present = {year: sorted(months_by_year.get(year, set())) for year in YEARS_HIST}
+    return {
+        "unique_date_count": len(unique_dates),
+        "unique_unit_count": len(unique_units),
+        "years_present": sorted(year for year in years_present if year in YEARS_HIST),
+        "months_by_year": months_present,
+        "dates_by_year": {year: actual_dates_by_year[year] for year in YEARS_HIST},
+        "expected_dates_by_year": expected_dates_by_year,
+        "all_years_present": all_years_present,
+        "all_months_present_each_year": all_months_present_each_year,
+        "all_expected_dates_present": all_expected_dates_present,
+        "missing_years": missing_years,
+        "missing_months_by_year": missing_months_by_year,
+        "missing_days_by_year": missing_days_by_year,
+        "months_present_by_year_str": _format_year_month_map(months_present),
+        "missing_months_by_year_str": missing_months_by_year_str,
+        "dates_per_year_str": _format_year_value_map(actual_dates_by_year),
+        "expected_dates_per_year_str": _format_year_value_map(expected_dates_by_year),
+        "missing_days_by_year_str": missing_days_by_year_str,
+        "expected_total_dates": sum(expected_dates_by_year.values()),
+        "date_unit_pair_count": len(date_unit_pairs),
+        "expected_row_count": len(unique_dates) * len(unique_units),
+    }
+
+def _write_oc03_base_smoke_contract_report(
+    path: Path,
+    summary_status: str,
+    failures: Sequence[str],
+    rows_out: Sequence[Sequence[object]],
+    route_years: Sequence[int],
+    daily_years: Sequence[int],
+    route_methods: Sequence[str],
+    assignment_methods: Sequence[str],
+) -> None:
+    lines = [
+        '# OC-03 Base Smoke Contract Report',
+        '',
+        f'- generated: {now_iso()}',
+        f'- final_state: **{summary_status}**',
+        f"- failures: {', '.join(failures) if failures else 'NONE'}",
+        f"- route_years: {', '.join(str(year) for year in route_years) if route_years else 'NONE'}",
+        f"- daily_years: {', '.join(str(year) for year in daily_years) if daily_years else 'NONE'}",
+        f"- route_methods: {' | '.join(route_methods) if route_methods else 'NONE'}",
+        f"- spatial_assignment_methods: {' | '.join(assignment_methods) if assignment_methods else 'NONE'}",
+        '',
+        '## Gate rows',
+    ]
+    for metric, value, status, detail in rows_out:
+        lines.append(f'- `{metric}` = `{value}` | status=`{status}` | {detail}')
+    ensure_dir(path.parent)
+    path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+
+
+
+def run_base_smoke_contract_for_oc03c(output_root: Path) -> Dict[str, object]:
+    qa_dir = output_root / "qa"
+    tables_dir = output_root / "tables"
+    decoder_audit_path = qa_dir / "gfas_era5_decoder_daily_spatial_audit.tsv"
+    smoke_audit_path = qa_dir / "smoke_route_audit.tsv"
+    smoke_daily_path = tables_dir / "smoke_day_score_nuts3_daily.csv"
+    smoke_annual_path = tables_dir / "smoke_days_unit_2015_2024.csv"
+    gate_path = qa_dir / "oc03c_base_smoke_contract_gate.tsv"
+    gate_alias_path = qa_dir / "oc03_base_smoke_contract_gate.tsv"
+    report_path = qa_dir / "oc03_base_smoke_contract_report.md"
+
+    rows_out: List[List[object]] = []
+    failures: List[str] = []
+
+    def add(metric: str, value: object, passed: bool, expected: object, detail: str) -> None:
+        status = "PASS" if passed else PORTUGUESE_AQ_BASE_SMOKE_BLOCKED
+        rows_out.append([metric, value, status, detail if passed else f"expected={expected}; {detail}"])
+        if not passed:
+            failures.append(metric)
+
+    add("decoder_audit_exists", int(decoder_audit_path.exists()), decoder_audit_path.exists(), 1, str(decoder_audit_path))
+    add("smoke_route_audit_exists", int(smoke_audit_path.exists()), smoke_audit_path.exists(), 1, str(smoke_audit_path))
+    add("smoke_day_score_daily_exists", int(smoke_daily_path.exists()), smoke_daily_path.exists(), 1, str(smoke_daily_path))
+    add("smoke_days_unit_annual_exists", int(smoke_annual_path.exists()), smoke_annual_path.exists(), 1, str(smoke_annual_path))
+
+    decoder_rows = read_csv_rows(decoder_audit_path)[1] if decoder_audit_path.exists() else []
+    smoke_rows = read_csv_rows(smoke_audit_path)[1] if smoke_audit_path.exists() else []
+    daily_rows = read_csv_rows(smoke_daily_path)[1] if smoke_daily_path.exists() else []
+    annual_rows = read_csv_rows(smoke_annual_path)[1] if smoke_annual_path.exists() else []
+    decoder_lookup = _metric_value_lookup(decoder_rows)
+    coverage = _compute_daily_smoke_temporal_coverage(daily_rows)
+
+    daily_rows_metric = _metric_int(decoder_lookup, "daily_rows", "dailyrows")
+    unique_dates_metric = _metric_int(decoder_lookup, "unique_dates", "uniquedates")
+    unique_years_metric = _metric_int(decoder_lookup, "unique_years", "uniqueyears")
+    unique_units_metric = _metric_int(decoder_lookup, "unique_units", "uniqueunits")
+    homogeneous_years_metric = _metric_int(decoder_lookup, "homogeneous_years", "homogeneousyears")
+
+    daily_table_row_count = len(daily_rows)
+    unique_date_count = int(coverage["unique_date_count"])
+    unique_year_count = len(list(coverage["years_present"]))
+    unique_unit_count = int(coverage["unique_unit_count"])
+    date_unit_pair_count = int(coverage["date_unit_pair_count"])
+    expected_daily_rows = int(coverage["expected_row_count"])
+    computed_homogeneous_years = _compute_annual_smoke_homogeneous_years(annual_rows)
+
+    daily_rows_metric_matches = daily_rows_metric is None or daily_rows_metric == daily_table_row_count
+    unique_dates_metric_matches = unique_dates_metric is None or unique_dates_metric == unique_date_count
+    unique_years_metric_matches = unique_years_metric is None or unique_years_metric == unique_year_count
+    unique_units_metric_matches = unique_units_metric is None or unique_units_metric == unique_unit_count
+    homogeneous_years_metric_matches = homogeneous_years_metric is None or homogeneous_years_metric == computed_homogeneous_years
+
+    add(
+        "daily_rows",
+        daily_table_row_count,
+        daily_table_row_count > 0 and daily_rows_metric_matches and daily_table_row_count == date_unit_pair_count == expected_daily_rows,
+        expected_daily_rows,
+        f"decoder_daily_rows={daily_rows_metric if daily_rows_metric is not None else 'MISSING'}; date_unit_pairs={date_unit_pair_count}",
+    )
+    add(
+        "unique_dates",
+        unique_date_count,
+        bool(coverage["all_expected_dates_present"]) and unique_dates_metric_matches,
+        coverage["expected_total_dates"],
+        f"decoder_unique_dates={unique_dates_metric if unique_dates_metric is not None else 'MISSING'}; "
+        f"dates_per_year={coverage['dates_per_year_str']}; expected_dates_per_year={coverage['expected_dates_per_year_str']}",
+    )
+    add(
+        "unique_years",
+        unique_year_count,
+        bool(coverage["all_years_present"]) and unique_years_metric_matches and unique_year_count == OC03C_BASE_SMOKE_EXPECTED_UNIQUE_YEARS,
+        OC03C_BASE_SMOKE_EXPECTED_UNIQUE_YEARS,
+        f"decoder_unique_years={unique_years_metric if unique_years_metric is not None else 'MISSING'}; daily_years={coverage['years_present']}",
+    )
+    add(
+        "unique_units",
+        unique_unit_count,
+        unique_unit_count >= OC03C_BASE_SMOKE_MIN_UNIQUE_UNITS and unique_units_metric_matches,
+        f">={OC03C_BASE_SMOKE_MIN_UNIQUE_UNITS}",
+        f"decoder_unique_units={unique_units_metric if unique_units_metric is not None else 'MISSING'}",
+    )
+    add(
+        "homogeneous_years",
+        computed_homogeneous_years,
+        computed_homogeneous_years == OC03C_BASE_SMOKE_EXPECTED_HOMOGENEOUS_YEARS and homogeneous_years_metric_matches,
+        OC03C_BASE_SMOKE_EXPECTED_HOMOGENEOUS_YEARS,
+        f"decoder_homogeneous_years={homogeneous_years_metric if homogeneous_years_metric is not None else 'MISSING'}; annual_path={smoke_annual_path}",
+    )
+
+    daily_years = list(coverage["years_present"])
+    route_years = _extract_years(smoke_rows)
+    expected_years = list(YEARS_HIST)
+    years_present = daily_years == expected_years and route_years == expected_years
+    add(
+        "years_2015_2024_present",
+        "PASS" if years_present else "FAIL",
+        years_present,
+        "2015|2016|2017|2018|2019|2020|2021|2022|2023|2024",
+        f"route_years={route_years}; daily_years={daily_years}",
+    )
+    add(
+        "all_months_present_each_year",
+        int(bool(coverage["all_months_present_each_year"])),
+        bool(coverage["all_months_present_each_year"]),
+        1,
+        f"months_present_by_year={coverage['months_present_by_year_str']}; missing={coverage['missing_months_by_year_str']}",
+    )
+    add(
+        "all_expected_dates_present",
+        int(bool(coverage["all_expected_dates_present"])),
+        bool(coverage["all_expected_dates_present"]),
+        1,
+        f"dates_per_year={coverage['dates_per_year_str']}; expected={coverage['expected_dates_per_year_str']}; "
+        f"missing_days={coverage['missing_days_by_year_str']}",
+    )
+
+    daily_table_ok = daily_table_row_count > 0 and daily_table_row_count == expected_daily_rows == date_unit_pair_count
+    add(
+        "daily_row_cardinality_consistent",
+        int(daily_table_ok),
+        daily_table_ok,
+        1,
+        f"daily_rows={daily_table_row_count}; date_unit_pairs={date_unit_pair_count}; expected_rows={expected_daily_rows}",
+    )
+
+    route_methods = sorted({str(row.get("smoke_method") or row.get("method") or "").strip() for row in smoke_rows if str(row.get("smoke_method") or row.get("method") or "").strip()})
+    forbidden_methods = sorted({method for method in route_methods if any(token in method.lower() for token in OC03C_BASE_SMOKE_FORBIDDEN_METHOD_TOKENS)})
+    add(
+        "forbidden_smoke_methods",
+        "NONE" if not forbidden_methods else "|".join(forbidden_methods),
+        not forbidden_methods,
+        "NONE",
+        "Smoke route audit methods must stay on the validated direct contract.",
+    )
+
+    single_year_fallback_detected = bool(
+        (unique_years_metric is not None and unique_years_metric <= 1)
+        or len(daily_years) <= 1
+    )
+    add(
+        "single_year_fallback_detected",
+        int(single_year_fallback_detected),
+        not single_year_fallback_detected,
+        0,
+        f"decoder_unique_years={unique_years_metric}; daily_years={daily_years}",
+    )
+
+    assignment_methods = sorted({str(row.get("spatial_assignment_method") or "").strip() for row in daily_rows if str(row.get("spatial_assignment_method") or "").strip()})
+    flat_anchor_reconstruction_detected = bool(
+        forbidden_methods
+        or any(any(token in method.lower() for token in OC03C_BASE_SMOKE_FORBIDDEN_ASSIGNMENT_TOKENS) for method in assignment_methods)
+    )
+    add(
+        "flat_anchor_reconstruction_detected",
+        int(flat_anchor_reconstruction_detected),
+        not flat_anchor_reconstruction_detected,
+        0,
+        "assignment_methods=" + ("|".join(assignment_methods) if assignment_methods else "NONE"),
+    )
+
+    summary_status = BASE_SMOKE_CONTRACT_FOR_OC03C_PASS if not failures else PORTUGUESE_AQ_BASE_SMOKE_BLOCKED
+    detail = "Base smoke contract passed." if summary_status == BASE_SMOKE_CONTRACT_FOR_OC03C_PASS else "Failed checks: " + ", ".join(failures)
+    rows_out.append(["base_smoke_contract_for_oc03c_status", summary_status, summary_status, detail])
+    rows_out.append(["final_state", summary_status, summary_status, detail])
+    write_tsv(gate_path, ["metric", "value", "status", "detail"], rows_out)
+    write_tsv(gate_alias_path, ["metric", "value", "status", "detail"], rows_out)
+    _write_oc03_base_smoke_contract_report(
+        report_path,
+        summary_status=summary_status,
+        failures=failures,
+        rows_out=rows_out,
+        route_years=route_years,
+        daily_years=daily_years,
+        route_methods=route_methods,
+        assignment_methods=assignment_methods,
+    )
+
+    return {
+        "base_smoke_contract_for_oc03c_status": summary_status,
+        "base_smoke_contract_for_oc03c_passed": summary_status == BASE_SMOKE_CONTRACT_FOR_OC03C_PASS,
+        "base_smoke_contract_for_oc03c_failures": failures,
+        "base_smoke_contract_for_oc03c_daily_rows": daily_table_row_count,
+        "base_smoke_contract_for_oc03c_unique_dates": unique_date_count,
+        "base_smoke_contract_for_oc03c_unique_years": unique_year_count,
+        "base_smoke_contract_for_oc03c_unique_units": unique_unit_count,
+        "base_smoke_contract_for_oc03c_homogeneous_years": computed_homogeneous_years,
+        "base_smoke_contract_for_oc03c_dates_per_year": dict(coverage["dates_by_year"]),
+        "base_smoke_contract_for_oc03c_months_present_by_year": dict(coverage["months_by_year"]),
+        "base_smoke_contract_for_oc03c_route_years": route_years,
+        "base_smoke_contract_for_oc03c_daily_years": daily_years,
+        "base_smoke_contract_for_oc03c_route_methods": route_methods,
+        "base_smoke_contract_for_oc03c_assignment_methods": assignment_methods,
+    }
+
+
 def collect_final_outputs(output_root: Path, scientific_decision_path: Path, include_global_scan: bool = True) -> List[Path]:
     outputs = [
         output_root / "qa" / "inputs_resolved.json",
@@ -3881,12 +4387,25 @@ def collect_final_outputs(output_root: Path, scientific_decision_path: Path, inc
         output_root / "qa" / "gfas_era5_decoder_checkpoints.tsv",
         output_root / "qa" / "gfas_era5_presence_audit.tsv",
         output_root / "qa" / "oc03_v11_decoder_contract_validation.tsv",
+        output_root / "qa" / "oc03c_base_smoke_contract_gate.tsv",
+        output_root / "qa" / "oc03_base_smoke_contract_gate.tsv",
+        output_root / "qa" / "oc03_base_smoke_contract_report.md",
         output_root / "qa" / "scientific_validation_gate.tsv",
         output_root / "qa" / "scientific_threshold_evidence_register.tsv",
         output_root / "qa" / "blocked_claims_register.tsv",
         output_root / "qa" / "scientific_claim_gate.tsv",
         output_root / "qa" / "causal_matrix_scientific_gate_audit.tsv",
         output_root / "qa" / "brief_claim_scientific_gate_audit.tsv",
+        output_root / "qa" / "oc03c_path_scope_preflight.tsv",
+        output_root / "qa" / "portuguese_aq_input_inventory.tsv",
+        output_root / "qa" / "portuguese_aq_file_format_audit.tsv",
+        output_root / "qa" / "portuguese_aq_station_inventory.tsv",
+        output_root / "qa" / "portuguese_aq_timeseries_inventory.tsv",
+        output_root / "qa" / "portuguese_aq_normalization_audit.tsv",
+        output_root / "qa" / "portuguese_aq_station_to_unit_assignment.tsv",
+        output_root / "qa" / "gfas_era5_vs_portuguese_aq_concordance.tsv",
+        output_root / "qa" / "portuguese_aq_validation_gate.tsv",
+        output_root / "qa" / "portuguese_aq_claim_disposition.md",
         output_root / "tables" / "IECH_unit_2015_2024.csv",
         output_root / "tables" / "IECH_unit_2015_2024_mean.csv",
         output_root / "tables" / "IECH_municipio_2015_2024.csv",
@@ -3895,6 +4414,9 @@ def collect_final_outputs(output_root: Path, scientific_decision_path: Path, inc
         output_root / "tables" / "smoke_days_municipio_2015_2024.csv",
         output_root / "tables" / "smoke_day_score_nuts3_daily.csv",
         output_root / "tables" / "smoke_day_score_municipio_daily.csv",
+        output_root / "tables" / "portuguese_aq_daily_station_2015_2024.csv",
+        output_root / "tables" / "portuguese_aq_daily_unit_2015_2024.csv",
+        output_root / "tables" / "smoke_proxy_aq_concordance_by_unit.csv",
         output_root / "tables" / "wrb_context_nuts3.csv",
         output_root / "tables" / "territorial_context_nuts3.csv",
         output_root / "brief" / "Brief_Politica_IECH_2030.md",
@@ -3913,7 +4435,13 @@ def collect_final_outputs(output_root: Path, scientific_decision_path: Path, inc
     return outputs
 
 
-def complete_post_smoke_runtime(gata_root: Path, output_root: Path, report: Report, rerun_step7: bool = True) -> None:
+def complete_post_smoke_runtime(
+    gata_root: Path,
+    modulec_datos: Path,
+    output_root: Path,
+    report: Report,
+    rerun_step7: bool = True,
+) -> None:
     tables_dir = output_root / "tables"
     brief_dir = output_root / "brief"
     deliver_dir = output_root / "deliverables_step9"
@@ -3924,6 +4452,45 @@ def complete_post_smoke_runtime(gata_root: Path, output_root: Path, report: Repo
         report.log("STEP7 outputs already present; reusing post-smoke artifacts.")
     refresh_smoke_route_v0_audit(output_root)
     write_oc03_v11_decoder_contract_validation(output_root)
+    base_smoke_meta = run_base_smoke_contract_for_oc03c(output_root)
+    if bool(base_smoke_meta.get("base_smoke_contract_for_oc03c_passed")):
+        oc03c_meta = run_portuguese_aq_validation(
+            modulec_datos=modulec_datos,
+            output_root=output_root,
+            repo_root=Path(__file__).resolve().parents[1],
+            report_log=report.log,
+        )
+    else:
+        report.log("OC-03C AQ validation blocked before AQ consumption: base smoke contract regressed.")
+        oc03c_meta = write_blocked_base_smoke_regression_outputs(
+            modulec_datos=modulec_datos,
+            output_root=output_root,
+            repo_root=Path(__file__).resolve().parents[1],
+            report_log=report.log,
+        )
+    inputs_path = output_root / "qa" / "inputs_resolved.json"
+    payload: Dict[str, object] = {}
+    if inputs_path.exists():
+        try:
+            payload = json.loads(inputs_path.read_text(encoding="utf-8-sig"))
+        except Exception:
+            payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    meta = payload.get("meta", {})
+    if not isinstance(meta, dict):
+        meta = {}
+    meta.update(base_smoke_meta)
+    meta.update(oc03c_meta)
+    meta["objectives_recognized"] = OBJECTIVE_IDS
+    payload["meta"] = meta
+    paths = payload.get("paths", {})
+    if not isinstance(paths, dict):
+        paths = {}
+    paths["portuguese_aq_root"] = str(oc03c_meta.get("portuguese_aq_root") or "")
+    payload["paths"] = paths
+    ensure_dir(inputs_path.parent)
+    inputs_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     brief_path = brief_dir / "Brief_Politica_IECH_2030.md"
     if not brief_path.exists():
@@ -4020,6 +4587,7 @@ def main() -> int:
             write_gfas_era5_presence_audit(qa_dir, sources)
             complete_post_smoke_runtime(
                 Path(args.gata_root),
+                Path(args.modulec_datos),
                 out_dir,
                 report,
                 rerun_step7=not _step7_outputs_ready(out_dir),
@@ -4085,6 +4653,30 @@ def main() -> int:
             decoder_payload=decoder_payload,
         )
         write_smoke_route_audit(qa_dir, smoke_csv, route_decision)
+        smoke_daily_csv = tables_dir / "smoke_day_score_nuts3_daily.csv"
+        if smoke_daily_csv.exists():
+            write_gfas_era5_decoder_daily_spatial_audit(
+                output_root=out_dir,
+                smoke_daily_csv=smoke_daily_csv,
+                smoke_annual_csv=smoke_csv,
+            )
+            early_base_smoke_meta = run_base_smoke_contract_for_oc03c(out_dir)
+            if bool(early_base_smoke_meta.get("base_smoke_contract_for_oc03c_passed")):
+                report.log("OC-03 early base smoke contract PASS; running OC-03C AQ validation checkpoint.")
+                run_portuguese_aq_validation(
+                    modulec_datos=Path(args.modulec_datos),
+                    output_root=out_dir,
+                    repo_root=Path(__file__).resolve().parents[1],
+                    report_log=report.log,
+                )
+            else:
+                report.log("OC-03 early base smoke contract blocked; writing blocked OC-03C checkpoint outputs.")
+                write_blocked_base_smoke_regression_outputs(
+                    modulec_datos=Path(args.modulec_datos),
+                    output_root=out_dir,
+                    repo_root=Path(__file__).resolve().parents[1],
+                    report_log=report.log,
+                )
         pop_csv = pop_prepare(inputs, admin_gpkg, work_dir, tables_dir, report)
         rec_csv = recurrence_prepare(inputs, admin_gpkg, tables_dir, report)
 
@@ -4154,7 +4746,7 @@ def main() -> int:
         if not scen_rows:
             report.fail("IECH_scenarios_2026_2030.csv has 0 rows")
 
-        complete_post_smoke_runtime(Path(args.gata_root), out_dir, report)
+        complete_post_smoke_runtime(Path(args.gata_root), Path(args.modulec_datos), out_dir, report)
         if qgs:
             qgs.exitQgis()
         return 0

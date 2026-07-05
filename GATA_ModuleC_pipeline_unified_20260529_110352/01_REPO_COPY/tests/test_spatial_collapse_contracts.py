@@ -4,6 +4,7 @@ import csv
 import json
 import sys
 from pathlib import Path
+import datetime as dt
 
 
 def _load_module():
@@ -122,14 +123,32 @@ def test_finalize_unit_daily_scores_assigns_threshold_and_annual_counts(tmp_path
 def test_direct_decoder_helpers_expand_coverage_and_preserve_multi_point_variation():
     mod = _load_module()
 
-    assert mod._planned_pm_message_count(730, 2) == 93
-    assert mod._planned_pm_message_count(366, 1) == 93
+    assert mod._planned_pm_message_count(730, 2) == 365
+    assert mod._planned_pm_message_count(366, 1) == 366
     assert mod._planned_pm_message_count(93, 1) == 93
 
     score = mod._direct_unit_smoke_score(2.0, 10.0)
     assert score == ((2.0 * 0.75) + (10.0 * 0.25)) * 1.0e11
     assert score < (10.0 * 1.0e11)
     assert score > (2.0 * 1.0e11)
+
+
+def test_read_csv_rows_prefers_tab_for_tsv_even_when_detail_contains_semicolons(tmp_path):
+    mod = _load_module()
+    audit_tsv = tmp_path / "audit.tsv"
+    audit_tsv.write_text(
+        "metric\tvalue\tstatus\tdetail\n"
+        "daily_rows\t94978\tPASS\tdate_unit_pairs=94978; expected_rows_from_dates_x_units=94978\n"
+        "unique_years\t10\tPASS\t2015,2016,2017,2018,2019,2020,2021,2022,2023,2024\n",
+        encoding="utf-8",
+    )
+
+    header, rows, delim = mod.read_csv_rows(audit_tsv)
+
+    assert delim == "\t"
+    assert header == ["metric", "value", "status", "detail"]
+    assert rows[0]["metric"] == "daily_rows"
+    assert rows[0]["detail"].startswith("date_unit_pairs=94978")
 
 
 def test_spatial_collapse_audit_and_brief_block_claims(tmp_path):
@@ -213,3 +232,57 @@ def test_spatial_collapse_audit_and_brief_block_claims(tmp_path):
     assert "most exposed by smoke" not in text
     assert "spatial ranking from smoke proxy is blocked" in text
     assert "iech ranking is blocked" in text
+
+
+def test_probe_gfas_pm_message_pattern_prefers_min_date_hint_when_valid_time_is_one_day_late(tmp_path, monkeypatch):
+    mod = _load_module()
+    src = tmp_path / "GFAS_PM2P5FIRE_2015_GLOBAL_OFFICIAL.grib"
+    src.write_bytes(b"probe")
+    late_valid_time = str(int(dt.datetime(2015, 1, 2, tzinfo=dt.timezone.utc).timestamp()))
+
+    monkeypatch.setattr(mod, "_iter_grib_messages_by_next_grib", lambda _src: iter([(1, b"pm", 0)]))
+    monkeypatch.setattr(
+        mod,
+        "_read_grib_message_metadata_from_payload",
+        lambda _payload, _token: {"GRIB_COMMENT": "PM2P5FIRE", "GRIB_VALID_TIME": late_valid_time},
+    )
+    monkeypatch.setattr(mod, "_grib_comment_is_pm2p5fire", lambda _comment: True)
+
+    pm_start_index, base_date = mod._probe_gfas_pm_message_pattern(src, "2015-01-01")
+
+    assert pm_start_index == 1
+    assert base_date == "2015-01-01"
+
+
+def test_probe_gfas_pm_message_pattern_uses_metadata_date_without_hint(tmp_path, monkeypatch):
+    mod = _load_module()
+    src = tmp_path / "GFAS_PM2P5FIRE_2015_GLOBAL_OFFICIAL.grib"
+    src.write_bytes(b"probe")
+    valid_time = str(int(dt.datetime(2015, 1, 2, tzinfo=dt.timezone.utc).timestamp()))
+
+    monkeypatch.setattr(mod, "_iter_grib_messages_by_next_grib", lambda _src: iter([(1, b"pm", 0)]))
+    monkeypatch.setattr(
+        mod,
+        "_read_grib_message_metadata_from_payload",
+        lambda _payload, _token: {"GRIB_COMMENT": "PM2P5FIRE", "GRIB_VALID_TIME": valid_time},
+    )
+    monkeypatch.setattr(mod, "_grib_comment_is_pm2p5fire", lambda _comment: True)
+
+    pm_start_index, base_date = mod._probe_gfas_pm_message_pattern(src, "")
+
+    assert pm_start_index == 1
+    assert base_date == "2015-01-02"
+
+
+def test_resolve_gfas_pm_date_prefers_fallback_when_metadata_is_one_day_late():
+    mod = _load_module()
+
+    assert mod._resolve_gfas_pm_date("2015-01-02", "2015-01-01") == "2015-01-01"
+
+
+def test_resolve_gfas_pm_date_preserves_actual_date_when_not_shifted():
+    mod = _load_module()
+
+    assert mod._resolve_gfas_pm_date("2015-01-01", "2015-01-01") == "2015-01-01"
+    assert mod._resolve_gfas_pm_date("2015-01-03", "2015-01-01") == "2015-01-03"
+    assert mod._resolve_gfas_pm_date("", "2015-01-01") == "2015-01-01"

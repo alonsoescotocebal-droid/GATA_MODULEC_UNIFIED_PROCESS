@@ -14,7 +14,7 @@ def test_smoke_route_selector_prefers_gfas_era5_over_parquet_final(tmp_path):
     data.mkdir(parents=True, exist_ok=True)
     recovery.mkdir(parents=True, exist_ok=True)
     (recovery / "dummy.grib").write_bytes(b"grib")
-    (recovery / "_grib_summary.csv").write_text("file,minDate,message_count,pm_stride_hint\nx.grib,20150101,93,1\n", encoding="utf-8")
+    (recovery / "_grib_summary.csv").write_text("file,minDate,message_count,pm_stride_hint\nx.grib,20150101,365,1\n", encoding="utf-8")
     (recovery / "ERA5_demo.zip").write_bytes(b"zip")
     (data / "ParquetFiles 2017.zip").write_bytes(b"zip")
     (data / "ParquetFiles 2022.zip").write_bytes(b"zip")
@@ -39,7 +39,7 @@ def test_smoke_route_selector_enables_real_route_when_decoder_available(tmp_path
     data.mkdir(parents=True, exist_ok=True)
     recovery.mkdir(parents=True, exist_ok=True)
     (recovery / "dummy.grib").write_bytes(b"grib")
-    (recovery / "_grib_summary.csv").write_text("file,minDate,message_count,pm_stride_hint\nx.grib,20150101,93,1\n", encoding="utf-8")
+    (recovery / "_grib_summary.csv").write_text("file,minDate,message_count,pm_stride_hint\nx.grib,20150101,365,1\n", encoding="utf-8")
     (recovery / "ERA5_demo.zip").write_bytes(b"zip")
     (data / "ParquetFiles 2017.zip").write_bytes(b"zip")
     (data / "ParquetFiles 2022.zip").write_bytes(b"zip")
@@ -61,7 +61,7 @@ def test_smoke_route_selector_blocks_legacy_direct_sources_even_if_decoder_avail
     legacy_gfas = data / "CAM-GFAS (ADS)"
     legacy_gfas.mkdir(parents=True, exist_ok=True)
     (legacy_gfas / "dummy.grib").write_bytes(b"grib")
-    (legacy_gfas / "_grib_summary.csv").write_text("file,minDate,message_count,pm_stride_hint\nx.grib,20150101,93,1\n", encoding="utf-8")
+    (legacy_gfas / "_grib_summary.csv").write_text("file,minDate,message_count,pm_stride_hint\nx.grib,20150101,365,1\n", encoding="utf-8")
     (data / "ERA5_demo.zip").write_bytes(b"zip")
 
     sources = selector.detect_smoke_sources(data, {"paths": {"smoke_csv": str(data / "ParquetFiles 2022.zip")}})

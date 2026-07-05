@@ -14,7 +14,7 @@ from typing import Dict, List, Tuple
 from smoke_route_selector import apply_route_meta, detect_smoke_sources, select_smoke_route
 
 
-OBJECTIVE_IDS = [f"OC-{i:02d}" for i in range(1, 13)]
+OBJECTIVE_IDS = ["OC-01", "OC-02", "OC-03", "OC-03C"] + [f"OC-{i:02d}" for i in range(4, 13)]
 
 
 def now_iso() -> str:

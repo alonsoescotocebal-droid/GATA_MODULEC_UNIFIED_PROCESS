@@ -12,7 +12,7 @@ def _load_module():
     return mod
 
 
-def test_decoder_falls_back_to_nested_recovery_gribs_when_edge_summary_has_no_pm_rows(tmp_path):
+def test_decoder_falls_back_to_nested_recovery_gribs_when_edge_summary_has_no_pm_rows(tmp_path, monkeypatch):
     mod = _load_module()
     gfas_dir = tmp_path / "CAM-GFAS (ADS)"
     gfas_dir.mkdir(parents=True, exist_ok=True)
@@ -26,9 +26,11 @@ def test_decoder_falls_back_to_nested_recovery_gribs_when_edge_summary_has_no_pm
     for year in range(2015, 2025):
         (nested / f"GFAS_PM2P5FIRE_{year}_GLOBAL_OFFICIAL.grib").write_bytes(b"grib")
 
+    monkeypatch.setattr(mod, "_count_gfas_pm_messages_from_grib", lambda _path: 365)
+
     rows = mod._load_gfas_pm_summary_rows(gfas_dir)
 
     years = [r["minDate"][:4] for r in rows]
     assert years == [str(y) for y in range(2015, 2025)]
     assert all("GLOBAL_OFFICIAL" in r["file"] for r in rows)
-    assert all(r["message_count"] == "93" for r in rows)
+    assert all(r["message_count"] == "365" for r in rows)
