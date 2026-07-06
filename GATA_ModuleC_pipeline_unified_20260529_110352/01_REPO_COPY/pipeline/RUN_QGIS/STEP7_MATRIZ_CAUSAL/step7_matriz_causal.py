@@ -13,9 +13,12 @@ import subprocess
 import sys
 import traceback
 import zipfile
+import xml.etree.ElementTree as ET
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+
+from wrb_source_route import find_wrb_annual_burned_area_paths, find_wrb_source_bundle
 
 YEARS_HIST = list(range(2015, 2025))
 YEARS_SCEN = list(range(2026, 2031))
@@ -150,6 +153,12 @@ def init_qgis():
         pstr = str(py_dir)
         if pstr not in sys.path:
             sys.path.insert(0, pstr)
+    osgeo_apps = Path(r"C:\OSGeo4W64\apps")
+    if osgeo_apps.exists():
+        for p in sorted(osgeo_apps.glob("Python*/Lib/site-packages"), reverse=True):
+            pstr = str(p)
+            if pstr not in sys.path:
+                sys.path.insert(0, pstr)
     if plugins.exists():
         pstr = str(plugins)
         if pstr not in sys.path:
@@ -230,7 +239,6 @@ def ensure_required_paths(paths: Dict[str, object]) -> None:
     req = [
         "nuts3",
         "municipios_caop",
-        "wrb_mostprobable_tm06",
     ]
     missing: List[str] = []
     for k in req:
@@ -251,6 +259,11 @@ def ensure_required_paths(paths: Dict[str, object]) -> None:
             p = Path(str(fp))
             if not p.exists():
                 missing.append(f"fire_gpkgs_tm06 -> {p}")
+    try:
+        find_wrb_source_bundle(paths)
+        find_wrb_annual_burned_area_paths(paths)
+    except FileNotFoundError as exc:
+        missing.append(f"wrb_source_route -> {exc}")
     if missing:
         raise FileNotFoundError("Missing required inputs:\n- " + "\n- ".join(missing))
 
@@ -273,6 +286,11 @@ def _field_name_case_insensitive(layer, wanted: str) -> Optional[str]:
         if n.lower() == wl:
             return n
     return None
+
+
+def _build_area_principal_expression(field_name: str) -> str:
+    variants = ["Área Principal", "Area Principal", "Ãrea Principal"]
+    return " OR ".join(f"\"{field_name}\" = '{value}'" for value in variants)
 
 
 def prepare_admin_nuts3(paths: Dict[str, object], maps_dir: Path, processing):
@@ -312,7 +330,7 @@ def prepare_admin_municipio(paths: Dict[str, object], maps_dir: Path, processing
 
     tipo_field = _field_name_case_insensitive(layer, "tipo_area_administrativa")
     if tipo_field:
-        expr = f"\"{tipo_field}\" = 'Área Principal' OR \"{tipo_field}\" = 'Area Principal'"
+        expr = _build_area_principal_expression(tipo_field)
         layer = processing.run("native:extractbyexpression", {"INPUT": layer, "EXPRESSION": expr, "OUTPUT": "memory:"})["OUTPUT"]
 
     layer = processing.run("native:fixgeometries", {"INPUT": layer, "OUTPUT": "memory:"})["OUTPUT"]
@@ -870,6 +888,20 @@ def compute_scenarios(smoke_csv: Path, pop_csv: Path, out_scen_csv: Path, out_me
     write_csv(out_mean_csv, ["unit_id", "IECH_S0_mean_2026_2030", "IECH_S1_mean_2026_2030", "delta_S1_minus_S0"], rows_mean, delim=";")
 
 
+def load_wrb_lookup_from_path(lookup_path: Path) -> Dict[int, str]:
+    try:
+        obj = json.loads(lookup_path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return {}
+    out: Dict[int, str] = {}
+    for k, v in obj.items():
+        try:
+            out[int(k)] = str(v)
+        except Exception:
+            continue
+    return out
+
+
 def load_wrb_lookup(wrb_raster: Path) -> Dict[int, str]:
     candidates = [
         wrb_raster.parent / "MostProbable.rat.json",
@@ -878,24 +910,36 @@ def load_wrb_lookup(wrb_raster: Path) -> Dict[int, str]:
     ]
     for cand in candidates:
         if cand.exists():
-            try:
-                obj = json.loads(cand.read_text(encoding="utf-8-sig"))
-                out: Dict[int, str] = {}
-                for k, v in obj.items():
-                    if re.fullmatch(r"-?\d+", str(k)):
-                        out[int(k)] = str(v)
-                if out:
-                    return out
-            except Exception:
-                continue
+            lookup = load_wrb_lookup_from_path(cand)
+            if lookup:
+                return lookup
     return {}
 
 
-def compute_wrb_context(layer, id_field: str, wrb_raster: Path, out_csv: Path, processing) -> None:
-    wrb_lookup = load_wrb_lookup(wrb_raster)
-    wrb_src = str(wrb_raster)
+WRB_PIXEL_AREA_HA = 6.25
+WRB_TM06_PIXEL_SIZE_M = 250.0
+WRB_TM06_NODATA = 255
+WRB_AREA_TOLERANCE_HA = 31.25
+
+
+def _parse_wrb_field_name(field_name: str) -> Optional[int]:
+    if not field_name.startswith("wrb_"):
+        return None
+    token = field_name[4:].strip()
+    if token == "":
+        return None
+    if re.fullmatch(r"-?\d+_\d+", token):
+        token = token.split("_", 1)[0]
+    token = token.replace(",", ".")
     try:
-        hist_layer = processing.run(
+        return int(round(float(token)))
+    except Exception:
+        return None
+
+
+def _run_wrb_zonal_histogram(layer, wrb_src: str, processing):
+    try:
+        return processing.run(
             "native:zonalhistogram",
             {
                 "INPUT_VECTOR": layer,
@@ -906,7 +950,7 @@ def compute_wrb_context(layer, id_field: str, wrb_raster: Path, out_csv: Path, p
             },
         )["OUTPUT"]
     except Exception:
-        hist_layer = processing.run(
+        return processing.run(
             "qgis:zonalhistogram",
             {
                 "INPUT_VECTOR": layer,
@@ -917,216 +961,420 @@ def compute_wrb_context(layer, id_field: str, wrb_raster: Path, out_csv: Path, p
             },
         )["OUTPUT"]
 
-    fields = list(hist_layer.fields().names())
-    class_fields: List[Tuple[str, int]] = []
-    for fn in fields:
-        m = re.match(r"^wrb_(-?\d+)$", fn)
-        if m:
-            class_fields.append((fn, int(m.group(1))))
 
-    rows = []
-    for ft in hist_layer.getFeatures():
-        uid = str(ft[id_field])
-        counts: Dict[int, float] = {}
-        for fn, cls in class_fields:
-            if cls == 255:
-                continue
-            v = safe_float(ft[fn])
-            if v is None or v <= 0:
-                continue
-            counts[cls] = float(v)
-        if not counts:
-            rows.append([uid, "", "", "", "No WRB counts extracted for this unit.", str(wrb_raster), 1])
+def _extract_wrb_hist_counts(feature) -> Dict[int, float]:
+    out: Dict[int, float] = {}
+    for field_name in feature.fields().names():
+        cls = _parse_wrb_field_name(field_name)
+        if cls is None or cls == WRB_TM06_NODATA:
             continue
-        total = sum(counts.values())
-        dom_cls = max(counts.items(), key=lambda kv: kv[1])[0]
-        dom_share = counts[dom_cls] / total if total > 0 else None
-        top = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:3]
-        top_tokens = []
-        for cls, c in top:
-            label = wrb_lookup.get(cls, f"class_{cls}")
-            share = c / total if total > 0 else 0.0
-            top_tokens.append(f"{label}:{share:.3f}")
-        dom_label = wrb_lookup.get(dom_cls, f"class_{dom_cls}")
-        rows.append(
-            [
-                uid,
-                dom_label,
-                f"{dom_share:.6f}" if dom_share is not None else "",
-                "|".join(top_tokens),
-                "Contexto edáfico territorial (WRB) por histograma zonal; no causal directo.",
-                str(wrb_raster),
-                0,
-            ]
+        value = safe_float(feature[field_name])
+        if value is None or value <= 0:
+            continue
+        out[cls] = out.get(cls, 0.0) + float(value)
+    return out
+
+
+def _write_wrb_working_vrt(bundle: Dict[str, Path], output_vrt: Path) -> Path:
+    ensure_dir(output_vrt.parent)
+    template = Path(bundle["assembled_vrt_template"])
+    tile_map = {
+        Path(bundle["tile_193"]).name.lower(): Path(bundle["tile_193"]),
+        Path(bundle["tile_235"]).name.lower(): Path(bundle["tile_235"]),
+        Path(bundle["tile_236"]).name.lower(): Path(bundle["tile_236"]),
+    }
+    if template.exists():
+        tree = ET.parse(template)
+        root = tree.getroot()
+        for elem in root.iter("SourceFilename"):
+            name = Path((elem.text or "").strip()).name.lower()
+            if name in tile_map:
+                elem.text = str(tile_map[name])
+                elem.set("relativeToVRT", "0")
+        tree.write(output_vrt, encoding="utf-8")
+        return output_vrt
+
+    gdalbuildvrt = Path(r"C:\OSGeo4W64\bin\gdalbuildvrt.exe")
+    if not gdalbuildvrt.exists():
+        raise RuntimeError(
+            "BLOCKED_WRB_SOURCE_ROUTE_UNAVAILABLE: missing MostProbable_assembled.vrt template and gdalbuildvrt fallback."
         )
+    cmd = [
+        str(gdalbuildvrt),
+        str(output_vrt),
+        str(bundle["tile_193"]),
+        str(bundle["tile_235"]),
+        str(bundle["tile_236"]),
+    ]
+    fb = subprocess.run(cmd, capture_output=True, text=True)
+    if fb.returncode != 0 or not output_vrt.exists():
+        raise RuntimeError(
+            "BLOCKED_WRB_SOURCE_ROUTE_UNAVAILABLE: failed to build WRB_working_from_tiles source VRT; "
+            f"rc={fb.returncode}; stderr={(fb.stderr or '').strip()}"
+        )
+    return output_vrt
 
-    write_csv(
-        out_csv,
-        ["unit_id", "dominant_wrb_class", "dominant_wrb_share", "top_wrb_classes", "wrb_context_note", "wrb_source", "wrb_missing_flag"],
-        rows,
-        delim=";",
-    )
+
+def _load_gdal_runtime():
+    from osgeo import gdal  # type: ignore
+
+    gdal.UseExceptions()
+    return gdal
 
 
-def compute_wrb_context_v2(layer, id_field: str, wrb_raster: Path, out_csv: Path, processing) -> None:
-    wrb_lookup = load_wrb_lookup(wrb_raster)
-    wrb_src = str(wrb_raster)
-
-    def _parse_wrb_field_name(field_name: str) -> Optional[int]:
-        if not field_name.startswith("wrb_"):
-            return None
-        token = field_name[4:].strip()
-        if token == "":
-            return None
-        if re.fullmatch(r"-?\d+_\d+", token):
-            token = token.split("_", 1)[0]
-        token = token.replace(",", ".")
-        try:
-            return int(round(float(token)))
-        except Exception:
-            return None
-
+def _layer_crs_authid(layer) -> str:
     try:
-        hist_layer = processing.run(
-            "native:zonalhistogram",
-            {
-                "INPUT_VECTOR": layer,
-                "INPUT_RASTER": wrb_src,
-                "RASTER_BAND": 1,
-                "COLUMN_PREFIX": "wrb_",
-                "OUTPUT": "memory:",
-            },
-        )["OUTPUT"]
+        if layer.crs().isValid():
+            return (layer.crs().authid() or "").upper()
     except Exception:
-        hist_layer = processing.run(
-            "qgis:zonalhistogram",
-            {
-                "INPUT_VECTOR": layer,
-                "INPUT_RASTER": wrb_src,
-                "RASTER_BAND": 1,
-                "COLUMN_PREFIX": "wrb_",
-                "OUTPUT": "memory:",
-            },
-        )["OUTPUT"]
+        pass
+    return ""
 
-    fields = list(hist_layer.fields().names())
-    class_fields: List[Tuple[str, int]] = []
-    for fn in fields:
-        cls = _parse_wrb_field_name(fn)
-        if cls is not None:
-            class_fields.append((fn, cls))
 
+def _ensure_tm06_vector_layer(layer, processing):
+    if "EPSG:3763" in _layer_crs_authid(layer):
+        return layer
+    from qgis.core import QgsCoordinateReferenceSystem  # type: ignore
+
+    return processing.run(
+        "native:reprojectlayer",
+        {"INPUT": layer, "TARGET_CRS": QgsCoordinateReferenceSystem("EPSG:3763"), "OUTPUT": "memory:"},
+    )["OUTPUT"]
+
+
+def _union_tm06_extent(mask_paths: List[Path]):
+    from qgis.core import QgsVectorLayer  # type: ignore
+
+    min_x = None
+    min_y = None
+    max_x = None
+    max_y = None
+    for mask_path in mask_paths:
+        layer = QgsVectorLayer(str(mask_path), f"wrb_mask_extent_{mask_path.stem}", "ogr")
+        if not layer.isValid():
+            raise RuntimeError(f"Invalid annual burned-area layer for WRB route: {mask_path}")
+        ext = layer.extent()
+        min_x = ext.xMinimum() if min_x is None else min(min_x, ext.xMinimum())
+        min_y = ext.yMinimum() if min_y is None else min(min_y, ext.yMinimum())
+        max_x = ext.xMaximum() if max_x is None else max(max_x, ext.xMaximum())
+        max_y = ext.yMaximum() if max_y is None else max(max_y, ext.yMaximum())
+    if None in (min_x, min_y, max_x, max_y):
+        raise RuntimeError("BLOCKED_WRB_SOURCE_ROUTE_UNAVAILABLE: annual burned-area extents unavailable.")
+    return float(min_x), float(min_y), float(max_x), float(max_y)
+
+
+def _write_wrb_working_tm06_raster(source_vrt: Path, annual_burned_area_paths: List[Path], output_raster: Path) -> Path:
+    gdal = _load_gdal_runtime()
+    ensure_dir(output_raster.parent)
+    min_x, min_y, max_x, max_y = _union_tm06_extent(annual_burned_area_paths)
+    gdal.Warp(
+        str(output_raster),
+        str(source_vrt),
+        dstSRS="EPSG:3763",
+        xRes=WRB_TM06_PIXEL_SIZE_M,
+        yRes=WRB_TM06_PIXEL_SIZE_M,
+        resampleAlg="near",
+        targetAlignedPixels=True,
+        outputBounds=(min_x, min_y, max_x, max_y),
+        dstNodata=WRB_TM06_NODATA,
+        multithread=False,
+    )
+    if not output_raster.exists():
+        raise RuntimeError(f"BLOCKED_WRB_SOURCE_ROUTE_UNAVAILABLE: failed to warp WRB TM06 raster {output_raster}")
+    return output_raster
+
+
+def _save_layer_for_gdal(layer, output_vector: Path, processing) -> Path:
+    ensure_dir(output_vector.parent)
+    if output_vector.exists():
+        output_vector.unlink()
+    processing.run("native:savefeatures", {"INPUT": layer, "OUTPUT": str(output_vector)})
+    if not output_vector.exists():
+        raise RuntimeError(f"BLOCKED_WRB_SOURCE_ROUTE_UNAVAILABLE: failed to materialize annual mask {output_vector}")
+    return output_vector
+
+
+def _rasterize_annual_burned_area_mask(mask_layer, template_raster: Path, output_mask: Path, processing) -> Path:
+    gdal = _load_gdal_runtime()
+    mask_vector = _save_layer_for_gdal(mask_layer, output_mask.with_suffix(".gpkg"), processing)
+    template_ds = gdal.Open(str(template_raster))
+    if template_ds is None:
+        raise RuntimeError(f"BLOCKED_WRB_SOURCE_ROUTE_UNAVAILABLE: failed to open template raster {template_raster}")
+    driver = gdal.GetDriverByName("GTiff")
+    ensure_dir(output_mask.parent)
+    out_ds = driver.Create(
+        str(output_mask),
+        template_ds.RasterXSize,
+        template_ds.RasterYSize,
+        1,
+        gdal.GDT_Byte,
+        options=["TILED=YES", "COMPRESS=LZW"],
+    )
+    out_ds.SetGeoTransform(template_ds.GetGeoTransform())
+    out_ds.SetProjection(template_ds.GetProjection())
+    out_band = out_ds.GetRasterBand(1)
+    out_band.Fill(0)
+    out_band.SetNoDataValue(0)
+    vector_ds = gdal.OpenEx(str(mask_vector), gdal.OF_VECTOR)
+    layer = vector_ds.GetLayer(0)
+    gdal.RasterizeLayer(out_ds, [1], layer, burn_values=[1], options=["ALL_TOUCHED=FALSE"])
+    out_band.FlushCache()
+    out_ds.FlushCache()
+    out_ds = None
+    if not output_mask.exists():
+        raise RuntimeError(f"BLOCKED_WRB_SOURCE_ROUTE_UNAVAILABLE: failed to rasterize annual mask {output_mask}")
+    return output_mask
+
+
+def _write_masked_wrb_raster(wrb_tm06_raster: Path, annual_mask_raster: Path, output_raster: Path) -> Path:
+    gdal = _load_gdal_runtime()
+    wrb_ds = gdal.Open(str(wrb_tm06_raster))
+    mask_ds = gdal.Open(str(annual_mask_raster))
+    if wrb_ds is None or mask_ds is None:
+        raise RuntimeError("BLOCKED_WRB_SOURCE_ROUTE_UNAVAILABLE: failed to open WRB or annual mask raster.")
+    wrb_arr = wrb_ds.GetRasterBand(1).ReadAsArray()
+    mask_arr = mask_ds.GetRasterBand(1).ReadAsArray()
+    masked_arr = wrb_arr.copy()
+    masked_arr[mask_arr != 1] = WRB_TM06_NODATA
+    driver = gdal.GetDriverByName("GTiff")
+    ensure_dir(output_raster.parent)
+    out_ds = driver.Create(
+        str(output_raster),
+        wrb_ds.RasterXSize,
+        wrb_ds.RasterYSize,
+        1,
+        wrb_ds.GetRasterBand(1).DataType,
+        options=["TILED=YES", "COMPRESS=LZW"],
+    )
+    out_ds.SetGeoTransform(wrb_ds.GetGeoTransform())
+    out_ds.SetProjection(wrb_ds.GetProjection())
+    out_band = out_ds.GetRasterBand(1)
+    out_band.WriteArray(masked_arr)
+    out_band.SetNoDataValue(WRB_TM06_NODATA)
+    out_band.FlushCache()
+    out_ds.FlushCache()
+    out_ds = None
+    if not output_raster.exists():
+        raise RuntimeError(f"BLOCKED_WRB_SOURCE_ROUTE_UNAVAILABLE: failed to write masked WRB raster {output_raster}")
+    return output_raster
+
+
+def _count_wrb_classes_in_raster(raster_path: Path) -> Dict[int, float]:
+    gdal = _load_gdal_runtime()
+    ds = gdal.Open(str(raster_path))
+    if ds is None:
+        raise RuntimeError(f"BLOCKED_WRB_SOURCE_ROUTE_UNAVAILABLE: failed to open masked WRB raster {raster_path}")
+    arr = ds.GetRasterBand(1).ReadAsArray()
+    counts: Dict[int, float] = {}
+    for value in arr.ravel().tolist():
+        cls = int(value)
+        if cls == WRB_TM06_NODATA:
+            continue
+        counts[cls] = counts.get(cls, 0.0) + 1.0
+    return counts
+
+
+def _dominant_wrb_row(uid: str, class_counts: Dict[int, float], wrb_lookup: Dict[int, str], wrb_source: Path) -> List[object]:
+    total = float(sum(class_counts.values()))
+    if total <= 0:
+        return [
+            uid,
+            "",
+            "",
+            "",
+            "WRB unavailable because admin_unit ? annual_burned_area is empty for 2015-2024.",
+            str(wrb_source),
+            1,
+        ]
+
+    ordered = sorted(class_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    dom_cls, dom_count = ordered[0]
+    dom_share = dom_count / total
+    top_tokens = []
+    for cls, count in ordered[:5]:
+        label = wrb_lookup.get(cls, f"class_{cls}")
+        share = count / total
+        top_tokens.append(f"{label}:{share:.3f}")
+    dom_label = wrb_lookup.get(dom_cls, f"class_{dom_cls}")
+    return [
+        uid,
+        dom_label,
+        f"{dom_share:.6f}",
+        "|".join(top_tokens),
+        "Contexto edafico territorial (WRB) sobre admin_unit ? annual_burned_area ? WRB_working_TM06_from_tiles; no causal directo.",
+        str(wrb_source),
+        0,
+    ]
+
+
+def _write_wrb_year_summary(summary_csv: Path, year_class_counts: Dict[int, Dict[int, float]], wrb_lookup: Dict[int, str]) -> None:
     rows: List[List[object]] = []
-    for ft in hist_layer.getFeatures():
-        uid = str(ft[id_field])
-        counts: Dict[int, float] = {}
-        for fn, cls in class_fields:
-            if cls == 255:
-                continue
-            v = safe_float(ft[fn])
-            if v is None or v <= 0:
-                continue
-            counts[cls] = counts.get(cls, 0.0) + float(v)
-        if not counts:
-            rows.append([uid, "", "", "", "No WRB counts extracted for this unit.", str(wrb_raster), 1])
+    for year in sorted(year_class_counts):
+        class_counts = year_class_counts[year]
+        total_pixels = float(sum(class_counts.values()))
+        if total_pixels <= 0:
             continue
-        total = sum(counts.values())
-        dom_cls = max(counts.items(), key=lambda kv: kv[1])[0]
-        dom_share = counts[dom_cls] / total if total > 0 else None
-        top = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:3]
-        top_tokens = []
-        for cls, c in top:
-            label = wrb_lookup.get(cls, f"class_{cls}")
-            share = c / total if total > 0 else 0.0
-            top_tokens.append(f"{label}:{share:.3f}")
-        dom_label = wrb_lookup.get(dom_cls, f"class_{dom_cls}")
-        rows.append(
-            [
-                uid,
-                dom_label,
-                f"{dom_share:.6f}" if dom_share is not None else "",
-                "|".join(top_tokens),
-                "Contexto edafico territorial (WRB) por histograma zonal; no causal directo.",
-                str(wrb_raster),
-                0,
-            ]
+        total_area_ha = total_pixels * WRB_PIXEL_AREA_HA
+        for cls, count in sorted(class_counts.items(), key=lambda kv: (-kv[1], kv[0])):
+            area_ha = float(count) * WRB_PIXEL_AREA_HA
+            pct_area = (float(count) / total_pixels) * 100.0
+            rows.append([
+                year,
+                float(cls),
+                wrb_lookup.get(cls, f"class_{cls}"),
+                float(count),
+                area_ha,
+                pct_area,
+                total_area_ha,
+            ])
+    write_csv(
+        summary_csv,
+        ["Year", "WRB_code", "Class_name", "Count_pixels", "Area_ha", "Pct_area", "Year_total_ha"],
+        rows,
+        delim=",",
+    )
+
+
+def _read_wrb_year_summary(path: Path, year: int) -> Dict[str, Dict[str, float]]:
+    rows = read_csv_rows(path)[1]
+    out: Dict[str, Dict[str, float]] = {}
+    for row in rows:
+        y_val = safe_float(row.get("Year") or row.get("year"))
+        if y_val is None or int(y_val) != year:
+            continue
+        cls_name = (row.get("Class_name") or row.get("class_name") or "").strip()
+        if not cls_name:
+            continue
+        out[cls_name] = {
+            "count": float(safe_float(row.get("Count_pixels") or row.get("count_pixels")) or 0.0),
+            "area": float(safe_float(row.get("Area_ha") or row.get("area_ha")) or 0.0),
+        }
+    return out
+
+
+def write_wrb_year_validation_audit(audit_path: Path, computed_csv: Path, reference_csv: Path, year: int) -> None:
+    if not reference_csv.exists():
+        raise RuntimeError(f"BLOCKED_WRB_REFERENCE_MISSING: {reference_csv}")
+
+    computed = _read_wrb_year_summary(computed_csv, year)
+    reference = _read_wrb_year_summary(reference_csv, year)
+    computed_positive = sorted(cls for cls, vals in computed.items() if vals["count"] > 0)
+    reference_positive = sorted(cls for cls, vals in reference.items() if vals["count"] > 0)
+
+    rows = [["metric", "value", "status", "note"]]
+    pass_flag = True
+
+    multiclass = len(computed_positive) > 1
+    has_cambisols = "Cambisols" in computed_positive
+    has_luvisols = "Luvisols" in computed_positive
+    class_set_match = computed_positive == reference_positive
+
+    rows.append(["validation_year", year, "PASS", "WRB burned-area prevalidation target year."])
+    rows.append(["computed_positive_classes", "|".join(computed_positive), "PASS" if computed_positive else "HOLD", "Positive WRB classes from computed overlay summary."])
+    rows.append(["reference_positive_classes", "|".join(reference_positive), "PASS" if reference_positive else "HOLD", "Positive WRB classes from reference CSV."])
+    rows.append(["computed_multiclass", len(computed_positive), "PASS" if multiclass else "HOLD", "Computed 2022 summary must show more than one WRB class."])
+    rows.append(["computed_has_cambisols", int(has_cambisols), "PASS" if has_cambisols else "HOLD", "Cambisols must be present in computed 2022 summary."])
+    rows.append(["computed_has_luvisols", int(has_luvisols), "PASS" if has_luvisols else "HOLD", "Luvisols must be present in computed 2022 summary."])
+    rows.append(["class_set_match_reference", int(class_set_match), "PASS" if class_set_match else "HOLD", "Computed positive WRB classes must match the reference set for the validation year."])
+
+    if not multiclass or not has_cambisols or not has_luvisols or not class_set_match:
+        pass_flag = False
+
+    union_classes = sorted(set(computed_positive) | set(reference_positive))
+    for cls_name in union_classes:
+        comp_area = float(computed.get(cls_name, {}).get("area", 0.0))
+        ref_area = float(reference.get(cls_name, {}).get("area", 0.0))
+        diff = abs(comp_area - ref_area)
+        status = "PASS" if diff <= WRB_AREA_TOLERANCE_HA else "HOLD"
+        rows.append([f"area_ha_{cls_name}", comp_area, status, f"reference={ref_area}; abs_diff={diff}; tolerance_ha={WRB_AREA_TOLERANCE_HA}"])
+        if status != "PASS":
+            pass_flag = False
+
+    write_csv(audit_path, rows[0], rows[1:], delim="\t")
+    if not pass_flag:
+        raise RuntimeError(f"BLOCKED_WRB_PREVALIDATION_{year}: {audit_path}")
+
+
+def compute_wrb_context_v2(
+    layer,
+    id_field: str,
+    fire_paths: List[Path],
+    wrb_bundle: Dict[str, Path],
+    work_dir: Path,
+    out_csv: Path,
+    year_summary_csv: Path,
+    processing,
+) -> Path:
+    from qgis.core import QgsVectorLayer  # type: ignore
+
+    wrb_lookup = load_wrb_lookup_from_path(Path(wrb_bundle["lookup_path"]))
+    wrb_runtime_dir = work_dir / "wrb_source_route"
+    wrb_source_vrt = _write_wrb_working_vrt(wrb_bundle, wrb_runtime_dir / "WRB_working_from_tiles_4326.vrt")
+    wrb_tm06_raster = _write_wrb_working_tm06_raster(wrb_source_vrt, fire_paths, wrb_runtime_dir / "WRB_working_TM06_from_tiles.tif")
+
+    unit_ids = get_unit_ids(layer, id_field)
+    if not unit_ids:
+        raise RuntimeError(f"No unit ids found for field '{id_field}'")
+
+    admin_fix = processing.run("native:fixgeometries", {"INPUT": layer, "OUTPUT": "memory:"})["OUTPUT"]
+    admin_fix = _ensure_tm06_vector_layer(admin_fix, processing)
+    class_counts_by_unit: Dict[str, Dict[int, float]] = {uid: {} for uid in unit_ids}
+    year_class_counts: Dict[int, Dict[int, float]] = {}
+
+    for annual_path in fire_paths:
+        year = _extract_year(annual_path.name)
+        if year is None or year not in YEARS_HIST:
+            continue
+
+        annual_layer = QgsVectorLayer(str(annual_path), f"wrb_annual_burned_{year}", "ogr")
+        if not annual_layer.isValid():
+            raise RuntimeError(f"Invalid annual burned-area layer for WRB route: {annual_path}")
+        if annual_layer.featureCount() <= 0:
+            continue
+
+        annual_fix = processing.run("native:fixgeometries", {"INPUT": annual_layer, "OUTPUT": "memory:"})["OUTPUT"]
+        annual_fix = _ensure_tm06_vector_layer(annual_fix, processing)
+        annual_burned = processing.run("native:dissolve", {"INPUT": annual_fix, "OUTPUT": "memory:"})["OUTPUT"]
+        if annual_burned.featureCount() <= 0:
+            continue
+
+        annual_mask_raster = _rasterize_annual_burned_area_mask(
+            annual_burned,
+            wrb_tm06_raster,
+            wrb_runtime_dir / f"annual_burned_area_mask_{year}.tif",
+            processing,
+        )
+        masked_wrb_raster = _write_masked_wrb_raster(
+            wrb_tm06_raster,
+            annual_mask_raster,
+            wrb_runtime_dir / f"WRB_working_TM06_from_tiles_masked_{year}.tif",
         )
 
-    n_missing = sum(1 for r in rows if int(safe_float(r[6]) or 0) >= 1)
-    n_total = len(rows)
-    if n_total > 0 and n_missing >= n_total:
-        try:
-            centroids = processing.run(
-                "native:pointonsurface",
-                {"INPUT": layer, "ALL_PARTS": False, "OUTPUT": "memory:"},
-            )["OUTPUT"]
-            sampled = processing.run(
-                "native:rastersampling",
-                {"INPUT": centroids, "RASTERCOPY": wrb_src, "COLUMN_PREFIX": "wrb_s_", "OUTPUT": "memory:"},
-            )["OUTPUT"]
-            s_fields = list(sampled.fields().names())
-            s_cols = [c for c in s_fields if c.startswith("wrb_s_")]
-            if s_cols:
-                s_col = s_cols[0]
-                sampled_rows: List[List[object]] = []
-                for ft in sampled.getFeatures():
-                    uid = str(ft[id_field])
-                    v = safe_float(ft[s_col])
-                    if v is None:
-                        sampled_rows.append([uid, "", "", "", "WRB centroid sampling produced null value.", str(wrb_raster), 1])
-                        continue
-                    cls = int(round(v))
-                    if cls == 255:
-                        sampled_rows.append([uid, "", "", "", "WRB centroid sampling nodata value.", str(wrb_raster), 1])
-                        continue
-                    dom_label = wrb_lookup.get(cls, f"class_{cls}")
-                    sampled_rows.append(
-                        [
-                            uid,
-                            dom_label,
-                            "1.000000",
-                            f"{dom_label}:1.000",
-                            "Fallback WRB por muestreo en punto interior (centroid sampling).",
-                            str(wrb_raster),
-                            0,
-                        ]
-                    )
-                sampled_missing = sum(1 for r in sampled_rows if int(safe_float(r[6]) or 0) >= 1)
-                if sampled_rows and sampled_missing < len(sampled_rows):
-                    rows = sampled_rows
-        except Exception:
-            pass
+        annual_counts = _count_wrb_classes_in_raster(masked_wrb_raster)
+        if annual_counts:
+            year_counts = year_class_counts.setdefault(year, {})
+            for cls, count in annual_counts.items():
+                year_counts[cls] = year_counts.get(cls, 0.0) + float(count)
 
-    # Last fallback: assign a global WRB contextual class when raster is readable
-    # but zonal/centroid extraction still fails for all units.
-    n_missing2 = sum(1 for r in rows if int(safe_float(r[6]) or 0) >= 1)
-    if rows and n_missing2 >= len(rows):
-        global_cls = 0
-        if wrb_lookup:
-            global_cls = sorted(wrb_lookup.keys())[0]
-        global_label = wrb_lookup.get(global_cls, f"class_{global_cls}")
-        rows_global: List[List[object]] = []
-        for ft in layer.getFeatures():
+        hist_layer = _run_wrb_zonal_histogram(admin_fix, str(masked_wrb_raster), processing)
+        for ft in hist_layer.getFeatures():
             uid = str(ft[id_field])
-            rows_global.append(
-                [
-                    uid,
-                    global_label,
-                    "1.000000",
-                    f"{global_label}:1.000",
-                    "Fallback WRB global class from raster metadata after zonal and centroid extraction failures.",
-                    str(wrb_raster),
-                    0,
-                ]
-            )
-        rows = rows_global
+            hist_counts = _extract_wrb_hist_counts(ft)
+            if not hist_counts:
+                continue
+            unit_counts = class_counts_by_unit.setdefault(uid, {})
+            for cls, count in hist_counts.items():
+                unit_counts[cls] = unit_counts.get(cls, 0.0) + float(count)
 
+    rows = [_dominant_wrb_row(uid, class_counts_by_unit.get(uid, {}), wrb_lookup, wrb_tm06_raster) for uid in unit_ids]
     write_csv(
         out_csv,
         ["unit_id", "dominant_wrb_class", "dominant_wrb_share", "top_wrb_classes", "wrb_context_note", "wrb_source", "wrb_missing_flag"],
         rows,
         delim=";",
     )
+    _write_wrb_year_summary(year_summary_csv, year_class_counts, wrb_lookup)
+    return wrb_tm06_raster
 
 
 def resolve_built_raster(paths: Dict[str, object]) -> Path:
@@ -1819,6 +2067,24 @@ def write_territorial_and_wrb_audits(output_root: Path, wrb_nuts_csv: Path, wrb_
     wrb_n_missing = sum(1 for r in wrb_n_rows if int(safe_float(r.get("wrb_missing_flag")) or 0) >= 1)
     wrb_m_missing = sum(1 for r in wrb_m_rows if int(safe_float(r.get("wrb_missing_flag")) or 0) >= 1)
     wrb_n_dom = sum(1 for r in wrb_n_rows if (r.get("dominant_wrb_class") or "").strip() != "")
+    blocked_tokens = ("fallback", "centroid", "admin-unit-only", "admin_unit-only", "global class", "raster metadata")
+
+    def _wrb_note_hits(rows: List[Dict[str, str]]) -> int:
+        hits = 0
+        for row in rows:
+            note_text = " | ".join(
+                str(v).strip()
+                for v in (row.get("wrb_context_note") or "", row.get("dominant_wrb_note") or "", row.get("wrb_source") or "")
+                if str(v).strip()
+            ).lower()
+            if note_text and any(tok in note_text for tok in blocked_tokens):
+                hits += 1
+        return hits
+
+    wrb_note_hits = _wrb_note_hits(wrb_n_rows) + _wrb_note_hits(wrb_m_rows)
+    prevalidation_path = qa_dir / "wrb_2022_prevalidation.tsv"
+    prevalidation_rows = read_csv_rows(prevalidation_path)[1] if prevalidation_path.exists() else []
+    prevalidation_blocking = sum(1 for r in prevalidation_rows if (r.get("status") or "").strip().upper() != "PASS")
 
     wrb_out = qa_dir / "wrb_integration_audit.tsv"
     wrb_rows = [
@@ -1828,8 +2094,11 @@ def write_territorial_and_wrb_audits(output_root: Path, wrb_nuts_csv: Path, wrb_
         ["wrb_nuts_dominant_nonempty", wrb_n_dom, "PASS" if wrb_n_dom > 0 else "HOLD", ""],
         ["wrb_muni_rows", len(wrb_m_rows), "PASS" if wrb_m_rows else "HOLD", ""],
         ["wrb_muni_missing", wrb_m_missing, "PASS" if (wrb_m_rows and wrb_m_missing < len(wrb_m_rows)) else "HOLD", ""],
+        ["wrb_fallback_note_rows", wrb_note_hits, "PASS" if wrb_note_hits == 0 else "HOLD", "Fallback/global/centroid/admin-only notes must stay absent."],
+        ["wrb_prevalidation_2022_present", int(prevalidation_path.exists()), "PASS" if prevalidation_path.exists() else "HOLD", str(prevalidation_path)],
+        ["wrb_prevalidation_2022_blocking_metrics", prevalidation_blocking, "PASS" if prevalidation_path.exists() and prevalidation_blocking == 0 else "HOLD", "Non-PASS rows in wrb_2022_prevalidation.tsv."],
     ]
-    write_csv(wrb_out, wrb_rows[0], wrb_rows[1:], delim="\t")
+    write_csv(wrb_out, wrb_rows[0], wrb_rows[1:], delim="	")
 
     terr_n_missing = sum(1 for r in terr_n_rows if int(safe_float(r.get("territorial_missing_flag")) or 0) >= 1)
     terr_m_missing = sum(1 for r in terr_m_rows if int(safe_float(r.get("territorial_missing_flag")) or 0) >= 1)
@@ -1997,10 +2266,10 @@ def generate_brief(output_root: Path, inputs: Dict[str, object]) -> Path:
                     missing_summary[t] += 1
 
     lines: List[str] = []
-    lines.append("# Brief de Política IECH 2030")
+    lines.append("# Brief de PolÃ­tica IECH 2030")
     lines.append("")
-    lines.append(f"- Fecha de generación: {now_iso()}")
-    lines.append(f"- Objetivo Módulo C: integración IECH histórica, escenarios 2026-2030, contexto territorial y matriz causal por unidad.")
+    lines.append(f"- Fecha de generaciÃ³n: {now_iso()}")
+    lines.append(f"- Objetivo MÃ³dulo C: integraciÃ³n IECH histÃ³rica, escenarios 2026-2030, contexto territorial y matriz causal por unidad.")
     lines.append("")
     lines.append("## Fuentes de datos usadas")
     paths = inputs.get("paths", {})
@@ -2016,7 +2285,7 @@ def generate_brief(output_root: Path, inputs: Dict[str, object]) -> Path:
         if objectives:
             lines.append(f"- objectives_recognized: `{objectives}`")
     if isinstance(paths, dict):
-        for key in ("nuts3", "municipios_caop", "wrb_mostprobable_tm06"):
+        for key in ("nuts3", "municipios_caop"):
             lines.append(f"- {key}: `{paths.get(key, '')}`")
         ghsl = paths.get("ghsl_pop", {})
         if isinstance(ghsl, dict):
@@ -2026,26 +2295,26 @@ def generate_brief(output_root: Path, inputs: Dict[str, object]) -> Path:
         if isinstance(fire, list):
             lines.append(f"- fire_gpkgs_tm06: {len(fire)} capas 2015-2024.")
     lines.append("")
-    lines.append("## Definición IECH")
+    lines.append("## DefiniciÃ³n IECH")
     lines.append("- IECH = `smoke_days * 24 * poblacion interpolada GHSL` como proxy operacional de persona-horas de exposicion.")
     lines.append("- IECH no equivale a concentracion contaminante ni valida por si solo una afirmacion sanitaria o epidemiologica.")
     lines.append("")
     lines.append("## Cobertura temporal")
-    lines.append("- Histórico: 2015-2024.")
+    lines.append("- HistÃ³rico: 2015-2024.")
     lines.append("- Escenarios: 2026-2030 (S0 y S1).")
     lines.append("")
     lines.append("## Cobertura espacial")
     lines.append("- NUTS3 (Portugal continental).")
     lines.append("- Municipio (CAOP 2024), cuando disponible.")
     lines.append("")
-    lines.append("## Resultados IECH histórico")
+    lines.append("## Resultados IECH histÃ³rico")
     lines.append(f"- Filas IECH NUTS3: {_table_rowcount(iech_unit)}.")
     lines.append(f"- Unidades IECH NUTS3 mean: {len(iech_mean_rows)}.")
     lines.append(f"- Rango IECH mean 2015-2024: min={iech_min} max={iech_max}.")
     lines.append("")
     lines.append("## Resultados humo")
     lines.append(f"- Filas smoke NUTS3: {_table_rowcount(smoke_unit)}.")
-    lines.append("- Serie anual reconstruida/derivada según ruta de humo seleccionada.")
+    lines.append("- Serie anual reconstruida/derivada segÃºn ruta de humo seleccionada.")
     route_selected = str(meta.get("smoke_route_selected", "")) if isinstance(meta, dict) else ""
     route_decision = str(meta.get("smoke_route_decision", "")) if isinstance(meta, dict) else ""
     route_status = str(meta.get("smoke_route_status", "")) if isinstance(meta, dict) else ""
@@ -2054,13 +2323,13 @@ def generate_brief(output_root: Path, inputs: Dict[str, object]) -> Path:
     if route_reason:
         lines.append(f"- Motivo ruta: {route_reason}.")
     lines.append("")
-    lines.append("## Resultados población")
-    lines.append(f"- Filas población NUTS3: {_table_rowcount(pop_unit)}.")
-    lines.append("- Población GHSL integrada para 2015/2020/2025/2030.")
+    lines.append("## Resultados poblaciÃ³n")
+    lines.append(f"- Filas poblaciÃ³n NUTS3: {_table_rowcount(pop_unit)}.")
+    lines.append("- PoblaciÃ³n GHSL integrada para 2015/2020/2025/2030.")
     lines.append("")
     lines.append("## Resultados recurrencia")
     lines.append(f"- Filas recurrencia NUTS3: {_table_rowcount(rec_unit)}.")
-    lines.append("- Métricas: total_burn_ha, years_area_gt_p75, n_events_gt_1000ha y clase de recurrencia.")
+    lines.append("- MÃ©tricas: total_burn_ha, years_area_gt_p75, n_events_gt_1000ha y clase de recurrencia.")
     lines.append("")
     lines.append("## Resultados municipales")
     if iech_muni.exists():
@@ -2069,7 +2338,7 @@ def generate_brief(output_root: Path, inputs: Dict[str, object]) -> Path:
         lines.append("- IECH municipal no disponible (HOLD MUNICIPAL).")
     lines.append("")
     lines.append("## Resultados WRB")
-    lines.append(f"- Tabla WRB NUTS3: {'sí' if wrb_nuts.exists() else 'no'}.")
+    lines.append(f"- Tabla WRB NUTS3: {'sÃ­' if wrb_nuts.exists() else 'no'}.")
     if wrb_top:
         lines.append("- Clases dominantes WRB (conteo unidades):")
         for cls, cnt in wrb_top:
@@ -2078,7 +2347,7 @@ def generate_brief(output_root: Path, inputs: Dict[str, object]) -> Path:
         lines.append("- Sin resumen WRB por unidad.")
     lines.append("")
     lines.append("## Resultados WUI / territorio")
-    lines.append(f"- Tabla territorial NUTS3: {'sí' if terr_nuts.exists() else 'no'}.")
+    lines.append(f"- Tabla territorial NUTS3: {'sÃ­' if terr_nuts.exists() else 'no'}.")
     lines.append(f"- Unidades con wui_proxy > 0: {wui_positive}.")
     lines.append("")
     lines.append("## Matriz causal")
@@ -2098,11 +2367,11 @@ def generate_brief(output_root: Path, inputs: Dict[str, object]) -> Path:
     lines.append("")
     lines.append("## Recomendaciones")
     if missing_summary:
-        lines.append("- Mantener priorización provisional; evitar ranking territorial fuerte mientras existan componentes en HOLD.")
+        lines.append("- Mantener priorizaciÃ³n provisional; evitar ranking territorial fuerte mientras existan componentes en HOLD.")
     else:
-        lines.append("- Priorizar intervención en unidades HIGH_PRIORITY con recurrencia alta y soporte completo de componentes.")
-    lines.append("- Mantener WRB como contexto edáfico interpretativo, no como causal directo.")
-    lines.append("- Consolidar proxy WUI con datos formales de combustible/landcover cuando estén disponibles.")
+        lines.append("- Priorizar intervenciÃ³n en unidades HIGH_PRIORITY con recurrencia alta y soporte completo de componentes.")
+    lines.append("- Mantener WRB como contexto edÃ¡fico interpretativo, no como causal directo.")
+    lines.append("- Consolidar proxy WUI con datos formales de combustible/landcover cuando estÃ©n disponibles.")
     lines.append("")
     lines.append("## Evidencia de QA")
     lines.append(f"- `{output_root / 'qa' / 'inputs_resolved.json'}`")
@@ -2214,12 +2483,22 @@ def main() -> int:
         log_line(run_log, "Municipal IECH and scenarios generated")
 
         # WRB context
-        wrb_raster = Path(str(paths.get("wrb_mostprobable_tm06", "")))
+        wrb_bundle = find_wrb_source_bundle(paths)
+        wrb_annual_burned_area_paths = find_wrb_annual_burned_area_paths(paths)
         wrb_nuts_csv = tables_dir / "wrb_context_nuts3.csv"
         wrb_muni_csv = tables_dir / "wrb_context_municipio.csv"
-        compute_wrb_context_v2(nuts_layer, nuts_field, wrb_raster, wrb_nuts_csv, processing)
-        compute_wrb_context_v2(muni_layer, muni_field, wrb_raster, wrb_muni_csv, processing)
-        log_line(run_log, "WRB context tables generated")
+        wrb_qa_dir = output_root / "qa"
+        wrb_nuts_year_summary_csv = wrb_qa_dir / "wrb_burned_2015_2024_long_computed_nuts3.csv"
+        wrb_muni_year_summary_csv = wrb_qa_dir / "wrb_burned_2015_2024_long_computed_municipio.csv"
+        compute_wrb_context_v2(nuts_layer, nuts_field, wrb_annual_burned_area_paths, wrb_bundle, work_dir, wrb_nuts_csv, wrb_nuts_year_summary_csv, processing)
+        write_wrb_year_validation_audit(
+            wrb_qa_dir / "wrb_2022_prevalidation.tsv",
+            wrb_nuts_year_summary_csv,
+            Path(wrb_bundle["reference_csv"]),
+            2022,
+        )
+        compute_wrb_context_v2(muni_layer, muni_field, wrb_annual_burned_area_paths, wrb_bundle, work_dir, wrb_muni_csv, wrb_muni_year_summary_csv, processing)
+        log_line(run_log, "WRB context tables generated from annual mask route and tile mosaic")
 
         # Territorial context (built + combustible proxy)
         built_zip = resolve_built_raster(paths)
@@ -2337,3 +2616,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+

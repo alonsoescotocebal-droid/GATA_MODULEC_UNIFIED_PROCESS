@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 from smoke_route_selector import apply_route_meta, detect_smoke_sources, select_smoke_route
+from wrb_source_route import find_wrb_annual_burned_area_paths, find_wrb_source_bundle
 
 
 OBJECTIVE_IDS = ["OC-01", "OC-02", "OC-03", "OC-03C"] + [f"OC-{i:02d}" for i in range(4, 13)]
@@ -188,7 +189,7 @@ def ensure_inputs_json(
 
 def validate_inputs(paths: Dict[str, object], report_lines: List[str]) -> List[str]:
     missing: List[str] = []
-    for key in ("nuts3", "municipios_caop", "wrb_mostprobable_tm06"):
+    for key in ("nuts3", "municipios_caop"):
         p = Path(str(paths.get(key, "")))
         if not p.exists():
             missing.append(f"{key} -> {p}")
@@ -214,6 +215,11 @@ def validate_inputs(paths: Dict[str, object], report_lines: List[str]) -> List[s
             if not p.exists():
                 missing.append(f"fire_gpkgs_tm06 -> {p}")
 
+    try:
+        find_wrb_source_bundle(paths)
+        find_wrb_annual_burned_area_paths(paths)
+    except FileNotFoundError as exc:
+        missing.append(f"wrb_source_route -> {exc}")
     if missing:
         report_lines.append(f"[{now_iso()}] FAIL Missing/invalid inputs count={len(missing)}")
     else:
@@ -302,3 +308,6 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+

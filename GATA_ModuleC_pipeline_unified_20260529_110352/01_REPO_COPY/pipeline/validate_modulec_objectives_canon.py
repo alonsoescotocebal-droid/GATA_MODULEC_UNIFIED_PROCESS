@@ -121,7 +121,7 @@ OBJECTIVES: List[Dict[str, object]] = [
     {
         "objective_id": "OC-08",
         "objective_name": "WRB integrado como contexto",
-        "required_database": "WRB_MostProbable_TM06.tif (+ lookup)",
+        "required_database": "WRB tiles 193/235/236 + MostProbable.rat.json + annual mask_* overlay route (runtime WRB_working_TM06_from_tiles)",
         "required_output": ["tables/wrb_context_nuts3.csv", "tables/wrb_context_municipio.csv", "qa/wrb_integration_audit.tsv", "brief/wrb_summary_for_policy_brief.md"],
         "producer_script": "step7_matriz_causal.py",
         "validation_rule": "WRB con clases dominantes y sin missing generalizado.",
@@ -438,26 +438,54 @@ def _check_oc03_v13_direct_contract(output_root: Path, inputs: Dict[str, object]
 
 
 def _check_wrb_quality(output_root: Path) -> Tuple[bool, str]:
-    p = output_root / "tables" / "wrb_context_nuts3.csv"
-    if not p.exists():
+    nuts_path = output_root / "tables" / "wrb_context_nuts3.csv"
+    muni_path = output_root / "tables" / "wrb_context_municipio.csv"
+    prevalidation_path = output_root / "qa" / "wrb_2022_prevalidation.tsv"
+    if not nuts_path.exists():
         return False, "wrb_context_nuts3.csv missing."
-    rows = read_csv_rows(p)
+    if not muni_path.exists():
+        return False, "wrb_context_municipio.csv missing."
+    if not prevalidation_path.exists():
+        return False, "wrb_2022_prevalidation.tsv missing."
+
+    rows = read_csv_rows(nuts_path)
     if not rows:
         return False, "wrb_context_nuts3.csv empty."
     n_total = len(rows)
     n_missing = 0
     n_dom = 0
-    for r in rows:
+    blocked_note_rows = []
+    blocked_tokens = ("fallback", "centroid", "admin-unit-only", "admin_unit-only", "global class", "raster metadata")
+    for idx, r in enumerate(rows, start=1):
         miss = safe_float(r.get("wrb_missing_flag"))
         if miss is not None and miss >= 1:
             n_missing += 1
         if (r.get("dominant_wrb_class") or "").strip() != "":
             n_dom += 1
+        note_bits = [r.get("wrb_context_note") or "", r.get("dominant_wrb_note") or "", r.get("wrb_source") or ""]
+        note_text = " | ".join(str(v).strip() for v in note_bits if str(v).strip()).lower()
+        if note_text and any(tok in note_text for tok in blocked_tokens):
+            blocked_note_rows.append(f"row{idx}:{note_text[:120]}")
     if n_missing >= n_total:
         return False, f"WRB missing generalized: {n_missing}/{n_total} with wrb_missing_flag=1"
     if n_dom <= 0:
         return False, "No dominant_wrb_class populated."
-    return True, f"WRB quality OK: dominant classes={n_dom}/{n_total}, missing={n_missing}/{n_total}"
+    if blocked_note_rows:
+        return False, "WRB fallback/global/centroid/admin-only notes detected: " + " | ".join(blocked_note_rows[:4])
+
+    pre_rows = read_csv_rows(prevalidation_path)
+    if not pre_rows:
+        return False, "wrb_2022_prevalidation.tsv empty."
+    blocking_metrics = []
+    for row in pre_rows:
+        status = str(row.get("status") or "").strip().upper()
+        if status and status != "PASS":
+            metric = str(row.get("metric") or row.get("check_id") or "").strip()
+            blocking_metrics.append(metric or status)
+    if blocking_metrics:
+        return False, "WRB 2022 prevalidation contains non-PASS metrics: " + ", ".join(blocking_metrics[:8])
+
+    return True, f"WRB quality OK: dominant classes={n_dom}/{n_total}, missing={n_missing}/{n_total}, prevalidation=PASS"
 
 
 def _check_wui_quality(output_root: Path) -> Tuple[bool, str]:

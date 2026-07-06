@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 
 
 def _load_step7_module():
     repo_root = Path(__file__).resolve().parents[1]
+    pipeline_root = repo_root / "pipeline"
+    if str(pipeline_root) not in sys.path:
+        sys.path.insert(0, str(pipeline_root))
     mod_path = repo_root / "pipeline" / "RUN_QGIS" / "STEP7_MATRIZ_CAUSAL" / "step7_matriz_causal.py"
     spec = importlib.util.spec_from_file_location("step7_matriz_causal", str(mod_path))
     module = importlib.util.module_from_spec(spec)
@@ -77,3 +81,10 @@ def test_step7_maps_municipio_smoke_from_parent_nuts3(tmp_path):
     by_unit = {r["unit_id"]: r for r in rows if r.get("year") == "2017"}
     assert by_unit["MUN_A"]["smoke_days"] == "12"
     assert by_unit["MUN_B"]["smoke_days"] == "3"
+
+def test_step7_area_principal_expression_covers_real_utf8_variant():
+    mod = _load_step7_module()
+    expr = mod._build_area_principal_expression("tipo_area_administrativa")
+    assert "\"tipo_area_administrativa\" = 'Área Principal'" in expr
+    assert "\"tipo_area_administrativa\" = 'Area Principal'" in expr
+    assert expr.count(" OR ") == 2

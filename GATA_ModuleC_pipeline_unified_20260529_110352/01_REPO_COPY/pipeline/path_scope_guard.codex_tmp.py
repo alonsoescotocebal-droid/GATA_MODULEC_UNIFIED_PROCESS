@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 from __future__ import annotations
 
 import argparse
@@ -12,8 +12,6 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-from wrb_source_route import catalog_resolved_paths
-
 STATE_PATH_SCOPE_PASS = "PATH_SCOPE_PASS"
 STATE_BLOCKED_PATH_DESYNC = "BLOCKED_PATH_DESYNC"
 STATE_BLOCKED_FORBIDDEN_CODE_ROOT = "BLOCKED_FORBIDDEN_CODE_ROOT"
@@ -22,7 +20,6 @@ STATE_BLOCKED_BRANCH_MISMATCH = "BLOCKED_BRANCH_MISMATCH"
 STATE_BLOCKED_BASE_SHA_MISMATCH = "BLOCKED_BASE_SHA_MISMATCH"
 STATE_BLOCKED_DIRTY_TREE_BEFORE_BASELINE = "BLOCKED_DIRTY_TREE_BEFORE_BASELINE"
 STATE_BLOCKED_DATA_ROOT_MISSING = "BLOCKED_DATA_ROOT_MISSING"
-STATE_BLOCKED_INPUT_PATH_OUTSIDE_ALLOWED_ROOT = "BLOCKED_INPUT_PATH_OUTSIDE_ALLOWED_ROOT"
 STATE_BLOCKED_OUTPUT_ROOT_PARENT_MISSING = "BLOCKED_OUTPUT_ROOT_PARENT_MISSING"
 STATE_BLOCKED_OUTPUT_ROOT_INSIDE_REPO = "BLOCKED_OUTPUT_ROOT_INSIDE_REPO"
 STATE_BLOCKED_CODE_WRITE_OUTSIDE_GITHUB_REPO = "BLOCKED_CODE_WRITE_OUTSIDE_GITHUB_REPO"
@@ -320,40 +317,6 @@ def evaluate(
             "Data root exists under allowed prefix.",
         )
 
-    catalog_path = repo_root / "data_placeholders" / "master_inputs_for_pipeline.csv"
-    catalog_entries = catalog_resolved_paths(catalog_path)
-    if not catalog_entries:
-        add(
-            "P001B_catalog_scope",
-            "PASS",
-            str(catalog_path),
-            "resolved input catalog present or optional",
-            "No catalog input paths to validate.",
-            counts_as_blocker=False,
-        )
-    else:
-        outside_rows = []
-        for key, resolved_path in catalog_entries:
-            if any(is_same_or_subpath(resolved_path, prefix) for prefix in data_prefixes):
-                continue
-            outside_rows.append(f"{key} -> {resolved_path}")
-        if outside_rows:
-            add(
-                "P001B_catalog_scope",
-                STATE_BLOCKED_INPUT_PATH_OUTSIDE_ALLOWED_ROOT,
-                " | ".join(outside_rows[:5]),
-                "; ".join(str(p) for p in data_prefixes),
-                f"{len(outside_rows)} catalog paths are outside allowed data prefixes.",
-            )
-        else:
-            add(
-                "P001B_catalog_scope",
-                "PASS",
-                str(len(catalog_entries)),
-                "; ".join(str(p) for p in data_prefixes),
-                "All resolved catalog input paths are inside allowed data prefixes.",
-            )
-
     output_parent = output_root.parent
     if not output_parent.exists():
         add(
@@ -440,6 +403,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-
-
-

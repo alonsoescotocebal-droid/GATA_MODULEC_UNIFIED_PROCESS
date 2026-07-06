@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 
@@ -249,6 +249,7 @@ from portuguese_aq_validation import (
     write_blocked_base_smoke_regression_outputs,
 )
 from smoke_route_selector import apply_route_meta, detect_smoke_sources, select_smoke_route
+from wrb_source_route import find_wrb_annual_burned_area_paths, find_wrb_source_bundle
 
 YEARS_HIST = list(range(2015, 2025))
 YEARS_SCEN = list(range(2026, 2031))
@@ -750,7 +751,7 @@ def _collect_missing_inputs(inputs: Dict[str, object]) -> List[str]:
     required_keys = [
         "nuts3",
         "municipios_caop",
-        "wrb_mostprobable_tm06",
+
     ]
     for key in required_keys:
         raw = str(paths.get(key, "")).strip()
@@ -792,6 +793,11 @@ def _collect_missing_inputs(inputs: Dict[str, object]) -> List[str]:
                 continue
             if not Path(raw).exists():
                 missing.append(f"fire_gpkgs_tm06 -> {raw}")
+    try:
+        find_wrb_source_bundle(paths)
+        find_wrb_annual_burned_area_paths(paths)
+    except FileNotFoundError as exc:
+        missing.append(f"wrb_source_route -> {exc}")
     return missing
 
 
@@ -4762,3 +4768,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+

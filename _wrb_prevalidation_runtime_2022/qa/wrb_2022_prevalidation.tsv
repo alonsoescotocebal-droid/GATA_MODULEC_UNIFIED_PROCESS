@@ -1,0 +1,15 @@
+metric	value	status	note
+validation_year	2022	PASS	WRB burned-area prevalidation target year.
+computed_positive_classes	Acrisols|Cambisols|Fluvisols|Leptosols|Luvisols|Phaeozems|Vertisols	PASS	Positive WRB classes from computed overlay summary.
+reference_positive_classes	Acrisols|Cambisols|Fluvisols|Leptosols|Luvisols|Phaeozems|Vertisols	PASS	Positive WRB classes from reference CSV.
+computed_multiclass	7	PASS	Computed 2022 summary must show more than one WRB class.
+computed_has_cambisols	1	PASS	Cambisols must be present in computed 2022 summary.
+computed_has_luvisols	1	PASS	Luvisols must be present in computed 2022 summary.
+class_set_match_reference	1	PASS	Computed positive WRB classes must match the reference set for the validation year.
+area_ha_Acrisols	168.75	PASS	reference=156.25; abs_diff=12.5; tolerance_ha=31.25
+area_ha_Cambisols	107800.0	PASS	reference=107831.25; abs_diff=31.25; tolerance_ha=31.25
+area_ha_Fluvisols	12.5	PASS	reference=12.5; abs_diff=0.0; tolerance_ha=31.25
+area_ha_Leptosols	137.5	PASS	reference=125.0; abs_diff=12.5; tolerance_ha=31.25
+area_ha_Luvisols	12812.5	PASS	reference=12812.5; abs_diff=0.0; tolerance_ha=31.25
+area_ha_Phaeozems	12.5	PASS	reference=12.5; abs_diff=0.0; tolerance_ha=31.25
+area_ha_Vertisols	43.75	PASS	reference=43.75; abs_diff=0.0; tolerance_ha=31.25
