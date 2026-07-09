@@ -155,6 +155,7 @@ def _candidate_data_roots(modulec_datos: Path, inputs: Dict[str, object]) -> Lis
     parent = modulec_datos.parent
     for name in RECOVERY_ROOT_NAMES:
         roots.append(parent / name)
+        roots.append(modulec_datos / name)
     roots.append(parent / "Datos")
     return [p for p in _dedupe_paths(roots) if str(p).strip()]
 
@@ -181,7 +182,10 @@ def _detect_era5_zip(root: Path) -> Optional[Path]:
     if not root.exists():
         return None
     matches = sorted(root.glob("*ERA5*.zip"))
-    return matches[0] if matches else None
+    if matches:
+        return matches[0]
+    nested_matches = sorted(root.rglob("*ERA5*.zip"))
+    return nested_matches[0] if nested_matches else None
 
 
 def detect_smoke_sources(modulec_datos: Path, inputs: Dict[str, object]) -> Dict[str, object]:
@@ -269,7 +273,9 @@ def detect_smoke_sources(modulec_datos: Path, inputs: Dict[str, object]) -> Dict
     effective_smoke_source_path = effective_gfas_dir or effective_era5_zip or modulea_validated_path or smoke_csv_path
     effective_source_is_recovery = bool(effective_root) and _looks_like_recovery_root(effective_root, original_datos_root)
     forbidden_primary_source = (
-        _is_forbidden_primary_source(effective_smoke_source_path, original_datos_root) if effective_smoke_source_path else False
+        _is_forbidden_primary_source(effective_smoke_source_path, original_datos_root)
+        if effective_smoke_source_path and not effective_source_is_recovery
+        else False
     )
 
     return {

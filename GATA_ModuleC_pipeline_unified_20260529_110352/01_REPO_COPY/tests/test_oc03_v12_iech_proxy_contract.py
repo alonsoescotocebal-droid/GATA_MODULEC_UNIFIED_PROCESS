@@ -11,8 +11,8 @@ def test_iech_proxy_keeps_population_weighting_without_dividing_it_away():
     assert "iech = expo" in pipeline
     assert "iech0 = expo0" in pipeline
     assert "iech1 = expo1" in pipeline
-    assert "IECH=smoke_days*24*pop_interp(2015,2020,2025);proxy_person_hours" in pipeline
-    assert "iech = expo" in step7
-    assert "iech0 = expo0" in step7
-    assert "iech1 = expo1" in step7
-    assert "persona-horas de exposicion" in step7
+    assert "population_smoke_burden_proxy" in pipeline
+    assert "OPERATIONAL_POPULATION_BURDEN_PROXY_NOT_NORMALIZED_IECH" in pipeline
+    assert "population_smoke_burden_proxy = `smoke_days * 24 * population_total`" in step7
+    assert "population_exposed_assumed = population_total" in step7
+    assert "exposure_fraction_assumption = 1.0" in step7

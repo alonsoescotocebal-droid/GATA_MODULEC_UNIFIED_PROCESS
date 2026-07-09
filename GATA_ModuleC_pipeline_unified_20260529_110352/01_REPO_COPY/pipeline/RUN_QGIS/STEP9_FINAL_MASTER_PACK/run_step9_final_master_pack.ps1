@@ -1,4 +1,4 @@
-param(
+﻿param(
   [string]$GATA_ROOT = "D:\Mestrado\GATA_2025_2026\Prueba_aislada\ISO_GATA_20260121_130505",
   [string]$OutputRoot = "",
   [string]$RepoRoot = ""
@@ -171,6 +171,8 @@ $requiredRel = @(
   "qa\scientific_claim_gate.tsv",
   "qa\population_zonal_audit.tsv",
   "qa\iech_calculation_audit.tsv",
+  "qa\iech_reporting_reframe_audit.tsv",
+  "qa\iech_reporting_semantics_audit.tsv",
   "qa\recurrence_classification_audit.tsv",
   "qa\territorial_variables_audit.tsv",
   "qa\wrb_integration_audit.tsv",
@@ -341,7 +343,7 @@ try {
     $R6KRefreshScript = Join-Path $PSScriptRoot "r6k_refresh_runtime_closure_decision.ps1"
     if (Test-Path -LiteralPath $R6KRefreshScript) {
         & $R6KRefreshScript -OutputRoot $modcOut
-        if ($LASTEXITCODE -ne 0) {
+        if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) {
             throw "R6K runtime closure refresh failed with LASTEXITCODE=$LASTEXITCODE"
         }
     } else {
@@ -462,4 +464,5 @@ Write-Host "DECISION =" $finalDecision
 if($missing.Count -gt 0){
   Write-Host "MISSING_COUNT =" $missing.Count
 }
+
 

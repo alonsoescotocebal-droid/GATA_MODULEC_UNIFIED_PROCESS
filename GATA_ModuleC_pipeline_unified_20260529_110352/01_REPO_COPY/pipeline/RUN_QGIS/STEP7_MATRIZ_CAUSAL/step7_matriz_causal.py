@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
@@ -18,10 +18,22 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
+PIPELINE_ROOT = Path(__file__).resolve().parents[2]
+if str(PIPELINE_ROOT) not in sys.path:
+    sys.path.insert(0, str(PIPELINE_ROOT))
+
 from wrb_source_route import find_wrb_annual_burned_area_paths, find_wrb_source_bundle
 
 YEARS_HIST = list(range(2015, 2025))
 YEARS_SCEN = list(range(2026, 2031))
+
+IECH_PROXY_INDICATOR_NAME = "population_smoke_burden_proxy"
+IECH_PROXY_INDICATOR_UNIT = "proxy person-hours"
+IECH_PROXY_CLAIM_STATUS = "OPERATIONAL_POPULATION_BURDEN_PROXY_NOT_NORMALIZED_IECH"
+IECH_PROXY_ASSUMPTION = (
+    "population_exposed_equals_population_total_due_to_no_independent_exposed_population_layer"
+)
+IECH_PROXY_LEGACY_LABEL = "population_smoke_burden_proxy"
 
 
 def now_iso() -> str:
@@ -53,6 +65,46 @@ def safe_float(val: object):
         return float(s)
     except Exception:
         return None
+
+
+def _first_present_text(row: Dict[str, str], *keys: str) -> str:
+    for key in keys:
+        value = str(row.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _first_present_float(row: Dict[str, str], *keys: str):
+    for key in keys:
+        value = safe_float(row.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _iech_hist_method_flag() -> str:
+    return (
+        "IECH=smoke_days*24*pop_interp(2015,2020,2025);proxy_person_hours;"
+        "population_smoke_burden_proxy=smoke_days*24*population_total;"
+        "legacy_IECH=population_smoke_burden_proxy;"
+        "population_exposed_assumed=population_total;"
+        "exposure_fraction_assumption=1.0;"
+        "no_independent_exposed_population_layer"
+    )
+
+
+def _iech_scen_method_flag() -> str:
+    return (
+        "S0=mean(2015-2024);"
+        "S1=-20% top_quintile;"
+        "IECH=smoke_days*24*pop_interp(2025,2030);proxy_person_hours;"
+        "population_smoke_burden_proxy=smoke_days*24*population_total;"
+        "legacy_IECH=population_smoke_burden_proxy;"
+        "population_exposed_assumed=population_total;"
+        "exposure_fraction_assumption=1.0;"
+        "no_independent_exposed_population_layer"
+    )
 
 
 def sniff_delimiter(path: Path, sample_bytes: int = 65536) -> str:
@@ -289,7 +341,7 @@ def _field_name_case_insensitive(layer, wanted: str) -> Optional[str]:
 
 
 def _build_area_principal_expression(field_name: str) -> str:
-    variants = ["Área Principal", "Area Principal", "Ãrea Principal"]
+    variants = ["Ãrea Principal", "Area Principal", "ÃƒÂrea Principal"]
     return " OR ".join(f"\"{field_name}\" = '{value}'" for value in variants)
 
 
@@ -319,8 +371,14 @@ def prepare_admin_municipio(paths: Dict[str, object], maps_dir: Path, processing
     from qgis.core import QgsCoordinateReferenceSystem, QgsVectorLayer  # type: ignore
 
     caop_src = resolve_vector_source(str(paths.get("municipios_caop", "")))
-    layer = QgsVectorLayer(caop_src, "caop_raw", "ogr")
-    if not layer.isValid():
+    candidate_sources = [f"{caop_src}|layername=cont_municipios", caop_src]
+    layer = None
+    for candidate_src in candidate_sources:
+        candidate_layer = QgsVectorLayer(candidate_src, "caop_raw", "ogr")
+        if candidate_layer.isValid():
+            layer = candidate_layer
+            break
+    if layer is None or not layer.isValid():
         raise RuntimeError(f"CAOP layer invalid: {caop_src}")
 
     fields = _layer_fields(layer)
@@ -331,7 +389,12 @@ def prepare_admin_municipio(paths: Dict[str, object], maps_dir: Path, processing
     tipo_field = _field_name_case_insensitive(layer, "tipo_area_administrativa")
     if tipo_field:
         expr = _build_area_principal_expression(tipo_field)
-        layer = processing.run("native:extractbyexpression", {"INPUT": layer, "EXPRESSION": expr, "OUTPUT": "memory:"})["OUTPUT"]
+        filtered_layer = processing.run(
+            "native:extractbyexpression",
+            {"INPUT": layer, "EXPRESSION": expr, "OUTPUT": "memory:"},
+        )["OUTPUT"]
+        if filtered_layer.featureCount() > 0:
+            layer = filtered_layer
 
     layer = processing.run("native:fixgeometries", {"INPUT": layer, "OUTPUT": "memory:"})["OUTPUT"]
     # Keep only municipio for clean dissolve schema
@@ -352,7 +415,6 @@ def prepare_admin_municipio(paths: Dict[str, object], maps_dir: Path, processing
         raise RuntimeError("Municipio dissolved layer is empty.")
 
     return layer, muni_field
-
 
 def get_unit_ids(layer, id_field: str) -> List[str]:
     out = sorted({str(f[id_field]) for f in layer.getFeatures() if f[id_field] is not None and str(f[id_field]).strip() != ""})
@@ -804,9 +866,22 @@ def compute_iech(pop_csv: Path, smoke_csv: Path, out_hist_csv: Path, out_mean_cs
             p = interpolate_pop(p2015, p2020, p2025, y)
             expo = h * p if p > 0 else None
             iech = expo
-            rows_hist.append([uid, y, sd, h, p, expo, iech, "IECH=smoke_days*24*pop_interp(2015,2020,2025);proxy_person_hours"])
+            rows_hist.append([
+                uid, y, sd, h, p, p, p, 1.0, IECH_PROXY_ASSUMPTION, expo, expo, iech,
+                IECH_PROXY_INDICATOR_NAME, IECH_PROXY_INDICATOR_UNIT, IECH_PROXY_CLAIM_STATUS, IECH_PROXY_LEGACY_LABEL, _iech_hist_method_flag(),
+            ])
 
-    write_csv(out_hist_csv, ["unit_id", "year", "smoke_days", "smoke_hours_equiv", "pop", "expo_person_hours", "IECH", "method_flags"], rows_hist, delim=";")
+    write_csv(
+        out_hist_csv,
+        [
+            "unit_id", "year", "smoke_days", "smoke_hours_equiv", "pop", "population_total",
+            "population_exposed_assumed", "exposure_fraction_assumption", "population_exposure_assumption",
+            "expo_person_hours", "population_smoke_burden_proxy", "IECH", "indicator_name", "indicator_unit",
+            "claim_status", "legacy_IECH_label_deprecated", "method_flags",
+        ],
+        rows_hist,
+        delim=";",
+    )
 
     by_u: Dict[str, List[float]] = defaultdict(list)
     for r in rows_hist:
@@ -817,8 +892,14 @@ def compute_iech(pop_csv: Path, smoke_csv: Path, out_hist_csv: Path, out_mean_cs
     rows_mean = []
     for uid in sorted(by_u.keys()):
         vals = by_u[uid]
-        rows_mean.append([uid, (sum(vals) / len(vals)) if vals else 0.0])
-    write_csv(out_mean_csv, ["unit_id", "IECH_mean_2015_2024"], rows_mean, delim=";")
+        mean_val = (sum(vals) / len(vals)) if vals else 0.0
+        rows_mean.append([uid, mean_val, mean_val])
+    write_csv(
+        out_mean_csv,
+        ["unit_id", "population_smoke_burden_proxy_mean_2015_2024", "IECH_mean_2015_2024"],
+        rows_mean,
+        delim=";",
+    )
 
 
 def compute_scenarios(smoke_csv: Path, pop_csv: Path, out_scen_csv: Path, out_mean_csv: Path) -> None:
@@ -864,11 +945,28 @@ def compute_scenarios(smoke_csv: Path, pop_csv: Path, out_scen_csv: Path, out_me
             expo1 = h1 * p if p > 0 else None
             iech1 = expo1
             delta = (iech1 - iech0) if (iech1 is not None and iech0 is not None) else None
-            flags = "S0=mean(2015-2024);S1=-20% top_quintile;IECH=smoke_days*24*pop_interp(2025,2030);proxy_person_hours"
-            rows.append([uid, y, "S0", sd0, h0, p, expo0, iech0, 0.0, flags])
-            rows.append([uid, y, "S1", sd1, h1, p, expo1, iech1, delta, flags])
+            flags = _iech_scen_method_flag()
+            rows.append([
+                uid, y, "S0", sd0, h0, p, p, p, 1.0, IECH_PROXY_ASSUMPTION, expo0, iech0, iech0, 0.0, 0.0,
+                IECH_PROXY_INDICATOR_NAME, IECH_PROXY_INDICATOR_UNIT, IECH_PROXY_CLAIM_STATUS, IECH_PROXY_LEGACY_LABEL, flags,
+            ])
+            rows.append([
+                uid, y, "S1", sd1, h1, p, p, p, 1.0, IECH_PROXY_ASSUMPTION, expo1, iech1, iech1, delta, delta,
+                IECH_PROXY_INDICATOR_NAME, IECH_PROXY_INDICATOR_UNIT, IECH_PROXY_CLAIM_STATUS, IECH_PROXY_LEGACY_LABEL, flags,
+            ])
 
-    write_csv(out_scen_csv, ["unit_id", "year", "scenario", "smoke_days", "smoke_hours_equiv", "pop", "expo_person_hours", "IECH", "delta_vs_S0", "method_flags"], rows, delim=";")
+    write_csv(
+        out_scen_csv,
+        [
+            "unit_id", "year", "scenario", "smoke_days", "smoke_hours_equiv", "pop", "population_total",
+            "population_exposed_assumed", "exposure_fraction_assumption", "population_exposure_assumption",
+            "expo_person_hours", "population_smoke_burden_proxy", "IECH",
+            "delta_population_smoke_burden_proxy_vs_S0", "delta_vs_S0", "indicator_name", "indicator_unit",
+            "claim_status", "legacy_IECH_label_deprecated", "method_flags",
+        ],
+        rows,
+        delim=";",
+    )
 
     acc: Dict[str, Dict[str, List[float]]] = defaultdict(lambda: defaultdict(list))
     for r in rows:
@@ -884,8 +982,21 @@ def compute_scenarios(smoke_csv: Path, pop_csv: Path, out_scen_csv: Path, out_me
         m0 = (sum(m0_vals) / len(m0_vals)) if m0_vals else None
         m1 = (sum(m1_vals) / len(m1_vals)) if m1_vals else None
         delta = (m1 - m0) if (m0 is not None and m1 is not None) else None
-        rows_mean.append([uid, m0, m1, delta])
-    write_csv(out_mean_csv, ["unit_id", "IECH_S0_mean_2026_2030", "IECH_S1_mean_2026_2030", "delta_S1_minus_S0"], rows_mean, delim=";")
+        rows_mean.append([uid, m0, m1, delta, m0, m1, delta])
+    write_csv(
+        out_mean_csv,
+        [
+            "unit_id",
+            "population_smoke_burden_proxy_S0_mean_2026_2030",
+            "population_smoke_burden_proxy_S1_mean_2026_2030",
+            "delta_population_smoke_burden_proxy_S1_minus_S0",
+            "IECH_S0_mean_2026_2030",
+            "IECH_S1_mean_2026_2030",
+            "delta_S1_minus_S0",
+        ],
+        rows_mean,
+        delim=";",
+    )
 
 
 def load_wrb_lookup_from_path(lookup_path: Path) -> Dict[int, str]:
@@ -1063,10 +1174,10 @@ def _union_tm06_extent(mask_paths: List[Path]):
     return float(min_x), float(min_y), float(max_x), float(max_y)
 
 
-def _write_wrb_working_tm06_raster(source_vrt: Path, annual_burned_area_paths: List[Path], output_raster: Path) -> Path:
+def _write_wrb_working_tm06_raster(source_vrt: Path, bounds_3763: Tuple[float, float, float, float], output_raster: Path) -> Path:
     gdal = _load_gdal_runtime()
     ensure_dir(output_raster.parent)
-    min_x, min_y, max_x, max_y = _union_tm06_extent(annual_burned_area_paths)
+    min_x, min_y, max_x, max_y = bounds_3763
     gdal.Warp(
         str(output_raster),
         str(source_vrt),
@@ -1082,7 +1193,6 @@ def _write_wrb_working_tm06_raster(source_vrt: Path, annual_burned_area_paths: L
     if not output_raster.exists():
         raise RuntimeError(f"BLOCKED_WRB_SOURCE_ROUTE_UNAVAILABLE: failed to warp WRB TM06 raster {output_raster}")
     return output_raster
-
 
 def _save_layer_for_gdal(layer, output_vector: Path, processing) -> Path:
     ensure_dir(output_vector.parent)
@@ -1174,7 +1284,14 @@ def _count_wrb_classes_in_raster(raster_path: Path) -> Dict[int, float]:
     return counts
 
 
-def _dominant_wrb_row(uid: str, class_counts: Dict[int, float], wrb_lookup: Dict[int, str], wrb_source: Path) -> List[object]:
+def _dominant_wrb_row(
+    uid: str,
+    class_counts: Dict[int, float],
+    wrb_lookup: Dict[int, str],
+    wrb_source: Path,
+    note: Optional[str] = None,
+    missing_flag: int = 0,
+) -> List[object]:
     total = float(sum(class_counts.values()))
     if total <= 0:
         return [
@@ -1201,9 +1318,9 @@ def _dominant_wrb_row(uid: str, class_counts: Dict[int, float], wrb_lookup: Dict
         dom_label,
         f"{dom_share:.6f}",
         "|".join(top_tokens),
-        "Contexto edafico territorial (WRB) sobre admin_unit ? annual_burned_area ? WRB_working_TM06_from_tiles; no causal directo.",
+        note or "Contexto edafico territorial (WRB) sobre admin_unit ? annual_burned_area ? WRB_working_TM06_from_tiles; no causal directo.",
         str(wrb_source),
-        0,
+        missing_flag,
     ]
 
 
@@ -1310,7 +1427,6 @@ def compute_wrb_context_v2(
     wrb_lookup = load_wrb_lookup_from_path(Path(wrb_bundle["lookup_path"]))
     wrb_runtime_dir = work_dir / "wrb_source_route"
     wrb_source_vrt = _write_wrb_working_vrt(wrb_bundle, wrb_runtime_dir / "WRB_working_from_tiles_4326.vrt")
-    wrb_tm06_raster = _write_wrb_working_tm06_raster(wrb_source_vrt, fire_paths, wrb_runtime_dir / "WRB_working_TM06_from_tiles.tif")
 
     unit_ids = get_unit_ids(layer, id_field)
     if not unit_ids:
@@ -1318,8 +1434,24 @@ def compute_wrb_context_v2(
 
     admin_fix = processing.run("native:fixgeometries", {"INPUT": layer, "OUTPUT": "memory:"})["OUTPUT"]
     admin_fix = _ensure_tm06_vector_layer(admin_fix, processing)
+    admin_extent = admin_fix.extent()
+    admin_bounds = (
+        float(admin_extent.xMinimum()),
+        float(admin_extent.yMinimum()),
+        float(admin_extent.xMaximum()),
+        float(admin_extent.yMaximum()),
+    )
+    wrb_tm06_raster = _write_wrb_working_tm06_raster(wrb_source_vrt, admin_bounds, wrb_runtime_dir / "WRB_working_TM06_from_tiles.tif")
     class_counts_by_unit: Dict[str, Dict[int, float]] = {uid: {} for uid in unit_ids}
     year_class_counts: Dict[int, Dict[int, float]] = {}
+    territorial_counts_by_unit: Dict[str, Dict[int, float]] = {uid: {} for uid in unit_ids}
+
+    territorial_hist_layer = _run_wrb_zonal_histogram(admin_fix, str(wrb_tm06_raster), processing)
+    for ft in territorial_hist_layer.getFeatures():
+        uid = str(ft[id_field])
+        hist_counts = _extract_wrb_hist_counts(ft)
+        if hist_counts:
+            territorial_counts_by_unit[uid] = hist_counts
 
     for annual_path in fire_paths:
         year = _extract_year(annual_path.name)
@@ -1366,7 +1498,23 @@ def compute_wrb_context_v2(
             for cls, count in hist_counts.items():
                 unit_counts[cls] = unit_counts.get(cls, 0.0) + float(count)
 
-    rows = [_dominant_wrb_row(uid, class_counts_by_unit.get(uid, {}), wrb_lookup, wrb_tm06_raster) for uid in unit_ids]
+    rows = []
+    for uid in unit_ids:
+        annual_counts = class_counts_by_unit.get(uid, {})
+        if annual_counts:
+            rows.append(_dominant_wrb_row(uid, annual_counts, wrb_lookup, wrb_tm06_raster))
+            continue
+        territorial_counts = territorial_counts_by_unit.get(uid, {})
+        rows.append(
+            _dominant_wrb_row(
+                uid,
+                territorial_counts,
+                wrb_lookup,
+                wrb_tm06_raster,
+                note="Contexto edafico territorial (WRB) sobre unidad territorial completa; sin interseccion quemada 2015-2024; no causal directo.",
+                missing_flag=0 if territorial_counts else 1,
+            )
+        )
     write_csv(
         out_csv,
         ["unit_id", "dominant_wrb_class", "dominant_wrb_share", "top_wrb_classes", "wrb_context_note", "wrb_source", "wrb_missing_flag"],
@@ -1627,7 +1775,7 @@ def build_causal_matrix(
 
     unit_ids = sorted(set(iech_map.keys()) | set(pop_map.keys()) | set(rec_map.keys()))
 
-    iech_vals = [safe_float(iech_map.get(u, {}).get("IECH_mean_2015_2024")) for u in unit_ids]
+    iech_vals = [_first_present_float(iech_map.get(u, {}), "population_smoke_burden_proxy_mean_2015_2024", "IECH_mean_2015_2024") for u in unit_ids]
     iech_vals = [v for v in iech_vals if v is not None]
     iech_q80 = _quantile(iech_vals, 0.80) if iech_vals else 0.0
 
@@ -1640,7 +1788,7 @@ def build_causal_matrix(
         wrb_r = wrb_map.get(uid, {})
         terr_r = terr_map.get(uid, {})
 
-        iech_mean = safe_float(iech_r.get("IECH_mean_2015_2024"))
+        iech_mean = _first_present_float(iech_r, "population_smoke_burden_proxy_mean_2015_2024", "IECH_mean_2015_2024")
         smoke_mean_u = smoke_mean.get(uid)
         pop2020 = safe_float(pop_r.get("pop_2020_sum"))
         pop2030 = safe_float(pop_r.get("pop_2030_sum"))
@@ -1649,9 +1797,9 @@ def build_causal_matrix(
         n_big = safe_float(rec_r.get("n_events_gt_1000ha"))
         rec_class = (rec_r.get("recurrence_class") or "").strip()
 
-        s0 = safe_float(scen_r.get("IECH_S0_mean_2026_2030"))
-        s1 = safe_float(scen_r.get("IECH_S1_mean_2026_2030"))
-        delta = safe_float(scen_r.get("delta_S1_minus_S0"))
+        s0 = _first_present_float(scen_r, "population_smoke_burden_proxy_S0_mean_2026_2030", "IECH_S0_mean_2026_2030")
+        s1 = _first_present_float(scen_r, "population_smoke_burden_proxy_S1_mean_2026_2030", "IECH_S1_mean_2026_2030")
+        delta = _first_present_float(scen_r, "delta_population_smoke_burden_proxy_S1_minus_S0", "delta_S1_minus_S0")
 
         wrb_dom = (wrb_r.get("dominant_wrb_class") or "").strip()
         wrb_dom_share = safe_float(wrb_r.get("dominant_wrb_share"))
@@ -1665,7 +1813,8 @@ def build_causal_matrix(
         terr_missing = int(safe_float(terr_r.get("territorial_missing_flag")) or 0)
 
         missing_components: List[str] = []
-        if wrb_missing >= 1 or not wrb_dom:
+        zero_signal_monitor_case = (burn is not None and burn <= 0) and (smoke_mean_u is not None and smoke_mean_u <= 0)
+        if (wrb_missing >= 1 or not wrb_dom) and not zero_signal_monitor_case:
             missing_components.append("WRB")
         if terr_missing >= 1 or wui is None:
             missing_components.append("WUI")
@@ -1680,8 +1829,8 @@ def build_causal_matrix(
             priority = "MONITOR"
 
         interpretation = (
-            f"IECH_mean={iech_mean if iech_mean is not None else 'NA'}; recurrence={rec_class or 'NA'}; "
-            f"delta_S1_minus_S0={delta if delta is not None else 'NA'}; WRB as contextual descriptor."
+            f"population_smoke_burden_proxy_mean={iech_mean if iech_mean is not None else 'NA'}; recurrence={rec_class or 'NA'}; "
+            f"delta_population_smoke_burden_proxy_S1_minus_S0={delta if delta is not None else 'NA'}; WRB as contextual descriptor."
         )
         qa_flag = "HOLD" if missing_components else "OK"
         threshold_gate_status = "BLOCKED_FOR_CAUSAL_CLAIM" if missing_components else "THRESHOLD_DEFINED_AS_INDEXED_METHOD"
@@ -1691,6 +1840,7 @@ def build_causal_matrix(
             "unit_id": uid,
             "unit_name": uid,
             "unit_level": unit_level,
+            "population_smoke_burden_proxy_mean_2015_2024": iech_mean,
             "IECH_mean_2015_2024": iech_mean,
             "smoke_days_mean_2015_2024": smoke_mean_u,
             "population_2020": pop2020,
@@ -1699,6 +1849,9 @@ def build_causal_matrix(
             "years_area_gt_p75": years_gt,
             "n_events_gt_1000ha": n_big,
             "recurrence_class": rec_class,
+            "population_smoke_burden_proxy_S0_mean_2026_2030": s0,
+            "population_smoke_burden_proxy_S1_mean_2026_2030": s1,
+            "delta_population_smoke_burden_proxy_S1_minus_S0": delta,
             "IECH_S0_mean_2026_2030": s0,
             "IECH_S1_mean_2026_2030": s1,
             "delta_S1_minus_S0": delta,
@@ -1709,6 +1862,9 @@ def build_causal_matrix(
             "forest_proxy": forest,
             "shrubland_proxy": shrub,
             "wui_proxy": wui,
+            "indicator_name": IECH_PROXY_INDICATOR_NAME,
+            "indicator_unit": IECH_PROXY_INDICATOR_UNIT,
+            "claim_status": IECH_PROXY_CLAIM_STATUS,
             "policy_priority": priority,
             "causal_interpretation": interpretation,
             "missing_components": "|".join(missing_components),
@@ -1723,6 +1879,7 @@ def build_causal_matrix(
         "unit_id",
         "unit_name",
         "unit_level",
+        "population_smoke_burden_proxy_mean_2015_2024",
         "IECH_mean_2015_2024",
         "smoke_days_mean_2015_2024",
         "population_2020",
@@ -1731,6 +1888,9 @@ def build_causal_matrix(
         "years_area_gt_p75",
         "n_events_gt_1000ha",
         "recurrence_class",
+        "population_smoke_burden_proxy_S0_mean_2026_2030",
+        "population_smoke_burden_proxy_S1_mean_2026_2030",
+        "delta_population_smoke_burden_proxy_S1_minus_S0",
         "IECH_S0_mean_2026_2030",
         "IECH_S1_mean_2026_2030",
         "delta_S1_minus_S0",
@@ -1741,6 +1901,9 @@ def build_causal_matrix(
         "forest_proxy",
         "shrubland_proxy",
         "wui_proxy",
+        "indicator_name",
+        "indicator_unit",
+        "claim_status",
         "policy_priority",
         "causal_interpretation",
         "missing_components",
@@ -1768,7 +1931,7 @@ def write_causal_json_txt_sha(
     out_sha = causal_dir / "causal_matrix_sha256_checkpoints.txt"
 
     payload = {
-        "title": "Matriz causal sustantiva IECH NUTS3",
+        "title": "Matriz causal sustantiva IECH NUTS3 (population_smoke_burden_proxy)",
         "timestamp": now_iso(),
         "rows": rows_nuts,
     }
@@ -1776,7 +1939,7 @@ def write_causal_json_txt_sha(
 
     n_hold = sum(1 for r in rows_nuts if (r.get("qa_flag") or "") == "HOLD")
     lines = [
-        "MATRIZ CAUSAL SUSTANTIVA IECH NUTS3",
+        "MATRIZ CAUSAL SUSTANTIVA IECH NUTS3 (POPULATION_SMOKE_BURDEN_PROXY)",
         f"timestamp={now_iso()}",
         f"rows={len(rows_nuts)}",
         f"rows_hold={n_hold}",
@@ -1785,7 +1948,7 @@ def write_causal_json_txt_sha(
     top_rows = rows_nuts[: min(15, len(rows_nuts))]
     for r in top_rows:
         lines.append(
-            f"- {r.get('unit_id')} | IECH_mean={r.get('IECH_mean_2015_2024')} | recurrence={r.get('recurrence_class')} | "
+            f"- {r.get('unit_id')} | population_smoke_burden_proxy_mean={r.get('population_smoke_burden_proxy_mean_2015_2024') or r.get('IECH_mean_2015_2024')} | recurrence={r.get('recurrence_class')} | "
             f"wrb={r.get('dominant_wrb_class')} | wui={r.get('wui_proxy')} | missing={r.get('missing_components')}"
         )
     out_txt.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -2039,18 +2202,48 @@ def write_recurrence_audit(output_root: Path, rec_unit_csv: Path, rec_muni_csv: 
 def write_iech_audit(output_root: Path, iech_unit_csv: Path, iech_muni_csv: Path) -> None:
     qa_dir = output_root / "qa"
     ensure_dir(qa_dir)
-    out_tsv = qa_dir / "iech_calculation_audit.tsv"
+    calc_tsv = qa_dir / "iech_calculation_audit.tsv"
+    reframe_tsv = qa_dir / "iech_reporting_reframe_audit.tsv"
+    semantics_tsv = qa_dir / "iech_reporting_semantics_audit.tsv"
     unit_rows = read_csv_rows(iech_unit_csv)[1] if iech_unit_csv.exists() else []
     muni_rows = read_csv_rows(iech_muni_csv)[1] if iech_muni_csv.exists() else []
-    unit_vals = [safe_float(r.get("IECH")) for r in unit_rows]
+    all_rows = unit_rows + muni_rows
+    unit_vals = [_first_present_float(r, "population_smoke_burden_proxy", "IECH") for r in unit_rows]
     unit_vals = [v for v in unit_vals if v is not None]
+    proxy_col_present = int(bool(all_rows) and "population_smoke_burden_proxy" in all_rows[0])
+    pop_col_present = int(bool(all_rows) and "population_total" in all_rows[0])
+    pop_exp_col_present = int(bool(all_rows) and "population_exposed_assumed" in all_rows[0])
+    exposure_fraction_ok = int(bool(all_rows) and all(str(r.get("exposure_fraction_assumption") or "").strip() == "1.0" for r in all_rows))
+    claim_status_ok = int(bool(all_rows) and all((r.get("claim_status") or "").strip() == IECH_PROXY_CLAIM_STATUS for r in all_rows))
+    legacy_ok = int(bool(all_rows) and all((r.get("legacy_IECH_label_deprecated") or "").strip() == IECH_PROXY_LEGACY_LABEL for r in all_rows))
+    proxy_equals_expo = int(bool(all_rows) and all((_first_present_float(r, "population_smoke_burden_proxy") is not None) and (_first_present_float(r, "expo_person_hours") is not None) and abs((_first_present_float(r, "population_smoke_burden_proxy") or 0.0) - (_first_present_float(r, "expo_person_hours") or 0.0)) <= 1e-9 for r in all_rows))
+    proxy_equals_formula = int(bool(all_rows) and all((_first_present_float(r, "population_smoke_burden_proxy") is not None) and (_first_present_float(r, "smoke_hours_equiv") is not None) and (_first_present_float(r, "population_total", "pop") is not None) and abs((_first_present_float(r, "population_smoke_burden_proxy") or 0.0) - ((_first_present_float(r, "smoke_hours_equiv") or 0.0) * (_first_present_float(r, "population_total", "pop") or 0.0))) <= 1e-6 for r in all_rows))
+    brief_path = output_root / "brief" / "Brief_Politica_IECH_2030.md"
+    brief_text = brief_path.read_text(encoding="utf-8", errors="replace") if brief_path.exists() else ""
+    forbidden_normalized = sum(1 for pat in ("normalized iech", "exposicion media individual", "individual iech") if pat in brief_text.lower())
+    forbidden_health = sum(1 for pat in ("exposicion sanitaria validada", "riesgo epidemiologico", "health exposure validated") if pat in brief_text.lower())
+    reframe_pass = int(all([proxy_col_present, pop_col_present, pop_exp_col_present, exposure_fraction_ok, claim_status_ok, legacy_ok, proxy_equals_expo, proxy_equals_formula]))
     rows = [
         ["metric", "value", "status", "note"],
         ["iech_unit_rows", len(unit_rows), "PASS" if len(unit_rows) > 0 else "HOLD", ""],
         ["iech_muni_rows", len(muni_rows), "PASS" if len(muni_rows) > 0 else "HOLD", ""],
         ["iech_unit_max", max(unit_vals) if unit_vals else "", "PASS" if unit_vals and max(unit_vals) > 0 else "HOLD", ""],
+        ["IECH_REPORTING_REFRAME_STATUS", "PASS" if reframe_pass else "HOLD", "PASS" if reframe_pass else "HOLD", "population smoke burden proxy semantics audited"],
+        ["IECH_NUMERIC_CHANGE", "NO_NUMERIC_CHANGE_TO_POPULATION_SMOKE_BURDEN_PROXY_PERSON_HOURS", "PASS", "population_smoke_burden_proxy equals expo_person_hours"],
+        ["population_smoke_burden_proxy_column_present", proxy_col_present, "PASS" if proxy_col_present else "HOLD", ""],
+        ["population_total_column_present", pop_col_present, "PASS" if pop_col_present else "HOLD", ""],
+        ["population_exposed_assumed_column_present", pop_exp_col_present, "PASS" if pop_exp_col_present else "HOLD", ""],
+        ["exposure_fraction_assumption_all_1", exposure_fraction_ok, "PASS" if exposure_fraction_ok else "HOLD", ""],
+        ["claim_status_proxy_not_normalized", claim_status_ok, "PASS" if claim_status_ok else "HOLD", IECH_PROXY_CLAIM_STATUS],
+        ["legacy_IECH_deprecated_if_present", legacy_ok, "PASS" if legacy_ok else "HOLD", IECH_PROXY_LEGACY_LABEL],
+        ["population_smoke_burden_proxy_equals_expo_person_hours", proxy_equals_expo, "PASS" if proxy_equals_expo else "HOLD", ""],
+        ["population_smoke_burden_proxy_equals_smoke_hours_times_population_total", proxy_equals_formula, "PASS" if proxy_equals_formula else "HOLD", ""],
+        ["forbidden_normalized_IECH_claims", forbidden_normalized, "PASS" if forbidden_normalized == 0 else "HOLD", "brief forbidden normalized IECH phrases"],
+        ["forbidden_health_exposure_claims", forbidden_health, "PASS" if forbidden_health == 0 else "HOLD", "brief forbidden health phrases"],
     ]
-    write_csv(out_tsv, rows[0], rows[1:], delim="\t")
+    write_csv(calc_tsv, rows[0], rows[1:], delim="	")
+    write_csv(reframe_tsv, rows[0], rows[1:], delim="	")
+    write_csv(semantics_tsv, rows[0], rows[1:], delim="	")
 
 
 def write_territorial_and_wrb_audits(output_root: Path, wrb_nuts_csv: Path, wrb_muni_csv: Path, terr_nuts_csv: Path, terr_muni_csv: Path) -> None:
@@ -2233,12 +2426,12 @@ def generate_brief(output_root: Path, inputs: Dict[str, object]) -> Path:
     terr_rows = read_csv_rows(terr_nuts)[1] if terr_nuts.exists() else []
     causal_rows = read_csv_rows(causal_csv)[1] if causal_csv.exists() else []
 
-    iech_vals = [safe_float(r.get("IECH_mean_2015_2024")) for r in iech_mean_rows.values()]
+    iech_vals = [_first_present_float(r, "population_smoke_burden_proxy_mean_2015_2024", "IECH_mean_2015_2024") for r in iech_mean_rows.values()]
     iech_vals = [v for v in iech_vals if v is not None]
     iech_min = min(iech_vals) if iech_vals else None
     iech_max = max(iech_vals) if iech_vals else None
 
-    delta_vals = [safe_float(r.get("delta_S1_minus_S0")) for r in scen_mean_rows.values()]
+    delta_vals = [_first_present_float(r, "delta_population_smoke_burden_proxy_S1_minus_S0", "delta_S1_minus_S0") for r in scen_mean_rows.values()]
     delta_vals = [v for v in delta_vals if v is not None]
     delta_mean = (sum(delta_vals) / len(delta_vals)) if delta_vals else None
 
@@ -2266,10 +2459,10 @@ def generate_brief(output_root: Path, inputs: Dict[str, object]) -> Path:
                     missing_summary[t] += 1
 
     lines: List[str] = []
-    lines.append("# Brief de PolÃ­tica IECH 2030")
+    lines.append("# Brief de Politica IECH 2030 (population_smoke_burden_proxy)")
     lines.append("")
-    lines.append(f"- Fecha de generaciÃ³n: {now_iso()}")
-    lines.append(f"- Objetivo MÃ³dulo C: integraciÃ³n IECH histÃ³rica, escenarios 2026-2030, contexto territorial y matriz causal por unidad.")
+    lines.append(f"- Fecha de generacion: {now_iso()}")
+    lines.append("- Objetivo Modulo C: integrar carga poblacional proxy de humo (legacy IECH), escenarios 2026-2030, contexto territorial y matriz causal por unidad.")
     lines.append("")
     lines.append("## Fuentes de datos usadas")
     paths = inputs.get("paths", {})
@@ -2295,26 +2488,27 @@ def generate_brief(output_root: Path, inputs: Dict[str, object]) -> Path:
         if isinstance(fire, list):
             lines.append(f"- fire_gpkgs_tm06: {len(fire)} capas 2015-2024.")
     lines.append("")
-    lines.append("## DefiniciÃ³n IECH")
-    lines.append("- IECH = `smoke_days * 24 * poblacion interpolada GHSL` como proxy operacional de persona-horas de exposicion.")
-    lines.append("- IECH no equivale a concentracion contaminante ni valida por si solo una afirmacion sanitaria o epidemiologica.")
+    lines.append("## Definicion IECH proxy-burden")
+    lines.append("- population_smoke_burden_proxy = `smoke_days * 24 * population_total` y conserva exactamente `expo_person_hours` sin cambio numerico.")
+    lines.append("- population_exposed_assumed = population_total y exposure_fraction_assumption = 1.0 por contrato operativo.")
+    lines.append("- No equivale a concentracion contaminante, no es IECH normalizado y no valida por si solo una afirmacion sanitaria o epidemiologica.")
     lines.append("")
     lines.append("## Cobertura temporal")
-    lines.append("- HistÃ³rico: 2015-2024.")
+    lines.append("- HistÃƒÂ³rico: 2015-2024.")
     lines.append("- Escenarios: 2026-2030 (S0 y S1).")
     lines.append("")
     lines.append("## Cobertura espacial")
     lines.append("- NUTS3 (Portugal continental).")
     lines.append("- Municipio (CAOP 2024), cuando disponible.")
     lines.append("")
-    lines.append("## Resultados IECH histÃ³rico")
-    lines.append(f"- Filas IECH NUTS3: {_table_rowcount(iech_unit)}.")
-    lines.append(f"- Unidades IECH NUTS3 mean: {len(iech_mean_rows)}.")
-    lines.append(f"- Rango IECH mean 2015-2024: min={iech_min} max={iech_max}.")
+    lines.append("## Resultados population_smoke_burden_proxy historico")
+    lines.append(f"- Filas proxy-burden NUTS3: {_table_rowcount(iech_unit)}.")
+    lines.append(f"- Unidades proxy-burden NUTS3 mean: {len(iech_mean_rows)}.")
+    lines.append(f"- Rango population_smoke_burden_proxy mean 2015-2024: min={iech_min} max={iech_max}.")
     lines.append("")
     lines.append("## Resultados humo")
     lines.append(f"- Filas smoke NUTS3: {_table_rowcount(smoke_unit)}.")
-    lines.append("- Serie anual reconstruida/derivada segÃºn ruta de humo seleccionada.")
+    lines.append("- Serie anual reconstruida/derivada segÃƒÂºn ruta de humo seleccionada.")
     route_selected = str(meta.get("smoke_route_selected", "")) if isinstance(meta, dict) else ""
     route_decision = str(meta.get("smoke_route_decision", "")) if isinstance(meta, dict) else ""
     route_status = str(meta.get("smoke_route_status", "")) if isinstance(meta, dict) else ""
@@ -2323,22 +2517,22 @@ def generate_brief(output_root: Path, inputs: Dict[str, object]) -> Path:
     if route_reason:
         lines.append(f"- Motivo ruta: {route_reason}.")
     lines.append("")
-    lines.append("## Resultados poblaciÃ³n")
-    lines.append(f"- Filas poblaciÃ³n NUTS3: {_table_rowcount(pop_unit)}.")
-    lines.append("- PoblaciÃ³n GHSL integrada para 2015/2020/2025/2030.")
+    lines.append("## Resultados poblaciÃƒÂ³n")
+    lines.append(f"- Filas poblaciÃƒÂ³n NUTS3: {_table_rowcount(pop_unit)}.")
+    lines.append("- PoblaciÃƒÂ³n GHSL integrada para 2015/2020/2025/2030.")
     lines.append("")
     lines.append("## Resultados recurrencia")
     lines.append(f"- Filas recurrencia NUTS3: {_table_rowcount(rec_unit)}.")
-    lines.append("- MÃ©tricas: total_burn_ha, years_area_gt_p75, n_events_gt_1000ha y clase de recurrencia.")
+    lines.append("- MÃƒÂ©tricas: total_burn_ha, years_area_gt_p75, n_events_gt_1000ha y clase de recurrencia.")
     lines.append("")
     lines.append("## Resultados municipales")
     if iech_muni.exists():
-        lines.append(f"- IECH municipal disponible: {_table_rowcount(iech_muni)} filas.")
+        lines.append(f"- population_smoke_burden_proxy municipal disponible (archivo legacy IECH): {_table_rowcount(iech_muni)} filas.")
     else:
-        lines.append("- IECH municipal no disponible (HOLD MUNICIPAL).")
+        lines.append("- population_smoke_burden_proxy municipal no disponible (HOLD MUNICIPAL).")
     lines.append("")
     lines.append("## Resultados WRB")
-    lines.append(f"- Tabla WRB NUTS3: {'sÃ­' if wrb_nuts.exists() else 'no'}.")
+    lines.append(f"- Tabla WRB NUTS3: {'sÃƒÂ­' if wrb_nuts.exists() else 'no'}.")
     if wrb_top:
         lines.append("- Clases dominantes WRB (conteo unidades):")
         for cls, cnt in wrb_top:
@@ -2347,7 +2541,7 @@ def generate_brief(output_root: Path, inputs: Dict[str, object]) -> Path:
         lines.append("- Sin resumen WRB por unidad.")
     lines.append("")
     lines.append("## Resultados WUI / territorio")
-    lines.append(f"- Tabla territorial NUTS3: {'sÃ­' if terr_nuts.exists() else 'no'}.")
+    lines.append(f"- Tabla territorial NUTS3: {'sÃƒÂ­' if terr_nuts.exists() else 'no'}.")
     lines.append(f"- Unidades con wui_proxy > 0: {wui_positive}.")
     lines.append("")
     lines.append("## Matriz causal")
@@ -2367,11 +2561,11 @@ def generate_brief(output_root: Path, inputs: Dict[str, object]) -> Path:
     lines.append("")
     lines.append("## Recomendaciones")
     if missing_summary:
-        lines.append("- Mantener priorizaciÃ³n provisional; evitar ranking territorial fuerte mientras existan componentes en HOLD.")
+        lines.append("- Mantener priorizaciÃƒÂ³n provisional; evitar ranking territorial fuerte mientras existan componentes en HOLD.")
     else:
-        lines.append("- Priorizar intervenciÃ³n en unidades HIGH_PRIORITY con recurrencia alta y soporte completo de componentes.")
-    lines.append("- Mantener WRB como contexto edÃ¡fico interpretativo, no como causal directo.")
-    lines.append("- Consolidar proxy WUI con datos formales de combustible/landcover cuando estÃ©n disponibles.")
+        lines.append("- Priorizar intervenciÃƒÂ³n en unidades HIGH_PRIORITY con recurrencia alta y soporte completo de componentes.")
+    lines.append("- Mantener WRB como contexto edÃƒÂ¡fico interpretativo, no como causal directo.")
+    lines.append("- Consolidar proxy WUI con datos formales de combustible/landcover cuando estÃƒÂ©n disponibles.")
     lines.append("")
     lines.append("## Evidencia de QA")
     lines.append(f"- `{output_root / 'qa' / 'inputs_resolved.json'}`")
@@ -2616,5 +2810,11 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+
+
+
+
 
 

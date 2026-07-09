@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ OBJECTIVES: List[Dict[str, object]] = [
         "required_database": "NUTS 2024 + CAOP 2024.1",
         "required_output": ["maps/IECH_ModuleC_master.gpkg", "qa/territorial_units_validation.tsv", "tables/municipio_unit_map.csv"],
         "producer_script": "moduleC_pipeline_v2.py + step7_matriz_causal.py",
-        "validation_rule": "Outputs territoriales existen y no vacíos.",
+        "validation_rule": "Outputs territoriales existen y no vacÃ­os.",
     },
     {
         "objective_id": "OC-02",
@@ -45,7 +45,7 @@ OBJECTIVES: List[Dict[str, object]] = [
         "required_database": "ardida_2015..2024_TM06.gpkg",
         "required_output": ["tables/recurrence_unit_2015_2024.csv", "tables/recurrence_municipio_2015_2024.csv", "qa/fire_ingestion_audit.tsv"],
         "producer_script": "moduleC_pipeline_v2.py + step7_matriz_causal.py",
-        "validation_rule": "Recurrence unit+municipio presentes y auditoría de ingestión presente.",
+        "validation_rule": "Recurrence unit+municipio presentes y auditorÃ­a de ingestiÃ³n presente.",
     },
     {
         "objective_id": "OC-03",
@@ -82,15 +82,15 @@ OBJECTIVES: List[Dict[str, object]] = [
     },
     {
         "objective_id": "OC-04",
-        "objective_name": "Población GHSL",
+        "objective_name": "PoblaciÃ³n GHSL",
         "required_database": "GHSL POP 2015/2020/2025/2030",
         "required_output": ["tables/pop_unit_2015_2025_2030.csv", "tables/pop_municipio_2015_2025_2030.csv", "qa/population_zonal_audit.tsv"],
         "producer_script": "moduleC_pipeline_v2.py + step7_matriz_causal.py",
-        "validation_rule": "Pop outputs presentes y auditoría zonal presente.",
+        "validation_rule": "Pop outputs presentes y auditorÃ­a zonal presente.",
     },
     {
         "objective_id": "OC-05",
-        "objective_name": "IECH histórico 2015-2024",
+        "objective_name": "IECH histÃ³rico 2015-2024",
         "required_database": "Smoke + GHSL",
         "required_output": [
             "tables/IECH_unit_2015_2024.csv",
@@ -98,9 +98,11 @@ OBJECTIVES: List[Dict[str, object]] = [
             "tables/IECH_municipio_2015_2024.csv",
             "tables/IECH_municipio_2015_2024_mean.csv",
             "qa/iech_calculation_audit.tsv",
+            "qa/iech_reporting_reframe_audit.tsv",
+            "qa/iech_reporting_semantics_audit.tsv",
         ],
         "producer_script": "moduleC_pipeline_v2.py + step7_matriz_causal.py",
-        "validation_rule": "IECH unit+municipio presentes y no degenerados.",
+        "validation_rule": "population_smoke_burden_proxy unit+municipio presentes, no degenerados y auditados sin cambio numerico.",
     },
     {
         "objective_id": "OC-06",
@@ -108,7 +110,7 @@ OBJECTIVES: List[Dict[str, object]] = [
         "required_database": "Incendios 2015-2024",
         "required_output": ["tables/recurrence_unit_2015_2024.csv", "tables/recurrence_municipio_2015_2024.csv", "qa/recurrence_classification_audit.tsv"],
         "producer_script": "moduleC_pipeline_v2.py + step7_matriz_causal.py",
-        "validation_rule": "Recurrence outputs completos + clasificación auditada.",
+        "validation_rule": "Recurrence outputs completos + clasificaciÃ³n auditada.",
     },
     {
         "objective_id": "OC-07",
@@ -116,7 +118,7 @@ OBJECTIVES: List[Dict[str, object]] = [
         "required_database": "GHSL built + proxies combustible",
         "required_output": ["tables/territorial_context_nuts3.csv", "tables/territorial_context_municipio.csv", "qa/territorial_variables_audit.tsv"],
         "producer_script": "step7_matriz_causal.py",
-        "validation_rule": "Contexto territorial existe y WUI no está totalmente vacío.",
+        "validation_rule": "Contexto territorial existe y WUI no estÃ¡ totalmente vacÃ­o.",
     },
     {
         "objective_id": "OC-08",
@@ -139,7 +141,7 @@ OBJECTIVES: List[Dict[str, object]] = [
             "brief/causal_matrix/causal_matrix_sha256_checkpoints.txt",
         ],
         "producer_script": "step7_matriz_causal.py",
-        "validation_rule": "No qa_flag=HOLD y missing_components vacío para cierre GO.",
+        "validation_rule": "No qa_flag=HOLD y missing_components vacÃ­o para cierre GO.",
     },
     {
         "objective_id": "OC-10",
@@ -154,19 +156,19 @@ OBJECTIVES: List[Dict[str, object]] = [
             "qa/scenario_audit.tsv",
         ],
         "producer_script": "moduleC_pipeline_v2.py + step7_matriz_causal.py",
-        "validation_rule": "Escenarios completos + auditoría presente.",
+        "validation_rule": "Escenarios completos + auditorÃ­a presente.",
     },
     {
         "objective_id": "OC-11",
-        "objective_name": "Brief de política",
-        "required_database": "Outputs científicos integrados",
+        "objective_name": "Brief de polÃ­tica",
+        "required_database": "Outputs cientÃ­ficos integrados",
         "required_output": ["brief/Brief_Politica_IECH_2030.md"],
         "producer_script": "step7_matriz_causal.py + step8",
         "validation_rule": "Brief sustantivo sin placeholders.",
     },
     {
         "objective_id": "OC-12",
-        "objective_name": "Cierre técnico reproducible",
+        "objective_name": "Cierre tÃ©cnico reproducible",
         "required_database": "Pipeline completo + Step8 + Step9",
         "required_output": [
             "qa/inputs_resolved.json",
@@ -418,8 +420,8 @@ def _check_oc03_v13_direct_contract(output_root: Path, inputs: Dict[str, object]
 
     iech_unit_rows = _v10b_read_rows_if_exists(output_root / "tables" / "IECH_unit_2015_2024_mean.csv")
     iech_muni_rows = _v10b_read_rows_if_exists(output_root / "tables" / "IECH_municipio_2015_2024_mean.csv")
-    unit_unique = _count_unique_numeric(iech_unit_rows, ["IECH_mean_2015_2024", "IECH_mean"])
-    muni_unique = _count_unique_numeric(iech_muni_rows, ["IECH_mean_2015_2024", "IECH_mean"])
+    unit_unique = _count_unique_numeric(iech_unit_rows, ["population_smoke_burden_proxy_mean_2015_2024", "IECH_mean_2015_2024", "population_smoke_burden_proxy_mean", "IECH_mean"])
+    muni_unique = _count_unique_numeric(iech_muni_rows, ["population_smoke_burden_proxy_mean_2015_2024", "IECH_mean_2015_2024", "population_smoke_burden_proxy_mean", "IECH_mean"])
     if unit_unique < 23:
         return False, f"IECH_unit_2015_2024_mean unique numeric values={unit_unique} < 23"
     if muni_unique < 278:
@@ -751,16 +753,24 @@ def _v10b_iech_non_degenerate(output_root: Path) -> Tuple[bool, str]:
         output_root / "tables" / "IECH_municipio_2015_2024_mean.csv",
     ]
     findings = []
+    preferred_cols = [
+        "population_smoke_burden_proxy_mean_2015_2024",
+        "IECH_mean_2015_2024",
+        "population_smoke_burden_proxy_mean",
+        "IECH_mean",
+        "population_smoke_burden_proxy",
+        "IECH",
+    ]
     for p in paths:
         rows = _v10b_read_rows_if_exists(p)
         if not rows:
             return False, f"{p.name} missing or unreadable."
         cols = list(rows[0].keys()) if rows else []
-        value_cols = [c for c in cols if "iech" in c.lower() and ("mean" in c.lower() or c.lower() == "iech")]
+        value_cols = [c for c in preferred_cols if c in cols]
         if not value_cols:
-            value_cols = [c for c in cols if "iech" in c.lower()]
+            value_cols = [c for c in cols if "iech" in c.lower() or "population_smoke_burden_proxy" in c.lower()]
         if not value_cols:
-            return False, f"{p.name} has no IECH numeric column."
+            return False, f"{p.name} has no IECH proxy-burden numeric column."
         c = value_cols[0]
         vals = []
         for r in rows:
@@ -769,12 +779,35 @@ def _v10b_iech_non_degenerate(output_root: Path) -> Tuple[bool, str]:
                 vals.append(round(float(v), 8))
         if not vals:
             findings.append(f"{p.name}:{c}:rows={len(rows)}:numeric_values=0")
-            return False, "IECH has no numeric values after delimiter-aware parsing: " + "; ".join(findings)
+            return False, "IECH proxy burden has no numeric values after delimiter-aware parsing: " + "; ".join(findings)
         uniq = len(set(vals))
         findings.append(f"{p.name}:{c}:rows={len(rows)}:unique={uniq}")
         if uniq <= 1:
-            return False, "IECH collapsed to one value across units: " + "; ".join(findings)
-    return True, "IECH non-degenerate: " + "; ".join(findings)
+            return False, "IECH proxy burden collapsed to one value across units: " + "; ".join(findings)
+
+    reframe_tsv = output_root / "qa" / "iech_reporting_semantics_audit.tsv"
+    if not reframe_tsv.exists():
+        reframe_tsv = output_root / "qa" / "iech_reporting_reframe_audit.tsv"
+    reframe_rows = _v10b_read_rows_if_exists(reframe_tsv)
+    if not reframe_rows:
+        return False, f"{reframe_tsv.name} missing or unreadable."
+    reframe_map = {}
+    for row in reframe_rows:
+        key = str(row.get("metric") or row.get("check_id") or "").strip()
+        if key and key not in reframe_map:
+            reframe_map[key] = str(row.get("status") or row.get("value") or row.get("observed") or "").strip()
+    required_pass = [
+        "IECH_REPORTING_REFRAME_STATUS",
+        "population_smoke_burden_proxy_column_present",
+        "claim_status_proxy_not_normalized",
+        "population_smoke_burden_proxy_equals_expo_person_hours",
+        "population_smoke_burden_proxy_equals_smoke_hours_times_population_total",
+        "legacy_IECH_deprecated_if_present",
+    ]
+    failing = [metric for metric in required_pass if reframe_map.get(metric, "").strip().upper() != "PASS"]
+    if failing:
+        return False, "IECH proxy burden semantic audit failed: " + ", ".join(failing)
+    return True, "IECH proxy burden non-degenerate and semantically audited: " + "; ".join(findings)
 
 
 def _read_metric_value_map(path: Path) -> Dict[str, str]:
@@ -1035,6 +1068,9 @@ def main() -> int:
         if status == "PASS" and args.mode == "pre":
             status = "PRECHECK_PASS"
             failure = spec_reason or "Canon + preconditions checked."
+        elif status == "PASS" and obj_id == "OC-05":
+            status = "PASS_WITH_PROXY_BURDEN_SEMANTICS"
+            failure = spec_reason or "Validated with population_smoke_burden_proxy semantics."
         elif status == "PASS":
             failure = spec_reason or "Validated."
 
@@ -1067,4 +1103,7 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+
 

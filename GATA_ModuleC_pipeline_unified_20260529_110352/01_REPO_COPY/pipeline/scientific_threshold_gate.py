@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 from __future__ import annotations
 
 import argparse
@@ -24,6 +24,11 @@ FORBIDDEN_PRIMARY_SOURCE_TOKENS = (
     "\\oc03_v12",
     "\\03_outputs\\oc03_v",
 )
+IECH_PROXY_FINAL_DECISION = "GO_WITH_PORTUGUESE_AQ_ANCHORED_PROXY_AND_POPULATION_BURDEN_SEMANTICS"
+IECH_PROXY_AQ_PROTOCOL = "GO_WITH_PORTUGUESE_AQ_ANCHORED_PROXY_PROTOCOL"
+IECH_PROXY_INDICATOR_NAME = "population_smoke_burden_proxy"
+IECH_PROXY_INDICATOR_UNIT = "proxy person-hours"
+IECH_PROXY_CLAIM_STATUS = "OPERATIONAL_POPULATION_BURDEN_PROXY_NOT_NORMALIZED_IECH"
 
 
 def now_iso() -> str:
@@ -59,6 +64,22 @@ def safe_float(v: object):
         return float(s)
     except Exception:
         return None
+
+
+def _first_present_text(row: Dict[str, str], *keys: str) -> str:
+    for key in keys:
+        value = str(row.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _first_present_float(row: Dict[str, str], *keys: str):
+    for key in keys:
+        value = safe_float(row.get(key))
+        if value is not None:
+            return value
+    return None
 
 
 def _norm_path_text(value: object) -> str:
@@ -143,15 +164,32 @@ def evaluate_iech_ranking(iech_mean_csv: Path) -> Tuple[str, str, int]:
     if not iech_mean_csv.exists():
         return "BLOCKED_FOR_REQUIRED_VARIABLE", "IECH_unit_2015_2024_mean.csv missing", 0
     rows = read_csv_rows(iech_mean_csv)
+    if not rows:
+        return "BLOCKED_FOR_REQUIRED_VARIABLE", "IECH_unit_2015_2024_mean.csv empty", 0
+    column = ""
+    for candidate in (
+        "population_smoke_burden_proxy_mean_2015_2024",
+        "IECH_mean_2015_2024",
+        "population_smoke_burden_proxy_mean",
+        "IECH_mean",
+        IECH_PROXY_INDICATOR_NAME,
+        "IECH",
+    ):
+        if candidate in rows[0]:
+            column = candidate
+            break
+    if not column:
+        return "BLOCKED_FOR_REQUIRED_VARIABLE", "No IECH proxy-burden mean column found", 0
     vals = []
     for r in rows:
-        v = safe_float(r.get("IECH_mean_2015_2024"))
+        v = safe_float(r.get(column))
         if v is not None:
             vals.append(round(v, 8))
     n_unique = len(set(vals))
+    observed = f"{column} unique count={n_unique}"
     if n_unique <= 1:
-        return "BLOCKED_IECH_RANKING", f"IECH mean unique count={n_unique}", n_unique
-    return "THRESHOLD_DEFINED_AS_INTERNAL_STATISTICAL_CLASSIFICATION", f"IECH mean unique count={n_unique}", n_unique
+        return "BLOCKED_IECH_RANKING", observed, n_unique
+    return "THRESHOLD_DEFINED_AS_INTERNAL_STATISTICAL_CLASSIFICATION", observed, n_unique
 
 
 def evaluate_health_claim_support(smoke_csv: Path) -> Tuple[str, str]:
@@ -379,21 +417,99 @@ def evaluate_population_cancellation(iech_hist_csv: Path) -> Tuple[str, str]:
     if not rows:
         return "BLOCKED_FOR_REQUIRED_VARIABLE", "IECH_unit_2015_2024.csv empty"
 
-    comparable = 0
-    equal_rows = 0
+    comparable_proxy_vs_expo = 0
+    equal_proxy_vs_expo = 0
+    comparable_proxy_vs_hours = 0
+    equal_proxy_vs_hours = 0
+    proxy_claim_rows = 0
     for r in rows:
-        iech = safe_float(r.get("IECH"))
-        hours = safe_float(r.get("smoke_hours_equiv"))
-        if iech is None or hours is None:
-            continue
-        comparable += 1
-        if abs(iech - hours) <= 1e-9:
-            equal_rows += 1
-    if comparable == 0:
-        return "BLOCKED_FOR_REQUIRED_VARIABLE", "No comparable IECH/smoke_hours_equiv rows"
-    if equal_rows == comparable:
-        return "BLOCKED_POPULATION_EXPOSURE_CLAIM", f"IECH equals smoke_hours_equiv in {equal_rows}/{comparable} rows"
-    return "THRESHOLD_DEFINED_AS_INDEXED_METHOD", f"IECH differs from smoke_hours_equiv in {comparable - equal_rows}/{comparable} rows"
+        proxy_value = _first_present_float(r, IECH_PROXY_INDICATOR_NAME, "IECH")
+        expo_value = _first_present_float(r, "expo_person_hours")
+        hours_value = _first_present_float(r, "smoke_hours_equiv")
+        claim_status = _first_present_text(r, "claim_status")
+        if claim_status == IECH_PROXY_CLAIM_STATUS:
+            proxy_claim_rows += 1
+        if proxy_value is not None and expo_value is not None:
+            comparable_proxy_vs_expo += 1
+            if abs(proxy_value - expo_value) <= 1e-9:
+                equal_proxy_vs_expo += 1
+        if proxy_value is not None and hours_value is not None:
+            comparable_proxy_vs_hours += 1
+            if abs(proxy_value - hours_value) <= 1e-9:
+                equal_proxy_vs_hours += 1
+    if comparable_proxy_vs_expo == 0 and comparable_proxy_vs_hours == 0:
+        return "BLOCKED_FOR_REQUIRED_VARIABLE", "No comparable IECH proxy-burden rows"
+    if comparable_proxy_vs_hours > 0 and equal_proxy_vs_hours == comparable_proxy_vs_hours:
+        return (
+            "BLOCKED_POPULATION_EXPOSURE_CLAIM",
+            f"{IECH_PROXY_INDICATOR_NAME} equals smoke_hours_equiv in {equal_proxy_vs_hours}/{comparable_proxy_vs_hours} rows",
+        )
+    if comparable_proxy_vs_expo > 0 and equal_proxy_vs_expo == comparable_proxy_vs_expo:
+        claim_note = IECH_PROXY_CLAIM_STATUS if proxy_claim_rows > 0 else "claim_status not declared"
+        return (
+            "OPERATIONAL_POPULATION_SMOKE_BURDEN_PROXY",
+            f"{IECH_PROXY_INDICATOR_NAME} equals expo_person_hours in {equal_proxy_vs_expo}/{comparable_proxy_vs_expo} rows; {claim_note}",
+        )
+    if comparable_proxy_vs_expo > 0:
+        unequal_rows = comparable_proxy_vs_expo - equal_proxy_vs_expo
+        return (
+            "THRESHOLD_DEFINED_AS_INDEXED_METHOD",
+            f"{IECH_PROXY_INDICATOR_NAME} differs from expo_person_hours in {unequal_rows}/{comparable_proxy_vs_expo} rows",
+        )
+    unequal_rows = comparable_proxy_vs_hours - equal_proxy_vs_hours
+    return (
+        "THRESHOLD_DEFINED_AS_INDEXED_METHOD",
+        f"{IECH_PROXY_INDICATOR_NAME} differs from smoke_hours_equiv in {unequal_rows}/{comparable_proxy_vs_hours} rows",
+    )
+
+
+def evaluate_iech_proxy_semantics(reframe_audit_tsv: Path) -> Tuple[str, str]:
+    if not reframe_audit_tsv.exists():
+        return "BLOCKED_PROXY_BURDEN_SEMANTICS", f"{reframe_audit_tsv.name} missing"
+    rows = read_csv_rows(reframe_audit_tsv)
+    if not rows:
+        return "BLOCKED_PROXY_BURDEN_SEMANTICS", f"{reframe_audit_tsv.name} empty"
+    metric_map = {str(r.get("metric") or "").strip().lower(): r for r in rows if str(r.get("metric") or "").strip()}
+
+    def metric_text(*keys: str) -> str:
+        return _metric_text_value(metric_map, *keys)
+
+    def metric_status(*keys: str) -> str:
+        for key in keys:
+            row = metric_map.get(key.strip().lower())
+            if not row:
+                continue
+            value = str(row.get("status") or row.get("value") or row.get("observed") or "").strip()
+            if value:
+                return value
+        return ""
+
+    required_pass = [
+        "IECH_REPORTING_REFRAME_STATUS",
+        "population_smoke_burden_proxy_column_present",
+        "population_total_column_present",
+        "population_exposed_assumed_column_present",
+        "exposure_fraction_assumption_all_1",
+        "claim_status_proxy_not_normalized",
+        "legacy_IECH_deprecated_if_present",
+        "population_smoke_burden_proxy_equals_expo_person_hours",
+        "population_smoke_burden_proxy_equals_smoke_hours_times_population_total",
+    ]
+    failed = [key for key in required_pass if metric_status(key).upper() != "PASS"]
+    forbidden_normalized = int(safe_float(metric_text("forbidden_normalized_IECH_claims")) or 0)
+    forbidden_health = int(safe_float(metric_text("forbidden_health_exposure_claims")) or 0)
+    if failed or forbidden_normalized > 0 or forbidden_health > 0:
+        detail = []
+        if failed:
+            detail.append("failed=" + ",".join(failed))
+        detail.append(f"forbidden_normalized_IECH_claims={forbidden_normalized}")
+        detail.append(f"forbidden_health_exposure_claims={forbidden_health}")
+        return "BLOCKED_PROXY_BURDEN_SEMANTICS", "; ".join(detail)
+    claim_status = metric_text("claim_status_proxy_not_normalized") or IECH_PROXY_CLAIM_STATUS
+    return (
+        "THRESHOLD_DEFINED_AS_INDEXED_METHOD",
+        f"{IECH_PROXY_INDICATOR_NAME} semantics verified; claim_status={claim_status}; exposure_fraction=1.0; population_exposed=population_total",
+    )
 
 
 def evaluate_warning_inventory(warning_tsv: Path) -> Tuple[str, str, int]:
@@ -451,9 +567,18 @@ def audit_brief_claims(brief_path: Path, active_blocks: List[str]) -> List[Tuple
         "BLOCKED_FOR_CAUSAL_CLAIM": [r"\bcauses\b", r"\bdrives\b", r"\bexplains\b"],
         "BLOCKED_WRB_ZONAL_CLAIM": [r"dominant soil by nuts3", r"wrb-driven priority"],
         "BLOCKED_VALIDATED_SCENARIO_CLAIM": [r"\bs1 predicts\b", r"validated prevention effect", r"expected reduction"],
+        "BLOCKED_NORMALIZED_IECH_CLAIM": [
+            r"normalized iech",
+            r"per\s*capita iech",
+            r"individual iech",
+            r"individual smoke exposure",
+            r"population exposed differs from total",
+            r"exposure fraction\s*<\s*1",
+        ],
     }
+    scan_blocks = sorted(set(active_blocks) | {"BLOCKED_NORMALIZED_IECH_CLAIM"})
     hits: List[Tuple[int, str, str, str]] = []
-    for block in active_blocks:
+    for block in scan_blocks:
         pats = forbidden_by_block.get(block, [])
         for i, line in enumerate(lines, start=1):
             for pat in pats:
@@ -663,15 +788,34 @@ def main() -> int:
         "IECH-POP-001",
         "Population exposure cancellation check",
         str(iech_hist_csv),
-        "IECH vs smoke_hours_equiv",
+        f"{IECH_PROXY_INDICATOR_NAME} vs expo_person_hours/smoke_hours_equiv",
         pop_cancel_obs,
-        "IECH must not collapse to smoke_hours_equiv for all rows when used for exposure claim.",
+        f"{IECH_PROXY_INDICATOR_NAME} may equal expo_person_hours but must not collapse to smoke_hours_equiv when used as a population burden proxy.",
         "SRC-GATE-IECH-POP-CANCEL",
         "METHODOLOGICAL_GATE",
         pop_cancel_status,
         "Operational proxy interpretation with explicit limitation.",
-        "Population exposure differentiation claim when IECH fully cancels to smoke_hours_equiv.",
+        "Population exposure differentiation claim when the proxy collapses to smoke_hours_equiv or is normalized as individual IECH.",
         "NONE",
+    )
+
+    iech_semantics_tsv = qa_dir / "iech_reporting_semantics_audit.tsv"
+    if not iech_semantics_tsv.exists():
+        iech_semantics_tsv = qa_dir / "iech_reporting_reframe_audit.tsv"
+    iech_semantic_status, iech_semantic_obs = evaluate_iech_proxy_semantics(iech_semantics_tsv)
+    add_gate(
+        "IECH-SEM-001",
+        "IECH proxy burden semantic scope",
+        str(iech_semantics_tsv),
+        "indicator_name, claim_status, population_exposed, exposure_fraction, forbidden normalized/health claims",
+        iech_semantic_obs,
+        "IECH reporting must remain a population_smoke_burden_proxy with population_exposed=population_total and exposure_fraction=1.0, while normalized/individual/health claims remain blocked.",
+        "SRC-GATE-IECH-PROXY-BURDEN",
+        "METHODOLOGICAL_GATE",
+        iech_semantic_status,
+        "Population smoke burden proxy semantics with explicit non-health limitation.",
+        "Normalized IECH, individual exposure, differential exposed population, or health exposure claims.",
+        "NO-GO_SCIENTIFIC_THRESHOLD" if iech_semantic_status.startswith("BLOCKED") else "NONE",
     )
 
     warning_status, warning_obs, warning_blocked = evaluate_warning_inventory(warning_inventory)
@@ -695,13 +839,13 @@ def main() -> int:
         "IECH-003",
         "IECH ranking validity",
         str(iech_mean_csv),
-        "IECH_mean_2015_2024",
+        "population_smoke_burden_proxy_mean_2015_2024 / IECH_mean_2015_2024",
         iech_obs,
-        "count_unique(IECH_mean_2015_2024 across units) must be > 1 for ranking claims.",
+        "count_unique(population_smoke_burden_proxy_mean_2015_2024 across units) must be > 1 for ranking claims.",
         "SRC-GATE-IECH-RANKING",
         "METHODOLOGICAL_GATE",
         iech_status,
-        "IECH common baseline claim when ranking is blocked.",
+        "Population smoke burden proxy baseline claim when ranking is blocked.",
         "Highest/high IECH territorial ranking when n_unique<=1.",
         "NO-GO_SCIENTIFIC_THRESHOLD" if iech_status.startswith("BLOCKED") else "NONE",
     )
@@ -855,12 +999,30 @@ def main() -> int:
     else:
         scientific_decision = "GO"
 
+    aq_protocol_decision = portuguese_aq_gate.get("aq_protocol_decision") or "n/a"
+    if scientific_decision == "GO" and aq_protocol_decision == IECH_PROXY_AQ_PROTOCOL:
+        final_operational_decision = IECH_PROXY_FINAL_DECISION
+    elif scientific_decision == "GO":
+        final_operational_decision = aq_protocol_decision
+    else:
+        final_operational_decision = scientific_decision
+
     decision_lines = [
         "# Runtime Scientific Closure Decision",
         "",
         f"- timestamp: {now_iso()}",
         f"- output_root: \"{output_root}\"",
         f"- scientific_threshold_decision: **{scientific_decision}**",
+        f"- final_operational_decision: **{final_operational_decision}**",
+        f"- indicator_name: {IECH_PROXY_INDICATOR_NAME}",
+        f"- indicator_unit: {IECH_PROXY_INDICATOR_UNIT}",
+        f"- claim_status: {IECH_PROXY_CLAIM_STATUS}",
+        "- population_smoke_burden_proxy_formula: smoke_hours_equiv * population_total",
+        "- population_exposed_assumed: population_total",
+        "- exposure_fraction_assumption: 1.0",
+        "- normalized_IECH_individual_claim: BLOCKED",
+        "- population_exposed_differential_claim: BLOCKED",
+        "- proxy_population_burden_claim: ALLOWED",
         "",
         "## Active blocked states",
     ]
@@ -879,9 +1041,15 @@ def main() -> int:
             "## Portuguese AQ Validation",
             f"- base_smoke_contract_for_oc03c_status: {oc03c_base_gate.get('base_smoke_contract_for_oc03c_status') or oc03c_base_gate.get('final_state') or 'n/a'}",
             f"- portuguese_aq_validation_status: {portuguese_aq_gate.get('portuguese_aq_validation_status') or 'n/a'}",
-            f"- aq_protocol_decision: {portuguese_aq_gate.get('aq_protocol_decision') or 'n/a'}",
+            f"- aq_protocol_decision: {aq_protocol_decision}",
             f"- claim_disposition: {portuguese_aq_gate.get('claim_disposition') or 'n/a'}",
             f"- health_exposure_claim_status: {portuguese_aq_gate.get('health_exposure_claim_status') or 'n/a'}",
+            "",
+            "## IECH Proxy Burden Semantics",
+            f"- semantic_gate_status: {iech_semantic_status}",
+            f"- semantic_gate_observed: {iech_semantic_obs}",
+            "- allowed_scope: population burden proxy only",
+            "- blocked_scope: normalized IECH, individual exposure, differential exposed population, health exposure",
             "",
             "## Contracts",
             "- scientific_validation_gate.tsv generated",
@@ -906,3 +1074,7 @@ if __name__ == "__main__":
     except Exception as exc:
         print(f"[NO-GO] scientific_threshold_gate exception: {exc}")
         sys.exit(2)
+
+
+
+

@@ -1,0 +1,46 @@
+# IECH Reporting Reframe Runtime Contract Audit
+
+- repo_root: `D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110352\01_REPO_COPY`
+- branch: `codex/wrb-source-route-repair-b9cb373d`
+- HEAD_SHA: `c1cc438ad844c63b297e182564360c3250f00a49`
+- input_markdown_files_read:
+  - `C:\Users\X412\Downloads\IECH_REPORTING_REFRAME_AND_FULL_RUNTIME_GOAL_20260706.md`
+  - `C:\Users\X412\Downloads\IECH_REPORTING_REFRAME_NO_CALC_CHANGE_20260705.md`
+  - `C:\Users\X412\Downloads\WRB_CANONICAL_METHOD_CONTRACT_LOCAL_ONLY_20260705.md`
+- active_data_roots:
+  - `D:\Mestrado\GATA_2025_2026\Prueba_aislada\ISO_GATA_20260121_130505\Incendios_Nueva version`
+  - `D:\Mestrado\GATA_2025_2026\Prueba_aislada\ISO_GATA_20260121_130505\Complementariedad de analisis\Module C\Datos`
+  - `D:\Mestrado\GATA_2025_2026\Prueba_aislada\ISO_GATA_20260121_130505\Complementariedad de analisis\Module C\Datos_RECOVERY_PORTUGUESE_AGENCIES_2015_2024`
+  - `D:\Mestrado\GATA_2025_2026\Prueba_aislada\ISO_GATA_20260121_130505\Complementariedad de analisis\Module C\Datos_RECOVERY_2015_2024`
+  - `D:\Mestrado\GATA_2025_2026\Prueba_aislada\ISO_GATA_20260121_130505\Complementariedad de analisis\Module C\Datos_RECOVERY_2015_2024_PIPELINE_GRIB`
+- forbidden_roots_detected: none in the inspected contract state; runtime readback still pending
+- current_IECH_tokens_found:
+  - `IECH`
+  - `IECH_mean_2015_2024`
+  - `IECH_S0_mean_2026_2030`
+  - `IECH_S1_mean_2026_2030`
+  - `delta_S1_minus_S0`
+  - `expo_person_hours`
+  - `proxy_person_hours`
+  - `IECH=smoke_days*24*pop_interp(2015,2020,2025);proxy_person_hours`
+  - `IECH=smoke_days*24*pop_interp(2025,2030);proxy_person_hours`
+- current_WRB_source_route_tokens_found:
+  - `WRB_working_TM06_from_tiles`
+  - `MostProbable.rat.json`
+  - `wrb_2022_prevalidation.tsv`
+  - `wrb_integration_audit.tsv`
+  - `BLOCKED_WRB_ZONAL_CLAIM`
+- files_planned_for_edit:
+  - `pipeline/moduleC_pipeline_v2.py`
+  - `pipeline/RUN_QGIS/STEP7_MATRIZ_CAUSAL/step7_matriz_causal.py`
+  - `pipeline/scientific_threshold_gate.py`
+  - `pipeline/qa_gate_v2.py`
+  - `pipeline/validate_modulec_objectives_canon.py`
+  - `pipeline/RUN_QGIS/STEP9_FINAL_MASTER_PACK/run_step9_final_master_pack.ps1`
+  - `pipeline/RUN_QGIS/STEP9_FINAL_MASTER_PACK/r6k_refresh_runtime_closure_decision.ps1`
+  - `tests/test_iech_reporting_reframe_no_calc_change.py`
+  - `tests/test_iech_population_smoke_burden_proxy_columns.py`
+  - `tests/test_iech_claims_block_normalized_and_health.py`
+  - `tests/test_iech_legacy_columns_deprecated.py`
+- numeric_calculation_contract: preserve `expo_person_hours = smoke_hours_equiv * population_total` with no numeric change
+- runtime_full_allowed_or_blocked: allowed at audit start; branch, SHA and clean worktree verified

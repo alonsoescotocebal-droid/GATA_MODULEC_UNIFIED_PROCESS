@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 import argparse
@@ -303,6 +303,7 @@ def evaluate_output_root(output_root: Path) -> Tuple[str, str, List[str], List[D
             notes.append(f"could not parse causal matrix csv: {exc}")
 
     brief_path = output_root / "brief/Brief_Politica_IECH_2030.md"
+    brief_text = ""
     if not brief_path.exists():
         holds.append("HOLD BRIEF")
     else:
@@ -317,6 +318,84 @@ def evaluate_output_root(output_root: Path) -> Tuple[str, str, List[str], List[D
         except Exception as exc:
             holds.append("HOLD BRIEF")
             notes.append(f"could not parse brief: {exc}")
+
+    semantics_tsv = output_root / "qa/iech_reporting_semantics_audit.tsv"
+    reframe_tsv = output_root / "qa/iech_reporting_reframe_audit.tsv"
+    audit_tsv = semantics_tsv if semantics_tsv.exists() else reframe_tsv
+    if not audit_tsv.exists():
+        holds.append("HOLD IECH REPORTING REFRAME")
+        notes.append("iech_reporting_semantics_audit.tsv missing")
+    else:
+        try:
+            reframe_rows = read_csv_rows(audit_tsv)
+            if not reframe_rows:
+                holds.append("HOLD IECH REPORTING REFRAME")
+                notes.append(f"{audit_tsv.name} has 0 rows")
+            else:
+                metric_map = {str(r.get("metric") or "").strip().lower(): r for r in reframe_rows if str(r.get("metric") or "").strip()}
+
+                def reframe_text(*keys: str) -> str:
+                    for key in keys:
+                        row = metric_map.get(key.strip().lower())
+                        if not row:
+                            continue
+                        value = str(row.get("value") or row.get("status") or row.get("observed") or "").strip()
+                        if value:
+                            return value
+                    return ""
+
+                def reframe_status(*keys: str) -> str:
+                    for key in keys:
+                        row = metric_map.get(key.strip().lower())
+                        if not row:
+                            continue
+                        value = str(row.get("status") or row.get("value") or "").strip()
+                        if value:
+                            return value
+                    return ""
+
+                required_pass = [
+                    "IECH_REPORTING_REFRAME_STATUS",
+                    "population_smoke_burden_proxy_column_present",
+                    "population_total_column_present",
+                    "population_exposed_assumed_column_present",
+                    "exposure_fraction_assumption_all_1",
+                    "claim_status_proxy_not_normalized",
+                    "legacy_IECH_deprecated_if_present",
+                    "population_smoke_burden_proxy_equals_expo_person_hours",
+                    "population_smoke_burden_proxy_equals_smoke_hours_times_population_total",
+                ]
+                failed_metrics = [metric for metric in required_pass if reframe_status(metric).upper() != "PASS"]
+                if failed_metrics:
+                    holds.append("HOLD IECH REPORTING REFRAME")
+                    notes.append("reframe audit failed metrics: " + ", ".join(failed_metrics))
+                forbidden_normalized = int(safe_float(reframe_text("forbidden_normalized_IECH_claims")) or 0)
+                forbidden_health = int(safe_float(reframe_text("forbidden_health_exposure_claims")) or 0)
+                if forbidden_normalized > 0:
+                    holds.append("HOLD IECH REPORTING REFRAME")
+                    notes.append(f"forbidden normalized IECH claims detected: {forbidden_normalized}")
+                if forbidden_health > 0:
+                    holds.append("HOLD IECH REPORTING REFRAME")
+                    notes.append(f"forbidden health exposure claims detected: {forbidden_health}")
+        except Exception as exc:
+            holds.append("HOLD IECH REPORTING REFRAME")
+            notes.append(f"could not parse {audit_tsv.name}: {exc}")
+
+    if brief_text:
+        forbidden_brief_patterns = [
+            r"normalized iech",
+            r"per\s*capita iech",
+            r"individual iech",
+            r"individual smoke exposure",
+            r"population exposed differs from total",
+            r"exposure fraction\s*<\s*1",
+            r"health exposure",
+            r"epidemiological risk",
+        ]
+        matched_patterns = [pat for pat in forbidden_brief_patterns if re.search(pat, brief_text, flags=re.IGNORECASE)]
+        if matched_patterns:
+            holds.append("HOLD IECH REPORTING REFRAME")
+            notes.append("brief contains forbidden IECH semantic claims: " + ", ".join(matched_patterns[:6]))
 
     # Canon/objectives alignment gate integration
     obj_tsv = output_root / "qa/objectives_canon_alignment_report.tsv"
@@ -461,3 +540,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+
+
+
+

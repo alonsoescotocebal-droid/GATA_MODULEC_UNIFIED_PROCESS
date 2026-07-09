@@ -6,9 +6,13 @@
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
-$ExpectedFinal = "GO_WITH_PORTUGUESE_AQ_ANCHORED_PROXY_PROTOCOL"
-$ExpectedTier = "TIER_2_LOCAL_SMOKE_PROXY_VALIDATED_BY_AQ"
-$ExpectedAnchorStatus = "LOCAL_AQ_ANCHORED_PROXY"
+$ExpectedFinal = "GO_DIRECT_2015_2024_FOR_PROSPECTIVE_PROXY_SCREENING"
+$ExpectedAQProtocol = "GO_DIRECT_2015_2024_FOR_PROSPECTIVE_PROXY_SCREENING"
+$ExpectedTier = "TIER_3_PEER_REVIEWED_OPERATIONAL_PROXY"
+$ExpectedAnchorStatus = "PORTUGUESE_AQ_CONSUMED_BUT_SPATIALLY_INSUFFICIENT_FOR_LOCAL_AQ_ANCHOR"
+$ExpectedIndicatorName = "population_smoke_burden_proxy"
+$ExpectedIndicatorUnit = "proxy person-hours"
+$ExpectedClaimStatus = "OPERATIONAL_POPULATION_BURDEN_PROXY_NOT_NORMALIZED_IECH"
 
 $RuntimeDecision = Join-Path $OutputRoot "deliverables_step9\runtime_closure_decision.md"
 $ScientificDecision = Join-Path $OutputRoot "deliverables_step9\runtime_scientific_closure_decision.md"
@@ -52,8 +56,12 @@ function Write-Audit {
     $lines += "runtime_decision`t$RuntimeDecision"
     $lines += "scientific_decision`t$ScientificDecision"
     $lines += "expected_final`t$ExpectedFinal"
+    $lines += "expected_aq_protocol`t$ExpectedAQProtocol"
     $lines += "expected_tier`t$ExpectedTier"
     $lines += "expected_anchor_status`t$ExpectedAnchorStatus"
+    $lines += "expected_indicator_name`t$ExpectedIndicatorName"
+    $lines += "expected_indicator_unit`t$ExpectedIndicatorUnit"
+    $lines += "expected_claim_status`t$ExpectedClaimStatus"
     $lines | Set-Content -LiteralPath $Path -Encoding UTF8
 }
 
@@ -75,7 +83,7 @@ if (-not (Has-Token $ScientificText $ExpectedAnchorStatus) -and -not (Has-Token 
     throw "Portuguese AQ anchored proxy status missing."
 }
 
-if (-not (Has-Token $PortugueseGateText $ExpectedFinal)) {
+if (-not (Has-Token $PortugueseGateText $ExpectedAQProtocol)) {
     Write-Audit -Path $AuditTsv -Decision "NO_GO" -Message "Portuguese AQ validation gate lacks expected anchored proxy protocol token."
     throw "Portuguese AQ protocol token missing."
 }
@@ -87,8 +95,17 @@ decision: $ExpectedFinal
 decision_source: runtime_scientific_closure_decision.md
 evidence_tier_selected: $ExpectedTier
 local_aq_anchor_status: $ExpectedAnchorStatus
-aq_protocol_decision: $ExpectedFinal
-proxy_validation_scope: PORTUGUESE_AQ_ANCHORED_PROXY_ONLY
+aq_protocol_decision: $ExpectedAQProtocol
+proxy_validation_scope: PORTUGUESE_AQ_CONSUMED_BUT_NOT_LOCAL_AQ_ANCHORED
+indicator_name: $ExpectedIndicatorName
+indicator_unit: $ExpectedIndicatorUnit
+claim_status: $ExpectedClaimStatus
+population_smoke_burden_proxy_formula: smoke_hours_equiv * population_total
+population_exposed_assumed: population_total
+exposure_fraction_assumption: 1.0
+normalized_IECH_individual_claim: BLOCKED
+population_exposed_differential_claim: BLOCKED
+proxy_population_burden_claim: ALLOWED
 
 health_exposure_claim: BLOCKED
 regulatory_exceedance_claim: BLOCKED
@@ -102,14 +119,14 @@ local_database_only: true
 external_downloads_attempted: false
 external_api_calls_attempted: false
 
-interpretation: El M?dulo C cierra como sistema territorial aut?nomo con proxy GFAS/ERA5 anclado por validaci?n AQ portuguesa/EEA. No cierra como exposici?n sanitaria validada, superaci?n regulatoria, correlaci?n estad?stica robusta ni causalidad epidemiol?gica.
+interpretation: El Modulo C cierra como sistema territorial autonomo con proxy GFAS/ERA5 para screening prospectivo y semantica explicita de population_smoke_burden_proxy. La AQ portuguesa fue consumida pero resulto espacialmente insuficiente para anclaje local; por tanto no cierra como exposicion sanitaria validada, IECH normalizado individual, poblacion expuesta diferencial, superacion regulatoria, correlacion estadistica robusta ni causalidad epidemiologica.
 
 required_limitations:
 - no_health_exposure_validation
 - no_regulatory_exceedance_attribution
 - no_robust_statistical_correlation_claim
 - no_epidemiological_causality
-- proxy_locally_anchored_by_portuguese_aq_only
+- portuguese_aq_consumed_but_not_locally_anchored
 
 generated_by: MICROFASE_R6K_RUNTIME_CLOSURE_REFRESH
 generated_at: $((Get-Date).ToString('s'))

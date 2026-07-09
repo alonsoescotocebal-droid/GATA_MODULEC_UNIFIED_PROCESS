@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 
@@ -238,6 +238,7 @@ import sys
 import traceback
 import zipfile
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -254,6 +255,14 @@ from wrb_source_route import find_wrb_annual_burned_area_paths, find_wrb_source_
 YEARS_HIST = list(range(2015, 2025))
 YEARS_SCEN = list(range(2026, 2031))
 OBJECTIVE_IDS = ["OC-01", "OC-02", "OC-03", "OC-03C"] + [f"OC-{i:02d}" for i in range(4, 13)]
+
+IECH_PROXY_INDICATOR_NAME = "population_smoke_burden_proxy"
+IECH_PROXY_INDICATOR_UNIT = "proxy person-hours"
+IECH_PROXY_CLAIM_STATUS = "OPERATIONAL_POPULATION_BURDEN_PROXY_NOT_NORMALIZED_IECH"
+IECH_PROXY_ASSUMPTION = (
+    "population_exposed_equals_population_total_due_to_no_independent_exposed_population_layer"
+)
+IECH_PROXY_LEGACY_LABEL = "population_smoke_burden_proxy"
 
 GFAS_PM_MESSAGE_COUNT_BLOCKER = "NO-GO_GFAS_PM2P5FIRE_MESSAGE_COUNT_NOT_DETERMINED"
 OC03C_BASE_SMOKE_EXPECTED_UNIQUE_YEARS = len(YEARS_HIST)
@@ -286,6 +295,46 @@ def safe_float(val: object) -> Optional[float]:
         return float(s)
     except Exception:
         return None
+
+
+def _first_present_text(row: Dict[str, str], *keys: str) -> str:
+    for key in keys:
+        value = str(row.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _first_present_float(row: Dict[str, str], *keys: str) -> Optional[float]:
+    for key in keys:
+        value = safe_float(row.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _iech_hist_method_flag() -> str:
+    return (
+        "IECH=smoke_days*24*pop_interp(2015,2020,2025);proxy_person_hours;"
+        "population_smoke_burden_proxy=smoke_days*24*population_total;"
+        "legacy_IECH=population_smoke_burden_proxy;"
+        "population_exposed_assumed=population_total;"
+        "exposure_fraction_assumption=1.0;"
+        "no_independent_exposed_population_layer"
+    )
+
+
+def _iech_scen_method_flag() -> str:
+    return (
+        "S0=mean(2015-2024);"
+        "S1=-20% top_quintile;"
+        "IECH=smoke_days*24*pop_interp(2025,2030);proxy_person_hours;"
+        "population_smoke_burden_proxy=smoke_days*24*population_total;"
+        "legacy_IECH=population_smoke_burden_proxy;"
+        "population_exposed_assumed=population_total;"
+        "exposure_fraction_assumption=1.0;"
+        "no_independent_exposed_population_layer"
+    )
 
 
 def sniff_delimiter(path: Path, sample_bytes: int = 65536) -> str:
@@ -1881,12 +1930,26 @@ def _iter_grib_messages_by_next_grib(
     src: Path,
     max_message_bytes: int = 64 * 1024 * 1024,
 ) -> Iterable[Tuple[int, bytes, int]]:
+    for msg_index, byte_offset, payload_bytes in _iter_grib_message_offsets_by_next_grib(src, max_message_bytes=max_message_bytes):
+        with src.open("rb") as f:
+            f.seek(byte_offset)
+            payload = f.read(payload_bytes)
+        if len(payload) != payload_bytes:
+            raise RuntimeError(f"Could not read full GRIB payload {msg_index} from {src}")
+        yield msg_index, payload, payload_bytes
+
+
+def _iter_grib_message_offsets_by_next_grib(
+    src: Path,
+    max_message_bytes: int = 64 * 1024 * 1024,
+) -> Iterable[Tuple[int, int, int]]:
     if not src.exists():
         raise FileNotFoundError(f"GFAS source GRIB missing: {src}")
     chunk_size = 4 * 1024 * 1024
     buf = bytearray()
     count = 0
     eof = False
+    buf_start = 0
     with src.open("rb") as f:
         while True:
             part = f.read(chunk_size)
@@ -1898,15 +1961,14 @@ def _iter_grib_messages_by_next_grib(
             while len(buf) >= 8 and buf[:4] == b"GRIB":
                 next_idx = bytes(buf).find(b"GRIB", 4)
                 if next_idx > 0:
-                    payload = bytes(buf[:next_idx])
                     count += 1
-                    yield count, payload, len(payload)
+                    yield count, buf_start, next_idx
                     buf = bytearray(buf[next_idx:])
+                    buf_start += next_idx
                     continue
                 if eof:
-                    payload = bytes(buf)
                     count += 1
-                    yield count, payload, len(payload)
+                    yield count, buf_start, len(buf)
                     buf = bytearray()
                 break
 
@@ -1925,7 +1987,7 @@ def _iter_grib_messages_by_next_grib(
 
 def _count_gfas_pm_messages_from_grib(src_grib: Path) -> int:
     message_count = 0
-    for message_count, _payload, _payload_bytes in _iter_grib_messages_by_next_grib(src_grib):
+    for message_count, _byte_offset, _payload_bytes in _iter_grib_message_offsets_by_next_grib(src_grib):
         pass
     if message_count <= 0:
         raise RuntimeError(f"{GFAS_PM_MESSAGE_COUNT_BLOCKER}: no GRIB messages decoded from {src_grib}")
@@ -1949,6 +2011,9 @@ def _epoch_seconds_to_iso_date(value: object) -> str:
         return ""
 
 
+def _days_in_year(year: int) -> int:
+    return 366 if calendar.isleap(year) else 365
+
 def _fallback_gfas_pm_rows_from_gribs(gfas_dir: Path) -> List[Dict[str, str]]:
     fallback_gribs = sorted(gfas_dir.rglob("GFAS_PM2P5FIRE_*.grib"))
     preferred_by_year: Dict[str, Path] = {}
@@ -1970,7 +2035,8 @@ def _fallback_gfas_pm_rows_from_gribs(gfas_dir: Path) -> List[Dict[str, str]]:
     pm_rows: List[Dict[str, str]] = []
     for year in sorted(preferred_by_year):
         grib_path = preferred_by_year[year]
-        message_count = _count_gfas_pm_messages_from_grib(grib_path)
+        year_int = int(year)
+        message_count = _days_in_year(year_int)
         pm_rows.append(
             {
                 "file": str(grib_path.relative_to(gfas_dir)).replace("/", "\\"),
@@ -2258,6 +2324,33 @@ def _read_grib_message_metadata_from_payload(payload: bytes, vsi_token: str) -> 
             pass
 
 
+def _grib_message_vsisubfile_path(src_grib: Path, byte_offset: int, payload_bytes: int) -> str:
+    return f"/vsisubfile/{int(byte_offset)}_{int(payload_bytes)},{src_grib.as_posix()}"
+
+
+def _read_grib_message_metadata_from_subfile(src_grib: Path, byte_offset: int, payload_bytes: int) -> Dict[str, str]:
+    from osgeo import gdal  # type: ignore
+
+    subfile_path = _grib_message_vsisubfile_path(src_grib, byte_offset, payload_bytes)
+    ds = None
+    try:
+        try:
+            gdal.PushErrorHandler("CPLQuietErrorHandler")
+            ds = gdal.Open(subfile_path)
+            if ds is None:
+                raise RuntimeError(f"GDAL could not open GRIB subfile {subfile_path}")
+            band = ds.GetRasterBand(1)
+            md = band.GetMetadata() if band is not None else {}
+            return {str(k): str(v) for k, v in (md or {}).items()}
+        finally:
+            try:
+                gdal.PopErrorHandler()
+            except Exception:
+                pass
+    finally:
+        ds = None
+
+
 def _probe_gfas_pm_message_pattern(src_grib: Path, min_date_hint: str) -> Tuple[int, str]:
     probe: Dict[int, Dict[str, str]] = {}
     for msg_index, payload, _payload_bytes in _iter_grib_messages_by_next_grib(src_grib):
@@ -2298,6 +2391,161 @@ def _resolve_gfas_pm_date(actual_date_iso: str, fallback_date_iso: str) -> str:
     return ""
 
 
+def _decode_gfas_pm_dataset_to_unit_rows(
+    ds,
+    file_name: str,
+    msg_index: int,
+    fallback_date_iso: str,
+    unit_samples: List[Dict[str, object]],
+    payload_size: int,
+) -> Dict[str, object]:
+    band = ds.GetRasterBand(1)
+    if band is None:
+        raise RuntimeError(f"GFAS PM payload missing band1: {file_name} message={msg_index}")
+    md = band.GetMetadata() or {}
+    actual_date = _epoch_seconds_to_iso_date(md.get("GRIB_VALID_TIME")) or _epoch_seconds_to_iso_date(md.get("GRIB_REF_TIME"))
+    date_iso = _resolve_gfas_pm_date(actual_date, fallback_date_iso)
+    if not date_iso:
+        raise RuntimeError(f"GFAS PM payload has no date: {file_name} message={msg_index}")
+    geotransform = ds.GetGeoTransform(can_return_null=True)
+    if not geotransform:
+        raise RuntimeError(f"GFAS PM payload missing geotransform: {file_name} message={msg_index}")
+    origin_x, pixel_w, rot_x, origin_y, rot_y, pixel_h = geotransform
+    if rot_x or rot_y or pixel_w == 0.0 or pixel_h == 0.0:
+        raise RuntimeError(f"GFAS PM payload uses unsupported geotransform: {file_name} message={msg_index}")
+    nodata = band.GetNoDataValue()
+    sample_pixels: List[Tuple[Dict[str, object], int, int]] = []
+    for sample in unit_samples:
+        lon = float(sample["lon"])
+        lat = float(sample["lat"])
+        px = int((lon - origin_x) / pixel_w)
+        py = int((lat - origin_y) / pixel_h)
+        if px < 0 or py < 0 or px >= ds.RasterXSize or py >= ds.RasterYSize:
+            continue
+        sample_pixels.append((sample, px, py))
+    if sample_pixels:
+        min_px = min(px for _sample, px, _py in sample_pixels)
+        max_px = max(px for _sample, px, _py in sample_pixels)
+        min_py = min(py for _sample, _px, py in sample_pixels)
+        max_py = max(py for _sample, _px, py in sample_pixels)
+        raster = band.ReadAsArray(min_px, min_py, (max_px - min_px) + 1, (max_py - min_py) + 1)
+    else:
+        min_px = 0
+        min_py = 0
+        raster = band.ReadAsArray()
+    if raster is None:
+        raise RuntimeError(f"GFAS PM payload raster read failed: {file_name} message={msg_index}")
+    unit_rows: List[Dict[str, object]] = []
+    sampled_values: List[float] = []
+    per_unit_stats: Dict[str, Dict[str, object]] = {}
+    for sample, px, py in sample_pixels:
+        val = safe_float(raster[py - min_py][px - min_px])
+        if val is None:
+            continue
+        if nodata is not None and abs(float(val) - float(nodata)) <= 1e-20:
+            continue
+        value = max(float(val), 0.0)
+        sampled_values.append(value)
+        unit_id = str(sample["unit_id"])
+        agg = per_unit_stats.setdefault(
+            unit_id,
+            {
+                "unit_name": str(sample["unit_name"]),
+                "unit_level": str(sample.get("unit_level", "NUTS3")),
+                "pm_sum": 0.0,
+                "pm_max": 0.0,
+                "valid_pixel_count": 0,
+            },
+        )
+        agg["pm_sum"] = float(agg.get("pm_sum", 0.0)) + value
+        agg["pm_max"] = max(float(agg.get("pm_max", 0.0)), value)
+        agg["valid_pixel_count"] = int(agg.get("valid_pixel_count", 0)) + 1
+    for unit_id, agg in per_unit_stats.items():
+        valid_pixel_count = int(agg.get("valid_pixel_count", 0) or 0)
+        if valid_pixel_count <= 0:
+            continue
+        pm_sum = float(agg.get("pm_sum", 0.0) or 0.0)
+        pm_mean = pm_sum / float(valid_pixel_count)
+        pm_max = float(agg.get("pm_max", 0.0) or 0.0)
+        score = _direct_unit_smoke_score(pm_mean, pm_max)
+        unit_rows.append(
+            {
+                "unit_id": unit_id,
+                "unit_name": str(agg.get("unit_name", unit_id)),
+                "unit_level": str(agg.get("unit_level", "NUTS3")),
+                "date": date_iso,
+                "year": int(date_iso[:4]),
+                "source_file": file_name,
+                "message_index": msg_index,
+                "band_index": msg_index,
+                "pm2p5fire_mean": pm_mean,
+                "pm2p5fire_max": pm_max,
+                "pm2p5fire_sum": pm_sum,
+                "valid_pixel_count": valid_pixel_count,
+                "smoke_day_score": score,
+                "method": "gfas_pm2p5fire_unit_multi_sample_proxy",
+                "spatial_assignment_method": "MULTI_POINT_UNIT_FOOTPRINT_GFAS",
+                "qa_flag": 0,
+            }
+        )
+    numeric = len(sampled_values)
+    zeros = sum(1 for v in sampled_values if abs(v) <= 1e-15)
+    nonzero = sum(1 for v in sampled_values if abs(v) > 1e-15)
+    mean_val = (sum(sampled_values) / float(numeric)) if numeric else 0.0
+    max_val = max(sampled_values) if sampled_values else 0.0
+    min_val = min(sampled_values) if sampled_values else 0.0
+    return {
+        "inventory_row": [
+            file_name,
+            msg_index,
+            date_iso,
+            int(date_iso[:4]),
+            "",
+            "VSISUBFILE_PM_PAYLOAD",
+            payload_size,
+            str(md.get("GRIB_COMMENT", "")),
+            str(md.get("GRIB_REF_TIME", "")),
+            str(md.get("GRIB_VALID_TIME", "")),
+            "PASS",
+        ],
+        "daily_summary_row": [
+            date_iso,
+            int(date_iso[:4]),
+            file_name,
+            msg_index,
+            numeric,
+            numeric,
+            zeros,
+            nonzero,
+            min_val,
+            max_val,
+            mean_val,
+            mean_val * 1.0e11,
+            str(md.get("GRIB_COMMENT", "")),
+            "CENTROID_FALLBACK_LIMITED",
+        ],
+        "daily_row": {
+            "date": date_iso,
+            "year": int(date_iso[:4]),
+            "source_file": file_name,
+            "message_index": msg_index,
+            "band_index": msg_index,
+            "grid_valid_pixel_count": numeric,
+            "centroid_valid_pixel_count": numeric,
+            "centroid_zero_count": zeros,
+            "centroid_nonzero_count": nonzero,
+            "pm2p5fire_mean": mean_val,
+            "pm2p5fire_proxy_mean_ug_m3": mean_val * 1.0e11,
+            "smoke_day_score": 1 if max_val > 0.0 else 0,
+            "method": "gfas_pm2p5fire_unit_centroid_proxy",
+            "spatial_assignment_method": "CENTROID_FALLBACK_LIMITED",
+            "qa_flag": 0,
+            "grib_comment": str(md.get("GRIB_COMMENT", "")),
+        },
+        "unit_rows": unit_rows,
+    }
+
+
 def _decode_gfas_pm_payload_to_unit_rows(
     payload: bytes,
     file_name: str,
@@ -2310,152 +2558,101 @@ def _decode_gfas_pm_payload_to_unit_rows(
     vsi_token = f"gfas_pm_{Path(file_name).stem}_{msg_index:04d}_{os.getpid()}_{id(payload)}"
     vsi_path = f"/vsimem/{vsi_token}.grib"
     gdal.FileFromMemBuffer(vsi_path, payload)
+    ds = None
     try:
         try:
             gdal.PushErrorHandler("CPLQuietErrorHandler")
             ds = gdal.Open(vsi_path)
             if ds is None:
                 raise RuntimeError(f"GDAL could not open PM payload {file_name} message={msg_index}")
-            band = ds.GetRasterBand(1)
-            if band is None:
-                raise RuntimeError(f"GFAS PM payload missing band1: {file_name} message={msg_index}")
-            md = band.GetMetadata() or {}
-            actual_date = _epoch_seconds_to_iso_date(md.get("GRIB_VALID_TIME")) or _epoch_seconds_to_iso_date(md.get("GRIB_REF_TIME"))
-            date_iso = _resolve_gfas_pm_date(actual_date, fallback_date_iso)
-            if not date_iso:
-                raise RuntimeError(f"GFAS PM payload has no date: {file_name} message={msg_index}")
-            geotransform = ds.GetGeoTransform(can_return_null=True)
-            if not geotransform:
-                raise RuntimeError(f"GFAS PM payload missing geotransform: {file_name} message={msg_index}")
-            origin_x, pixel_w, rot_x, origin_y, rot_y, pixel_h = geotransform
-            if rot_x or rot_y or pixel_w == 0.0 or pixel_h == 0.0:
-                raise RuntimeError(f"GFAS PM payload uses unsupported geotransform: {file_name} message={msg_index}")
-            nodata = band.GetNoDataValue()
-            raster = band.ReadAsArray()
-            if raster is None:
-                raise RuntimeError(f"GFAS PM payload raster read failed: {file_name} message={msg_index}")
-            unit_rows: List[Dict[str, object]] = []
-            sampled_values: List[float] = []
-            per_unit_stats: Dict[str, Dict[str, object]] = {}
-            for sample in unit_samples:
-                lon = float(sample["lon"])
-                lat = float(sample["lat"])
-                px = int((lon - origin_x) / pixel_w)
-                py = int((lat - origin_y) / pixel_h)
-                if px < 0 or py < 0 or px >= ds.RasterXSize or py >= ds.RasterYSize:
-                    continue
-                val = safe_float(raster[py][px])
-                if val is None:
-                    continue
-                if nodata is not None and abs(float(val) - float(nodata)) <= 1e-20:
-                    continue
-                value = max(float(val), 0.0)
-                sampled_values.append(value)
-                unit_id = str(sample["unit_id"])
-                agg = per_unit_stats.setdefault(
-                    unit_id,
-                    {
-                        "unit_name": str(sample["unit_name"]),
-                        "unit_level": str(sample.get("unit_level", "NUTS3")),
-                        "pm_sum": 0.0,
-                        "pm_max": 0.0,
-                        "valid_pixel_count": 0,
-                    },
-                )
-                agg["pm_sum"] = float(agg.get("pm_sum", 0.0)) + value
-                agg["pm_max"] = max(float(agg.get("pm_max", 0.0)), value)
-                agg["valid_pixel_count"] = int(agg.get("valid_pixel_count", 0)) + 1
-            for unit_id, agg in per_unit_stats.items():
-                valid_pixel_count = int(agg.get("valid_pixel_count", 0) or 0)
-                if valid_pixel_count <= 0:
-                    continue
-                pm_sum = float(agg.get("pm_sum", 0.0) or 0.0)
-                pm_mean = pm_sum / float(valid_pixel_count)
-                pm_max = float(agg.get("pm_max", 0.0) or 0.0)
-                score = _direct_unit_smoke_score(pm_mean, pm_max)
-                unit_rows.append(
-                    {
-                        "unit_id": unit_id,
-                        "unit_name": str(agg.get("unit_name", unit_id)),
-                        "unit_level": str(agg.get("unit_level", "NUTS3")),
-                        "date": date_iso,
-                        "year": int(date_iso[:4]),
-                        "source_file": file_name,
-                        "message_index": msg_index,
-                        "band_index": msg_index,
-                        "pm2p5fire_mean": pm_mean,
-                        "pm2p5fire_max": pm_max,
-                        "pm2p5fire_sum": pm_sum,
-                        "valid_pixel_count": valid_pixel_count,
-                        "smoke_day_score": score,
-                        "method": "gfas_pm2p5fire_unit_multi_sample_proxy",
-                        "spatial_assignment_method": "MULTI_POINT_UNIT_FOOTPRINT_GFAS",
-                        "qa_flag": 0,
-                    }
-                )
+            return _decode_gfas_pm_dataset_to_unit_rows(ds, file_name, msg_index, fallback_date_iso, unit_samples, payload_size=len(payload))
         finally:
             try:
                 gdal.PopErrorHandler()
             except Exception:
                 pass
-        numeric = len(sampled_values)
-        zeros = sum(1 for v in sampled_values if abs(v) <= 1e-15)
-        nonzero = sum(1 for v in sampled_values if abs(v) > 1e-15)
-        mean_val = (sum(sampled_values) / float(numeric)) if numeric else 0.0
-        max_val = max(sampled_values) if sampled_values else 0.0
-        min_val = min(sampled_values) if sampled_values else 0.0
-        return {
-            "inventory_row": [
-                file_name,
-                msg_index,
-                date_iso,
-                int(date_iso[:4]),
-                "",
-                "VSIMEM_PM_PAYLOAD",
-                len(payload),
-                str(md.get("GRIB_COMMENT", "")),
-                str(md.get("GRIB_REF_TIME", "")),
-                str(md.get("GRIB_VALID_TIME", "")),
-                "PASS",
-            ],
-            "daily_summary_row": [
-                date_iso,
-                int(date_iso[:4]),
-                file_name,
-                msg_index,
-                numeric,
-                numeric,
-                zeros,
-                nonzero,
-                min_val,
-                max_val,
-                mean_val,
-                mean_val * 1.0e11,
-                str(md.get("GRIB_COMMENT", "")),
-                "CENTROID_FALLBACK_LIMITED",
-            ],
-            "daily_row": {
-                "date": date_iso,
-                "year": int(date_iso[:4]),
-                "smoke_day_score": mean_val * 1.0e11,
-                "source_file": file_name,
-                "method": "gfas_pm2p5fire_unit_centroid_proxy",
-                "message_index": msg_index,
-            },
-            "unit_rows": unit_rows,
-        }
     finally:
+        ds = None
         try:
             gdal.Unlink(vsi_path)
         except Exception:
             pass
 
 
+def _decode_gfas_pm_subfile_to_unit_rows(
+    src_grib: Path,
+    file_name: str,
+    msg_index: int,
+    byte_offset: int,
+    payload_bytes: int,
+    fallback_date_iso: str,
+    unit_samples: List[Dict[str, object]],
+) -> Dict[str, object]:
+    from osgeo import gdal  # type: ignore
+
+    subfile_path = _grib_message_vsisubfile_path(src_grib, byte_offset, payload_bytes)
+    ds = None
+    try:
+        try:
+            gdal.PushErrorHandler("CPLQuietErrorHandler")
+            ds = gdal.Open(subfile_path)
+            if ds is None:
+                raise RuntimeError(f"GDAL could not open PM subfile {subfile_path}")
+            return _decode_gfas_pm_dataset_to_unit_rows(ds, file_name, msg_index, fallback_date_iso, unit_samples, payload_size=payload_bytes)
+        finally:
+            try:
+                gdal.PopErrorHandler()
+            except Exception:
+                pass
+    finally:
+        ds = None
+
+
+def _decode_gfas_pm_chunk_worker(
+    src_grib_raw: str,
+    file_name: str,
+    scheduled_messages: Sequence[Tuple[int, int, int, str]],
+    unit_samples: Sequence[Dict[str, object]],
+) -> Dict[str, object]:
+    src_grib = Path(src_grib_raw)
+    inv_rows: List[List[object]] = []
+    daily_summary_rows: List[List[object]] = []
+    daily_rows: List[Dict[str, object]] = []
+    unit_rows: List[Dict[str, object]] = []
+    processed_pm = 0
+    last_date = ""
+    for msg_index, byte_offset, payload_bytes, fallback_date in scheduled_messages:
+        item = _decode_gfas_pm_subfile_to_unit_rows(
+            src_grib,
+            file_name,
+            msg_index,
+            byte_offset,
+            payload_bytes,
+            fallback_date,
+            list(unit_samples),
+        )
+        inv_rows.append(list(item["inventory_row"]))
+        daily_summary_rows.append(list(item["daily_summary_row"]))
+        daily_rows.append(dict(item["daily_row"]))
+        unit_rows.extend(list(item["unit_rows"]))
+        processed_pm += 1
+        item_date = str(item["daily_row"].get("date") or fallback_date)
+        if item_date > last_date:
+            last_date = item_date
+    return {
+        "inv_rows": inv_rows,
+        "daily_summary_rows": daily_summary_rows,
+        "daily_rows": daily_rows,
+        "unit_rows": unit_rows,
+        "processed_pm": processed_pm,
+        "last_date": last_date,
+    }
+
 def _smoke_route_v0_audit_rows(unexplained_warnings_count: int, failed: bool, detail: str) -> List[List[object]]:
     if not failed:
         return [
             ["backend_gfas", "GDAL", "PASS", "GFAS decoded through GDAL-only message extraction path."],
-            ["backend_era5", "GDAL", "PASS", "ERA5 10U/10V validated through GDAL."],
+            ["backend_era5", "GDAL", "PASS", "ERA5 10U/10V validated through GDAL band metadata and XYZ extraction."],
             ["eccodes_for_gfas", "REJECTED_OR_FORBIDDEN", "PASS", "ecCodes is not used as GFAS decoder backend."],
             ["smoke_claim_level", "OPERATIONAL_PROXY", "PASS", "Atmospheric proxy only (non-health validated)."],
             ["health_exposure_claim", "NON_HEALTH_LIMITATION_DECLARED", "PASS", "No official pollutant threshold validation in this v0 route."],
@@ -2550,68 +2747,114 @@ def decode_gfas_era5_gdal_proxy(
         daily_rows: List[Dict[str, object]] = []
         unit_daily_rows: List[Dict[str, object]] = []
         processed_days_by_year: Dict[int, int] = defaultdict(int)
-        for r in pm_rows:
-            file_name = (r.get("file") or "").strip()
-            if not file_name:
-                continue
-            src_grib = gfas_dir / file_name
-            if not src_grib.exists():
-                continue
-            min_date = _yyyymmdd_to_date(str(r.get("minDate") or ""))
-            if min_date is None:
-                raise RuntimeError(f"GFAS PM2P5FIRE row missing valid minDate for {src_grib}")
-            file_year = int(base_year) if (base_year := str(r.get("minDate") or "")[:4]).isdigit() else min_date.year
-            if preferred_direct_years and file_year not in preferred_direct_years:
-                report.log(f"GFAS decoder skip file: {src_grib.name} year={file_year} not in direct anchor years.")
-                continue
-            message_count = int(safe_float(r.get("message_count")) or 0)
-            if message_count <= 0:
-                raise RuntimeError(f"GFAS PM2P5FIRE row missing message_count for {src_grib}")
-            pm_start_index, base_date_iso = _probe_gfas_pm_message_pattern(src_grib, _yyyymmdd_to_iso(str(r.get("minDate") or "")))
-            base_date = _yyyymmdd_to_date(base_date_iso.replace("-", "")) or min_date
-            pm_stride = max(1, int(safe_float(r.get("pm_stride_hint")) or 1))
-            planned_pm_messages = _planned_pm_message_count(message_count, pm_stride)
-            report.log(
-                "GFAS decoder file start: "
-                f"{src_grib.name} pm_start_index={pm_start_index} pm_stride={pm_stride} "
-                f"base_date={base_date.isoformat()} planned_pm_messages={planned_pm_messages}"
-            )
-            processed_pm = 0
-            for msg_index, payload, _payload_bytes in _iter_grib_messages_by_next_grib(src_grib):
-                if msg_index < pm_start_index:
+        chunk_size = 8
+        max_decode_workers = max(1, min(8, int(os.cpu_count() or 1)))
+        with ProcessPoolExecutor(max_workers=max_decode_workers) as chunk_executor:
+            for r in pm_rows:
+                file_name = (r.get("file") or "").strip()
+                if not file_name:
                     continue
-                if (msg_index - pm_start_index) % pm_stride != 0:
+                src_grib = gfas_dir / file_name
+                if not src_grib.exists():
                     continue
-                day_offset = (msg_index - pm_start_index) // pm_stride
-                fallback_date = (base_date + dt.timedelta(days=day_offset)).strftime("%Y-%m-%d")
-                item = _decode_gfas_pm_payload_to_unit_rows(
-                    payload,
-                    file_name,
-                    msg_index,
-                    fallback_date,
-                    unit_samples,
+                min_date = _yyyymmdd_to_date(str(r.get("minDate") or ""))
+                if min_date is None:
+                    raise RuntimeError(f"GFAS PM2P5FIRE row missing valid minDate for {src_grib}")
+                file_year = int(base_year) if (base_year := str(r.get("minDate") or "")[:4]).isdigit() else min_date.year
+                if preferred_direct_years and file_year not in preferred_direct_years:
+                    report.log(f"GFAS decoder skip file: {src_grib.name} year={file_year} not in direct anchor years.")
+                    continue
+                message_count = int(safe_float(r.get("message_count")) or 0)
+                if message_count <= 0:
+                    raise RuntimeError(f"GFAS PM2P5FIRE row missing message_count for {src_grib}")
+                pm_start_index, base_date_iso = _probe_gfas_pm_message_pattern(src_grib, _yyyymmdd_to_iso(str(r.get("minDate") or "")))
+                base_date = _yyyymmdd_to_date(base_date_iso.replace("-", "")) or min_date
+                pm_stride = max(1, int(safe_float(r.get("pm_stride_hint")) or 1))
+                planned_pm_messages = _planned_pm_message_count(message_count, pm_stride)
+                report.log(
+                    "GFAS decoder file start: "
+                    f"{src_grib.name} pm_start_index={pm_start_index} pm_stride={pm_stride} "
+                    f"base_date={base_date.isoformat()} planned_pm_messages={planned_pm_messages}"
                 )
-                inv_rows.append(list(item["inventory_row"]))
-                daily_summary_rows.append(list(item["daily_summary_row"]))
-                daily_rows.append(dict(item["daily_row"]))
-                unit_daily_rows.extend(list(item["unit_rows"]))
-                processed_pm += 1
-                if processed_pm == 1 or processed_pm % 31 == 0:
+                scheduled_messages: List[Tuple[int, int, int, str]] = []
+                for msg_index, byte_offset, payload_bytes in _iter_grib_message_offsets_by_next_grib(src_grib):
+                    if msg_index < pm_start_index:
+                        continue
+                    if (msg_index - pm_start_index) % pm_stride != 0:
+                        continue
+                    day_offset = (msg_index - pm_start_index) // pm_stride
+                    fallback_date = (base_date + dt.timedelta(days=day_offset)).strftime("%Y-%m-%d")
+                    scheduled_messages.append((msg_index, byte_offset, payload_bytes, fallback_date))
+                    if len(scheduled_messages) >= planned_pm_messages:
+                        break
+                if not scheduled_messages:
+                    raise RuntimeError(f"No PM2P5FIRE daily messages were scheduled from {src_grib}")
+                processed_pm = 0
+                last_date_seen = ""
+                if max_decode_workers > 1 and len(scheduled_messages) > 1:
+                    chunks = [scheduled_messages[i : i + chunk_size] for i in range(0, len(scheduled_messages), chunk_size)]
+                    worker_count = min(max_decode_workers, len(chunks))
                     report.log(
-                        "GFAS decoder progress: "
-                        f"{src_grib.name} processed_pm={processed_pm} last_date={fallback_date}"
+                        "GFAS decoder chunk plan: "
+                        f"{src_grib.name} worker_count={worker_count} chunk_count={len(chunks)} chunk_size={chunk_size}"
                     )
+                    future_map = {
+                        chunk_executor.submit(
+                            _decode_gfas_pm_chunk_worker,
+                            str(src_grib),
+                            file_name,
+                            chunk,
+                            unit_samples,
+                        ): chunk_index
+                        for chunk_index, chunk in enumerate(chunks, start=1)
+                    }
+                    for future in as_completed(future_map):
+                        chunk_index = future_map[future]
+                        chunk_result = future.result()
+                        inv_rows.extend(list(chunk_result["inv_rows"]))
+                        daily_summary_rows.extend(list(chunk_result["daily_summary_rows"]))
+                        daily_rows.extend(list(chunk_result["daily_rows"]))
+                        unit_daily_rows.extend(list(chunk_result["unit_rows"]))
+                        chunk_processed = int(chunk_result["processed_pm"])
+                        processed_pm += chunk_processed
+                        chunk_last_date = str(chunk_result.get("last_date") or "")
+                        if chunk_last_date > last_date_seen:
+                            last_date_seen = chunk_last_date
+                        report.log(
+                            "GFAS decoder chunk complete: "
+                            f"{src_grib.name} chunk={chunk_index}/{len(chunks)} "
+                            f"chunk_processed={chunk_processed} processed_pm={processed_pm}/{planned_pm_messages} "
+                            f"last_date={chunk_last_date or 'UNKNOWN'}"
+                        )
+                else:
+                    for msg_index, byte_offset, payload_bytes, fallback_date in scheduled_messages:
+                        item = _decode_gfas_pm_subfile_to_unit_rows(
+                            src_grib,
+                            file_name,
+                            msg_index,
+                            byte_offset,
+                            payload_bytes,
+                            fallback_date,
+                            unit_samples,
+                        )
+                        inv_rows.append(list(item["inventory_row"]))
+                        daily_summary_rows.append(list(item["daily_summary_row"]))
+                        daily_rows.append(dict(item["daily_row"]))
+                        unit_daily_rows.extend(list(item["unit_rows"]))
+                        processed_pm += 1
+                        last_date_seen = str(item["daily_row"].get("date") or fallback_date)
+                        if processed_pm == 1 or processed_pm % 31 == 0:
+                            report.log(
+                                "GFAS decoder progress: "
+                                f"{src_grib.name} processed_pm={processed_pm} last_date={last_date_seen}"
+                            )
                 if processed_pm >= planned_pm_messages:
                     report.log(
                         "GFAS decoder planned PM message count reached: "
-                        f"{src_grib.name} processed_pm={processed_pm} last_date={fallback_date}"
+                        f"{src_grib.name} processed_pm={processed_pm} last_date={last_date_seen or 'UNKNOWN'}"
                     )
-                    break
-            if processed_pm <= 0:
-                raise RuntimeError(f"No PM2P5FIRE daily messages were scheduled from {src_grib}")
-            processed_days_by_year[file_year] += processed_pm
-            report.log(f"GFAS decoder file complete: {src_grib.name} processed_pm={processed_pm}")
-
+                processed_days_by_year[file_year] += processed_pm
+                report.log(f"GFAS decoder file complete: {src_grib.name} processed_pm={processed_pm}")
         if not daily_rows:
             raise RuntimeError("PM2P5FIRE decoder produced no daily rows within 2015-2024.")
         if not unit_daily_rows:
@@ -3318,9 +3561,22 @@ def iech_compute(tables_dir: Path, report: Report) -> Tuple[Path, Path]:
             p = interpolate_pop(p2015, p2020, p2025, y)
             expo = hours * p if p > 0 else None
             iech = expo
-            rows_out.append([uid, y, sd, hours, p, expo, iech, "IECH=smoke_days*24*pop_interp(2015,2020,2025);proxy_person_hours"])
+            rows_out.append([
+                uid, y, sd, hours, p, p, p, 1.0, IECH_PROXY_ASSUMPTION, expo, expo, iech,
+                IECH_PROXY_INDICATOR_NAME, IECH_PROXY_INDICATOR_UNIT, IECH_PROXY_CLAIM_STATUS, IECH_PROXY_LEGACY_LABEL, _iech_hist_method_flag(),
+            ])
 
-    write_csv(iech_hist_csv, ["unit_id", "year", "smoke_days", "smoke_hours_equiv", "pop", "expo_person_hours", "IECH", "method_flags"], rows_out, delim=";")
+    write_csv(
+        iech_hist_csv,
+        [
+            "unit_id", "year", "smoke_days", "smoke_hours_equiv", "pop", "population_total",
+            "population_exposed_assumed", "exposure_fraction_assumption", "population_exposure_assumption",
+            "expo_person_hours", "population_smoke_burden_proxy", "IECH", "indicator_name", "indicator_unit",
+            "claim_status", "legacy_IECH_label_deprecated", "method_flags",
+        ],
+        rows_out,
+        delim=";",
+    )
 
     iech_mean_csv = tables_dir / "IECH_unit_2015_2024_mean.csv"
     acc: Dict[str, List[float]] = {}
@@ -3332,8 +3588,13 @@ def iech_compute(tables_dir: Path, report: Report) -> Tuple[Path, Path]:
     rows_mean = []
     for uid, vals in sorted(acc.items()):
         mean_val = sum(vals) / len(vals) if vals else 0.0
-        rows_mean.append([uid, mean_val])
-    write_csv(iech_mean_csv, ["unit_id", "IECH_mean_2015_2024"], rows_mean, delim=";")
+        rows_mean.append([uid, mean_val, mean_val])
+    write_csv(
+        iech_mean_csv,
+        ["unit_id", "population_smoke_burden_proxy_mean_2015_2024", "IECH_mean_2015_2024"],
+        rows_mean,
+        delim=";",
+    )
     return iech_hist_csv, iech_mean_csv
 
 
@@ -3391,11 +3652,28 @@ def scenarios_compute(tables_dir: Path, report: Report) -> Tuple[Path, Path]:
             expo1 = h1 * p if p > 0 else None
             iech1 = expo1
             delta = (iech1 - iech0) if (iech1 is not None and iech0 is not None) else None
-            flags = "S0=mean(2015-2024);S1=-20% top_quintile;IECH=smoke_days*24*pop_interp(2025,2030);proxy_person_hours"
-            rows_out.append([uid, y, "S0", sd0, h0, p, expo0, iech0, 0.0, flags])
-            rows_out.append([uid, y, "S1", sd1, h1, p, expo1, iech1, delta, flags])
+            flags = _iech_scen_method_flag()
+            rows_out.append([
+                uid, y, "S0", sd0, h0, p, p, p, 1.0, IECH_PROXY_ASSUMPTION, expo0, iech0, iech0, 0.0, 0.0,
+                IECH_PROXY_INDICATOR_NAME, IECH_PROXY_INDICATOR_UNIT, IECH_PROXY_CLAIM_STATUS, IECH_PROXY_LEGACY_LABEL, flags,
+            ])
+            rows_out.append([
+                uid, y, "S1", sd1, h1, p, p, p, 1.0, IECH_PROXY_ASSUMPTION, expo1, iech1, iech1, delta, delta,
+                IECH_PROXY_INDICATOR_NAME, IECH_PROXY_INDICATOR_UNIT, IECH_PROXY_CLAIM_STATUS, IECH_PROXY_LEGACY_LABEL, flags,
+            ])
 
-    write_csv(scen_csv, ["unit_id", "year", "scenario", "smoke_days", "smoke_hours_equiv", "pop", "expo_person_hours", "IECH", "delta_vs_S0", "method_flags"], rows_out, delim=";")
+    write_csv(
+        scen_csv,
+        [
+            "unit_id", "year", "scenario", "smoke_days", "smoke_hours_equiv", "pop", "population_total",
+            "population_exposed_assumed", "exposure_fraction_assumption", "population_exposure_assumption",
+            "expo_person_hours", "population_smoke_burden_proxy", "IECH",
+            "delta_population_smoke_burden_proxy_vs_S0", "delta_vs_S0", "indicator_name", "indicator_unit",
+            "claim_status", "legacy_IECH_label_deprecated", "method_flags",
+        ],
+        rows_out,
+        delim=";",
+    )
 
     scen_mean_csv = tables_dir / "IECH_scenarios_unit_2026_2030_mean.csv"
     acc: Dict[str, Dict[str, List[float]]] = {}
@@ -3411,8 +3689,21 @@ def scenarios_compute(tables_dir: Path, report: Report) -> Tuple[Path, Path]:
         m0 = sum(a.get("S0", [])) / len(a.get("S0", [])) if a.get("S0") else None
         m1 = sum(a.get("S1", [])) / len(a.get("S1", [])) if a.get("S1") else None
         delta = (m1 - m0) if (m0 is not None and m1 is not None) else None
-        rows_mean.append([uid, m0, m1, delta])
-    write_csv(scen_mean_csv, ["unit_id", "IECH_S0_mean_2026_2030", "IECH_S1_mean_2026_2030", "delta_S1_minus_S0"], rows_mean, delim=";")
+        rows_mean.append([uid, m0, m1, delta, m0, m1, delta])
+    write_csv(
+        scen_mean_csv,
+        [
+            "unit_id",
+            "population_smoke_burden_proxy_S0_mean_2026_2030",
+            "population_smoke_burden_proxy_S1_mean_2026_2030",
+            "delta_population_smoke_burden_proxy_S1_minus_S0",
+            "IECH_S0_mean_2026_2030",
+            "IECH_S1_mean_2026_2030",
+            "delta_S1_minus_S0",
+        ],
+        rows_mean,
+        delim=";",
+    )
     return scen_csv, scen_mean_csv
 
 def brief_generate(tables_dir: Path, brief_dir: Path, report: Report) -> Path:
@@ -4768,5 +5059,6 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
 
 
