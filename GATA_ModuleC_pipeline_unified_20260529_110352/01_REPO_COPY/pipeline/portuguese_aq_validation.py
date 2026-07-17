@@ -597,6 +597,15 @@ def _classify_file(path: Path) -> str:
 def aggregate_daily_station_rows(observations: Sequence[Dict[str, object]]) -> List[Dict[str, object]]:
     grouped: Dict[Tuple[str, str, str, str], List[float]] = defaultdict(list)
     sample_rows: Dict[Tuple[str, str, str, str], Dict[str, object]] = {}
+    update_daily_station_aggregates(observations, grouped, sample_rows)
+    return finalize_daily_station_aggregates(grouped, sample_rows)
+
+
+def update_daily_station_aggregates(
+    observations: Iterable[Dict[str, object]],
+    grouped: Dict[Tuple[str, str, str, str], List[float]],
+    sample_rows: Dict[Tuple[str, str, str, str], Dict[str, object]],
+) -> None:
     for row in observations:
         station_id = str(row.get("station_id") or "")
         station_name = str(row.get("station_name") or "")
@@ -608,7 +617,19 @@ def aggregate_daily_station_rows(observations: Sequence[Dict[str, object]]) -> L
             continue
         grouped[key].append(value)
         if key not in sample_rows:
-            sample_rows[key] = dict(row)
+            sample_rows[key] = {
+                "station_key": row.get("station_key", normalize_text(station_name)),
+                "pollutant_raw": row.get("pollutant_raw", pollutant),
+                "unit": row.get("unit", ""),
+                "source_file": row.get("source_file", ""),
+                "quality_status": row.get("quality_status", ""),
+            }
+
+
+def finalize_daily_station_aggregates(
+    grouped: Dict[Tuple[str, str, str, str], List[float]],
+    sample_rows: Dict[Tuple[str, str, str, str], Dict[str, object]],
+) -> List[Dict[str, object]]:
     out: List[Dict[str, object]] = []
     for key, values in sorted(grouped.items()):
         sample = sample_rows[key]
@@ -1347,10 +1368,11 @@ def run_portuguese_aq_validation(
     write_tsv(qa_dir / "portuguese_aq_file_format_audit.tsv", ["extension", "file_count", "supported", "detail"], format_audit_rows)
 
     timeseries_meta_rows: List[Dict[str, object]] = []
-    observations: List[Dict[str, object]] = []
     station_rows: List[Dict[str, object]] = []
     station_metadata_files: set[str] = set()
     timeseries_files_normalized = 0
+    daily_station_grouped: Dict[Tuple[str, str, str, str], List[float]] = defaultdict(list)
+    daily_station_sample_rows: Dict[Tuple[str, str, str, str], Dict[str, object]] = {}
 
     for path in discovered_files:
         lower = str(path).lower()
@@ -1358,7 +1380,7 @@ def run_portuguese_aq_validation(
             if path.suffix.lower() == ".xlsx" and "manual_exports" in lower:
                 meta, obs_rows, file_station_rows = parse_qualar_xlsx(path)
                 timeseries_meta_rows.append(meta)
-                observations.extend(obs_rows)
+                update_daily_station_aggregates(obs_rows, daily_station_grouped, daily_station_sample_rows)
                 station_rows.extend(file_station_rows)
                 if str(meta.get("status")) == "PASS":
                     timeseries_files_normalized += 1
@@ -1366,7 +1388,7 @@ def run_portuguese_aq_validation(
             if path.suffix.lower() in (".csv", ".tsv") and any(token in lower for token in ("aq", "qualar", "pollutant")):
                 meta, obs_rows, file_station_rows = parse_generic_timeseries_table(path)
                 timeseries_meta_rows.append(meta)
-                observations.extend(obs_rows)
+                update_daily_station_aggregates(obs_rows, daily_station_grouped, daily_station_sample_rows)
                 station_rows.extend(file_station_rows)
                 if str(meta.get("status")) == "PASS":
                     timeseries_files_normalized += 1
@@ -1450,7 +1472,7 @@ def run_portuguese_aq_validation(
             existing["aq_metadata_relevant"] = "YES"
             existing["metadata_source"] = row.get("metadata_source", existing.get("metadata_source", ""))
 
-    daily_station_rows = aggregate_daily_station_rows(observations)
+    daily_station_rows = finalize_daily_station_aggregates(daily_station_grouped, daily_station_sample_rows)
 
     municipio_map_rows, municipio_lookup = _load_municipio_unit_map(tables_dir / "municipio_unit_map.csv")
     nuts_lookup = _load_nuts_names(output_root / "brief" / "causal_matrix" / "causal_matrix_IECH_NUTS3.csv")

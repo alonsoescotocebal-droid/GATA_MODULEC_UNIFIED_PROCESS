@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
@@ -124,7 +124,7 @@ OBJECTIVES: List[Dict[str, object]] = [
         "objective_id": "OC-08",
         "objective_name": "WRB integrado como contexto",
         "required_database": "WRB tiles 193/235/236 + MostProbable.rat.json + annual mask_* overlay route (runtime WRB_working_TM06_from_tiles)",
-        "required_output": ["tables/wrb_context_nuts3.csv", "tables/wrb_context_municipio.csv", "qa/wrb_integration_audit.tsv", "brief/wrb_summary_for_policy_brief.md"],
+        "required_output": ["tables/wrb_context_nuts3.csv", "tables/wrb_context_municipio.csv", "qa/wrb_integration_audit.tsv", "qa/wrb_method_consistency_audit.tsv", "qa/wrb_2022_prevalidation.tsv", "brief/wrb_summary_for_policy_brief.md"],
         "producer_script": "step7_matriz_causal.py",
         "validation_rule": "WRB con clases dominantes y sin missing generalizado.",
     },
@@ -273,6 +273,21 @@ def validate_required_outputs(output_root: Path, required: List[str]) -> Tuple[b
         return False, "Empty outputs: " + ", ".join(empty)
     return True, ""
 
+
+def _audit_has_nonpass(path: Path) -> Tuple[bool, str]:
+    if not path.exists():
+        return False, f"{path.name} missing."
+    rows = read_csv_rows(path)
+    if not rows:
+        return False, f"{path.name} empty."
+    bad = []
+    for row in rows:
+        status = str(row.get("status") or row.get("gate_status") or "").strip().upper()
+        if status and status not in ("PASS", "INFO", "PRECHECK_PASS", "PASS_WITH_PROXY_BURDEN_SEMANTICS", "THRESHOLD_DEFINED_AS_INDEXED_METHOD"):
+            bad.append(status)
+    if bad:
+        return False, f"{path.name} contains non-pass statuses: {'|'.join(sorted(set(bad))[:8])}"
+    return True, f"{path.name} PASS"
 
 def _check_smoke_inputs_clean(inputs: Dict[str, object]) -> Tuple[bool, str]:
     paths = inputs.get("paths", {}) if isinstance(inputs, dict) else {}

@@ -1,4 +1,4 @@
-﻿param(
+param(
     [Parameter(Mandatory=$true)]
     [string]$OutputRoot
 )
@@ -12,7 +12,7 @@ $ExpectedTier = "TIER_3_PEER_REVIEWED_OPERATIONAL_PROXY"
 $ExpectedAnchorStatus = "PORTUGUESE_AQ_CONSUMED_BUT_SPATIALLY_INSUFFICIENT_FOR_LOCAL_AQ_ANCHOR"
 $ExpectedIndicatorName = "population_smoke_burden_proxy"
 $ExpectedIndicatorUnit = "proxy person-hours"
-$ExpectedClaimStatus = "OPERATIONAL_POPULATION_BURDEN_PROXY_NOT_NORMALIZED_IECH"
+$ExpectedClaimStatus = "OPERATIONAL_POPULATION_BURDEN_PROXY_NOT_NORMALIZED_IECH"`r`n$ExpectedAnchoredProxyFinalDecision = "GO_WITH_PORTUGUESE_AQ_ANCHORED_PROXY_AND_POPULATION_BURDEN_SEMANTICS"`r`n$ExpectedAnchoredProxyProtocol = "GO_WITH_PORTUGUESE_AQ_ANCHORED_PROXY_PROTOCOL"`r`n$ExpectedAnchoredProxyTier = "TIER_2_LOCAL_SMOKE_PROXY_VALIDATED_BY_AQ"`r`n$ExpectedAnchoredProxyStatus = "LOCAL_AQ_ANCHORED_PROXY"
 
 $RuntimeDecision = Join-Path $OutputRoot "deliverables_step9\runtime_closure_decision.md"
 $ScientificDecision = Join-Path $OutputRoot "deliverables_step9\runtime_scientific_closure_decision.md"

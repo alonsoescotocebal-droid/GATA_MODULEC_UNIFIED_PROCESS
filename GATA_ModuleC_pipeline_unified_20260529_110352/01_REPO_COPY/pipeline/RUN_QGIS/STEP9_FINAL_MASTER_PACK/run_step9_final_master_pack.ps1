@@ -1,4 +1,4 @@
-﻿param(
+param(
   [string]$GATA_ROOT = "D:\Mestrado\GATA_2025_2026\Prueba_aislada\ISO_GATA_20260121_130505",
   [string]$OutputRoot = "",
   [string]$RepoRoot = ""
@@ -168,7 +168,10 @@ $requiredRel = @(
   "qa\era5_wind_portugal_xyz.csv",
   "qa\smoke_route_v0_audit.tsv",
   "qa\warning_inventory.tsv",
-  "qa\scientific_claim_gate.tsv",
+  "qa\source_runtime_provenance.tsv",
+  "qa\iech_aggregate_consistency_audit.tsv",
+  "qa\scenario_aggregate_consistency_audit.tsv",
+  "qa\wrb_method_consistency_audit.tsv",  "qa\scientific_claim_gate.tsv",
   "qa\population_zonal_audit.tsv",
   "qa\iech_calculation_audit.tsv",
   "qa\iech_reporting_reframe_audit.tsv",

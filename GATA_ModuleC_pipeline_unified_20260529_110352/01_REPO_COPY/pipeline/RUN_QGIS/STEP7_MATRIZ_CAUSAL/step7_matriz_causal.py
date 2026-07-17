@@ -34,7 +34,20 @@ IECH_PROXY_ASSUMPTION = (
     "population_exposed_equals_population_total_due_to_no_independent_exposed_population_layer"
 )
 IECH_PROXY_LEGACY_LABEL = "population_smoke_burden_proxy"
-
+WRB_METHOD_BURNED_AREA_OVERLAY = "BURNED_AREA_WRB_OVERLAY"
+WRB_STATUS_PASS = "PASS_BURNED_AREA_WRB_OVERLAY"
+WRB_STATUS_NOT_APPLICABLE_ZERO_BURN = "NOT_APPLICABLE_ZERO_BURNED_AREA_2015_2024"
+WRB_STATUS_BLOCKED_MISSING = "BLOCKED_WRB_BURNED_AREA_EXTRACTION_MISSING"
+WRB_FORBIDDEN_NOTE_TOKENS = (
+    "fallback",
+    "centroid",
+    "admin-unit-only",
+    "admin_unit-only",
+    "full administrative unit",
+    "unidad territorial completa",
+    "global class",
+    "raster metadata",
+)
 
 def now_iso() -> str:
     return dt.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
@@ -341,7 +354,7 @@ def _field_name_case_insensitive(layer, wanted: str) -> Optional[str]:
 
 
 def _build_area_principal_expression(field_name: str) -> str:
-    variants = ["Ãrea Principal", "Area Principal", "ÃƒÂrea Principal"]
+    variants = ["Área Principal", "Ãrea Principal", "Area Principal"]
     return " OR ".join(f"\"{field_name}\" = '{value}'" for value in variants)
 
 
@@ -856,6 +869,7 @@ def compute_iech(pop_csv: Path, smoke_csv: Path, out_hist_csv: Path, out_mean_cs
             smoke_by_u_y[uid][int(y)] = sd
 
     rows_hist = []
+    by_u: Dict[str, List[float]] = defaultdict(list)
     for uid in sorted(pop_by_u.keys()):
         p2015, p2020, p2025, _p2030 = pop_by_u[uid]
         for y in YEARS_HIST:
@@ -866,6 +880,8 @@ def compute_iech(pop_csv: Path, smoke_csv: Path, out_hist_csv: Path, out_mean_cs
             p = interpolate_pop(p2015, p2020, p2025, y)
             expo = h * p if p > 0 else None
             iech = expo
+            if expo is not None:
+                by_u[uid].append(float(expo))
             rows_hist.append([
                 uid, y, sd, h, p, p, p, 1.0, IECH_PROXY_ASSUMPTION, expo, expo, iech,
                 IECH_PROXY_INDICATOR_NAME, IECH_PROXY_INDICATOR_UNIT, IECH_PROXY_CLAIM_STATUS, IECH_PROXY_LEGACY_LABEL, _iech_hist_method_flag(),
@@ -883,12 +899,6 @@ def compute_iech(pop_csv: Path, smoke_csv: Path, out_hist_csv: Path, out_mean_cs
         delim=";",
     )
 
-    by_u: Dict[str, List[float]] = defaultdict(list)
-    for r in rows_hist:
-        uid = r[0]
-        iech = safe_float(r[6])
-        if iech is not None:
-            by_u[uid].append(iech)
     rows_mean = []
     for uid in sorted(by_u.keys()):
         vals = by_u[uid]
@@ -900,8 +910,6 @@ def compute_iech(pop_csv: Path, smoke_csv: Path, out_hist_csv: Path, out_mean_cs
         rows_mean,
         delim=";",
     )
-
-
 def compute_scenarios(smoke_csv: Path, pop_csv: Path, out_scen_csv: Path, out_mean_csv: Path) -> None:
     smoke_rows = read_csv_rows(smoke_csv)[1]
     pop_rows = read_csv_rows(pop_csv)[1]
@@ -929,6 +937,7 @@ def compute_scenarios(smoke_csv: Path, pop_csv: Path, out_scen_csv: Path, out_me
             pop_anchor[uid] = (p2025, p2030)
 
     rows = []
+    acc: Dict[str, Dict[str, List[float]]] = defaultdict(lambda: defaultdict(list))
     for uid in sorted(baseline.keys()):
         if uid not in pop_anchor:
             raise RuntimeError(f"Missing population anchors for unit {uid}")
@@ -946,6 +955,10 @@ def compute_scenarios(smoke_csv: Path, pop_csv: Path, out_scen_csv: Path, out_me
             iech1 = expo1
             delta = (iech1 - iech0) if (iech1 is not None and iech0 is not None) else None
             flags = _iech_scen_method_flag()
+            if expo0 is not None:
+                acc[uid]["S0"].append(float(expo0))
+            if expo1 is not None:
+                acc[uid]["S1"].append(float(expo1))
             rows.append([
                 uid, y, "S0", sd0, h0, p, p, p, 1.0, IECH_PROXY_ASSUMPTION, expo0, iech0, iech0, 0.0, 0.0,
                 IECH_PROXY_INDICATOR_NAME, IECH_PROXY_INDICATOR_UNIT, IECH_PROXY_CLAIM_STATUS, IECH_PROXY_LEGACY_LABEL, flags,
@@ -968,13 +981,6 @@ def compute_scenarios(smoke_csv: Path, pop_csv: Path, out_scen_csv: Path, out_me
         delim=";",
     )
 
-    acc: Dict[str, Dict[str, List[float]]] = defaultdict(lambda: defaultdict(list))
-    for r in rows:
-        uid = r[0]
-        sc = r[2]
-        iech = safe_float(r[7])
-        if iech is not None:
-            acc[uid][sc].append(iech)
     rows_mean = []
     for uid in sorted(acc.keys()):
         m0_vals = acc[uid].get("S0", [])
@@ -997,8 +1003,6 @@ def compute_scenarios(smoke_csv: Path, pop_csv: Path, out_scen_csv: Path, out_me
         rows_mean,
         delim=";",
     )
-
-
 def load_wrb_lookup_from_path(lookup_path: Path) -> Dict[int, str]:
     try:
         obj = json.loads(lookup_path.read_text(encoding="utf-8-sig"))
@@ -1204,7 +1208,7 @@ def _save_layer_for_gdal(layer, output_vector: Path, processing) -> Path:
     return output_vector
 
 
-def _rasterize_annual_burned_area_mask(mask_layer, template_raster: Path, output_mask: Path, processing) -> Path:
+def _rasterize_annual_burned_area_mask(mask_layer, template_raster: Path, output_mask: Path, processing, all_touched: bool = False) -> Path:
     gdal = _load_gdal_runtime()
     mask_vector = _save_layer_for_gdal(mask_layer, output_mask.with_suffix(".gpkg"), processing)
     template_ds = gdal.Open(str(template_raster))
@@ -1227,7 +1231,7 @@ def _rasterize_annual_burned_area_mask(mask_layer, template_raster: Path, output
     out_band.SetNoDataValue(0)
     vector_ds = gdal.OpenEx(str(mask_vector), gdal.OF_VECTOR)
     layer = vector_ds.GetLayer(0)
-    gdal.RasterizeLayer(out_ds, [1], layer, burn_values=[1], options=["ALL_TOUCHED=FALSE"])
+    gdal.RasterizeLayer(out_ds, [1], layer, burn_values=[1], options=[f"ALL_TOUCHED={'TRUE' if all_touched else 'FALSE'}"])
     out_band.FlushCache()
     out_ds.FlushCache()
     out_ds = None
@@ -1284,6 +1288,54 @@ def _count_wrb_classes_in_raster(raster_path: Path) -> Dict[int, float]:
     return counts
 
 
+def _build_wrb_geometry_memory_layer(geometries, layer_name: str = "wrb_unit_mask"):
+    from qgis.core import QgsFeature, QgsGeometry, QgsVectorLayer  # type: ignore
+
+    mem = QgsVectorLayer("MultiPolygon?crs=EPSG:3763", layer_name, "memory")
+    provider = mem.dataProvider()
+    feats = []
+    for geom in geometries:
+        if geom is None or geom.isEmpty():
+            continue
+        feat = QgsFeature()
+        feat.setGeometry(QgsGeometry(geom))
+        feats.append(feat)
+    if feats:
+        provider.addFeatures(feats)
+        mem.updateExtents()
+    return mem
+
+
+def _count_wrb_classes_for_unit_geometries(
+    geometries,
+    wrb_tm06_raster: Path,
+    wrb_runtime_dir: Path,
+    year: int,
+    uid: str,
+    processing,
+) -> Dict[int, float]:
+    valid_geoms = [geom for geom in geometries if geom is not None and not geom.isEmpty()]
+    if not valid_geoms:
+        return {}
+    safe_uid = re.sub(r"[^A-Za-z0-9_-]+", "_", str(uid))
+    mask_layer = _build_wrb_geometry_memory_layer(valid_geoms, f"wrb_mask_{safe_uid}_{year}")
+    if mask_layer.featureCount() <= 0:
+        return {}
+    rescue_mask = _rasterize_annual_burned_area_mask(
+        mask_layer,
+        wrb_tm06_raster,
+        wrb_runtime_dir / f"annual_burned_area_mask_{year}_{safe_uid}_rescue.tif",
+        processing,
+        all_touched=True,
+    )
+    rescue_raster = _write_masked_wrb_raster(
+        wrb_tm06_raster,
+        rescue_mask,
+        wrb_runtime_dir / f"WRB_working_TM06_from_tiles_masked_{year}_{safe_uid}_rescue.tif",
+    )
+    return _count_wrb_classes_in_raster(rescue_raster)
+
+
 def _dominant_wrb_row(
     uid: str,
     class_counts: Dict[int, float],
@@ -1291,6 +1343,9 @@ def _dominant_wrb_row(
     wrb_source: Path,
     note: Optional[str] = None,
     missing_flag: int = 0,
+    coverage_status: str = WRB_STATUS_PASS,
+    not_applicable_flag: int = 0,
+    method: str = WRB_METHOD_BURNED_AREA_OVERLAY,
 ) -> List[object]:
     total = float(sum(class_counts.values()))
     if total <= 0:
@@ -1299,9 +1354,12 @@ def _dominant_wrb_row(
             "",
             "",
             "",
-            "WRB unavailable because admin_unit ? annual_burned_area is empty for 2015-2024.",
+            note or "WRB unavailable because the annual burned-area overlay produced no WRB pixels for 2015-2024.",
             str(wrb_source),
             1,
+            method,
+            coverage_status,
+            not_applicable_flag,
         ]
 
     ordered = sorted(class_counts.items(), key=lambda kv: (-kv[1], kv[0]))
@@ -1318,9 +1376,34 @@ def _dominant_wrb_row(
         dom_label,
         f"{dom_share:.6f}",
         "|".join(top_tokens),
-        note or "Contexto edafico territorial (WRB) sobre admin_unit ? annual_burned_area ? WRB_working_TM06_from_tiles; no causal directo.",
+        note or "Contexto edafico territorial (WRB) derivado exclusivamente del overlay de area quemada anual sobre WRB_working_TM06_from_tiles; no causal directo.",
         str(wrb_source),
         missing_flag,
+        method,
+        coverage_status,
+        not_applicable_flag,
+    ]
+
+
+def _wrb_empty_row(
+    uid: str,
+    wrb_source: Path,
+    note: str,
+    coverage_status: str,
+    missing_flag: int,
+    not_applicable_flag: int,
+) -> List[object]:
+    return [
+        uid,
+        "",
+        "",
+        "",
+        note,
+        str(wrb_source),
+        missing_flag,
+        WRB_METHOD_BURNED_AREA_OVERLAY,
+        coverage_status,
+        not_applicable_flag,
     ]
 
 
@@ -1444,14 +1527,7 @@ def compute_wrb_context_v2(
     wrb_tm06_raster = _write_wrb_working_tm06_raster(wrb_source_vrt, admin_bounds, wrb_runtime_dir / "WRB_working_TM06_from_tiles.tif")
     class_counts_by_unit: Dict[str, Dict[int, float]] = {uid: {} for uid in unit_ids}
     year_class_counts: Dict[int, Dict[int, float]] = {}
-    territorial_counts_by_unit: Dict[str, Dict[int, float]] = {uid: {} for uid in unit_ids}
-
-    territorial_hist_layer = _run_wrb_zonal_histogram(admin_fix, str(wrb_tm06_raster), processing)
-    for ft in territorial_hist_layer.getFeatures():
-        uid = str(ft[id_field])
-        hist_counts = _extract_wrb_hist_counts(ft)
-        if hist_counts:
-            territorial_counts_by_unit[uid] = hist_counts
+    burned_area_ha_by_unit: Dict[str, float] = {uid: 0.0 for uid in unit_ids}
 
     for annual_path in fire_paths:
         year = _extract_year(annual_path.name)
@@ -1470,11 +1546,25 @@ def compute_wrb_context_v2(
         if annual_burned.featureCount() <= 0:
             continue
 
+        annual_admin_intersection = processing.run(
+            "native:intersection",
+            {"INPUT": admin_fix, "OVERLAY": annual_burned, "OUTPUT": "memory:"},
+        )["OUTPUT"]
+        annual_geometries_by_unit: Dict[str, List[object]] = defaultdict(list)
+        for ft in annual_admin_intersection.getFeatures():
+            uid = str(ft[id_field])
+            geom = ft.geometry()
+            if not uid or geom is None or geom.isEmpty():
+                continue
+            burned_area_ha_by_unit[uid] = burned_area_ha_by_unit.get(uid, 0.0) + (float(geom.area()) / 10000.0)
+            annual_geometries_by_unit[uid].append(geom)
+
         annual_mask_raster = _rasterize_annual_burned_area_mask(
             annual_burned,
             wrb_tm06_raster,
             wrb_runtime_dir / f"annual_burned_area_mask_{year}.tif",
             processing,
+            all_touched=False,
         )
         masked_wrb_raster = _write_masked_wrb_raster(
             wrb_tm06_raster,
@@ -1489,35 +1579,87 @@ def compute_wrb_context_v2(
                 year_counts[cls] = year_counts.get(cls, 0.0) + float(count)
 
         hist_layer = _run_wrb_zonal_histogram(admin_fix, str(masked_wrb_raster), processing)
+        hist_hit_uids = set()
         for ft in hist_layer.getFeatures():
             uid = str(ft[id_field])
             hist_counts = _extract_wrb_hist_counts(ft)
             if not hist_counts:
                 continue
+            hist_hit_uids.add(uid)
             unit_counts = class_counts_by_unit.setdefault(uid, {})
             for cls, count in hist_counts.items():
+                unit_counts[cls] = unit_counts.get(cls, 0.0) + float(count)
+
+        for uid, geoms in annual_geometries_by_unit.items():
+            if uid in hist_hit_uids:
+                continue
+            rescue_counts = _count_wrb_classes_for_unit_geometries(
+                geoms,
+                wrb_tm06_raster,
+                wrb_runtime_dir,
+                year,
+                uid,
+                processing,
+            )
+            if not rescue_counts:
+                continue
+            unit_counts = class_counts_by_unit.setdefault(uid, {})
+            for cls, count in rescue_counts.items():
                 unit_counts[cls] = unit_counts.get(cls, 0.0) + float(count)
 
     rows = []
     for uid in unit_ids:
         annual_counts = class_counts_by_unit.get(uid, {})
         if annual_counts:
-            rows.append(_dominant_wrb_row(uid, annual_counts, wrb_lookup, wrb_tm06_raster))
-            continue
-        territorial_counts = territorial_counts_by_unit.get(uid, {})
-        rows.append(
-            _dominant_wrb_row(
-                uid,
-                territorial_counts,
-                wrb_lookup,
-                wrb_tm06_raster,
-                note="Contexto edafico territorial (WRB) sobre unidad territorial completa; sin interseccion quemada 2015-2024; no causal directo.",
-                missing_flag=0 if territorial_counts else 1,
+            rows.append(
+                _dominant_wrb_row(
+                    uid,
+                    annual_counts,
+                    wrb_lookup,
+                    wrb_tm06_raster,
+                    coverage_status=WRB_STATUS_PASS,
+                    missing_flag=0,
+                    not_applicable_flag=0,
+                )
             )
-        )
+            continue
+        burned_area_ha = burned_area_ha_by_unit.get(uid, 0.0)
+        if burned_area_ha <= 0.0:
+            rows.append(
+                _wrb_empty_row(
+                    uid,
+                    wrb_tm06_raster,
+                    "Sin interseccion quemada 2015-2024 verificada; WRB no aplicable para interpretacion de area quemada.",
+                    WRB_STATUS_NOT_APPLICABLE_ZERO_BURN,
+                    missing_flag=0,
+                    not_applicable_flag=1,
+                )
+            )
+        else:
+            rows.append(
+                _wrb_empty_row(
+                    uid,
+                    wrb_tm06_raster,
+                    "Area quemada positiva 2015-2024 sin conteos WRB extraidos en overlay anual; bloqueo metodologico.",
+                    WRB_STATUS_BLOCKED_MISSING,
+                    missing_flag=1,
+                    not_applicable_flag=0,
+                )
+            )
     write_csv(
         out_csv,
-        ["unit_id", "dominant_wrb_class", "dominant_wrb_share", "top_wrb_classes", "wrb_context_note", "wrb_source", "wrb_missing_flag"],
+        [
+            "unit_id",
+            "dominant_wrb_class",
+            "dominant_wrb_share",
+            "top_wrb_classes",
+            "wrb_context_note",
+            "wrb_source",
+            "wrb_missing_flag",
+            "wrb_method",
+            "wrb_coverage_status",
+            "wrb_not_applicable_flag",
+        ],
         rows,
         delim=";",
     )
@@ -1805,6 +1947,8 @@ def build_causal_matrix(
         wrb_dom_share = safe_float(wrb_r.get("dominant_wrb_share"))
         wrb_note = (wrb_r.get("wrb_context_note") or "").strip()
         wrb_missing = int(safe_float(wrb_r.get("wrb_missing_flag")) or 0)
+        wrb_status = (wrb_r.get("wrb_coverage_status") or "").strip()
+        wrb_not_applicable = int(safe_float(wrb_r.get("wrb_not_applicable_flag")) or 0)
 
         built = safe_float(terr_r.get("built_up_proxy"))
         forest = safe_float(terr_r.get("forest_proxy"))
@@ -1814,7 +1958,10 @@ def build_causal_matrix(
 
         missing_components: List[str] = []
         zero_signal_monitor_case = (burn is not None and burn <= 0) and (smoke_mean_u is not None and smoke_mean_u <= 0)
-        if (wrb_missing >= 1 or not wrb_dom) and not zero_signal_monitor_case:
+        wrb_zero_burn_not_applicable = (
+            wrb_status == WRB_STATUS_NOT_APPLICABLE_ZERO_BURN or wrb_not_applicable >= 1
+        )
+        if (wrb_missing >= 1 or not wrb_dom) and not zero_signal_monitor_case and not wrb_zero_burn_not_applicable:
             missing_components.append("WRB")
         if terr_missing >= 1 or wui is None:
             missing_components.append("WUI")
@@ -2246,6 +2393,149 @@ def write_iech_audit(output_root: Path, iech_unit_csv: Path, iech_muni_csv: Path
     write_csv(semantics_tsv, rows[0], rows[1:], delim="	")
 
 
+def write_aggregate_consistency_audits(
+    output_root: Path,
+    hist_unit_detail_csv: Path,
+    hist_unit_mean_csv: Path,
+    hist_muni_detail_csv: Path,
+    hist_muni_mean_csv: Path,
+    scen_unit_detail_csv: Path,
+    scen_unit_mean_csv: Path,
+    scen_muni_detail_csv: Path,
+    scen_muni_mean_csv: Path,
+) -> None:
+    qa_dir = output_root / "qa"
+    ensure_dir(qa_dir)
+
+    hist_rows: List[List[object]] = []
+    for unit_level, detail_csv, mean_csv in (
+        ("NUTS3", hist_unit_detail_csv, hist_unit_mean_csv),
+        ("MUNICIPIO", hist_muni_detail_csv, hist_muni_mean_csv),
+    ):
+        detail_rows = read_csv_rows(detail_csv)[1] if detail_csv.exists() else []
+        mean_rows = read_csv_rows(mean_csv)[1] if mean_csv.exists() else []
+        detail_by_unit: Dict[str, List[float]] = defaultdict(list)
+        for row in detail_rows:
+            uid = (row.get("unit_id") or "").strip()
+            proxy = _first_present_float(row, "population_smoke_burden_proxy", "IECH")
+            if uid and proxy is not None:
+                detail_by_unit[uid].append(proxy)
+        mean_by_unit = {(row.get("unit_id") or "").strip(): row for row in mean_rows if (row.get("unit_id") or "").strip()}
+        for uid in sorted(set(detail_by_unit) | set(mean_by_unit)):
+            expected = sum(detail_by_unit.get(uid, [])) / len(detail_by_unit.get(uid, [])) if detail_by_unit.get(uid) else None
+            observed = _first_present_float(mean_by_unit.get(uid, {}), "population_smoke_burden_proxy_mean_2015_2024", "IECH_mean_2015_2024")
+            diff = abs(expected - observed) if expected is not None and observed is not None else None
+            hist_rows.append([
+                uid,
+                unit_level,
+                expected if expected is not None else "",
+                observed if observed is not None else "",
+                diff if diff is not None else "",
+                "PASS" if diff is not None and diff <= 1e-6 else "HOLD",
+            ])
+    write_csv(
+        qa_dir / "iech_aggregate_consistency_audit.tsv",
+        ["unit_id", "unit_level", "expected_proxy_mean", "observed_proxy_mean", "abs_diff", "status"],
+        hist_rows,
+        delim="\t",
+    )
+
+    scen_rows: List[List[object]] = []
+    for unit_level, detail_csv, mean_csv in (
+        ("NUTS3", scen_unit_detail_csv, scen_unit_mean_csv),
+        ("MUNICIPIO", scen_muni_detail_csv, scen_muni_mean_csv),
+    ):
+        detail_rows = read_csv_rows(detail_csv)[1] if detail_csv.exists() else []
+        mean_rows = read_csv_rows(mean_csv)[1] if mean_csv.exists() else []
+        detail_by_unit: Dict[str, Dict[str, List[float]]] = defaultdict(lambda: defaultdict(list))
+        detail_nonzero_delta: Dict[str, int] = defaultdict(int)
+        for row in detail_rows:
+            uid = (row.get("unit_id") or "").strip()
+            scenario = (row.get("scenario") or "").strip().upper()
+            proxy = _first_present_float(row, "population_smoke_burden_proxy", "IECH")
+            delta = _first_present_float(row, "delta_population_smoke_burden_proxy_vs_S0", "delta_vs_S0")
+            if uid and scenario and proxy is not None:
+                detail_by_unit[uid][scenario].append(proxy)
+            if uid and scenario == "S1" and delta is not None and abs(delta) > 1e-9:
+                detail_nonzero_delta[uid] += 1
+        mean_by_unit = {(row.get("unit_id") or "").strip(): row for row in mean_rows if (row.get("unit_id") or "").strip()}
+        for uid in sorted(set(detail_by_unit) | set(mean_by_unit)):
+            s0_vals = detail_by_unit.get(uid, {}).get("S0", [])
+            s1_vals = detail_by_unit.get(uid, {}).get("S1", [])
+            expected_s0 = sum(s0_vals) / len(s0_vals) if s0_vals else None
+            expected_s1 = sum(s1_vals) / len(s1_vals) if s1_vals else None
+            expected_delta = (expected_s1 - expected_s0) if expected_s0 is not None and expected_s1 is not None else None
+            observed_row = mean_by_unit.get(uid, {})
+            observed_s0 = _first_present_float(observed_row, "population_smoke_burden_proxy_S0_mean_2026_2030", "IECH_S0_mean_2026_2030")
+            observed_s1 = _first_present_float(observed_row, "population_smoke_burden_proxy_S1_mean_2026_2030", "IECH_S1_mean_2026_2030")
+            observed_delta = _first_present_float(observed_row, "delta_population_smoke_burden_proxy_S1_minus_S0", "delta_S1_minus_S0")
+            diffs = [
+                abs(expected_s0 - observed_s0) if expected_s0 is not None and observed_s0 is not None else None,
+                abs(expected_s1 - observed_s1) if expected_s1 is not None and observed_s1 is not None else None,
+                abs(expected_delta - observed_delta) if expected_delta is not None and observed_delta is not None else None,
+            ]
+            diffs = [d for d in diffs if d is not None]
+            diff_max = max(diffs) if diffs else None
+            nonzero_detail_requires_nonzero_mean = not (detail_nonzero_delta.get(uid, 0) > 0 and (observed_delta is None or abs(observed_delta) <= 1e-9))
+            status = "PASS" if diff_max is not None and diff_max <= 1e-6 and nonzero_detail_requires_nonzero_mean else "HOLD"
+            scen_rows.append([
+                uid,
+                unit_level,
+                expected_s0 if expected_s0 is not None else "",
+                observed_s0 if observed_s0 is not None else "",
+                expected_s1 if expected_s1 is not None else "",
+                observed_s1 if observed_s1 is not None else "",
+                expected_delta if expected_delta is not None else "",
+                observed_delta if observed_delta is not None else "",
+                diff_max if diff_max is not None else "",
+                detail_nonzero_delta.get(uid, 0),
+                status,
+            ])
+    write_csv(
+        qa_dir / "scenario_aggregate_consistency_audit.tsv",
+        ["unit_id", "unit_level", "expected_s0_mean", "observed_s0_mean", "expected_s1_mean", "observed_s1_mean", "expected_delta", "observed_delta", "max_abs_diff", "detail_nonzero_s1_delta_rows", "status"],
+        scen_rows,
+        delim="\t",
+    )
+
+
+def write_wrb_method_consistency_audit(output_root: Path, wrb_nuts_csv: Path, wrb_muni_csv: Path) -> None:
+    qa_dir = output_root / "qa"
+    ensure_dir(qa_dir)
+    wrb_n_rows = read_csv_rows(wrb_nuts_csv)[1] if wrb_nuts_csv.exists() else []
+    wrb_m_rows = read_csv_rows(wrb_muni_csv)[1] if wrb_muni_csv.exists() else []
+    all_rows = wrb_n_rows + wrb_m_rows
+
+    def _count_status(rows: List[Dict[str, str]], status: str) -> int:
+        return sum(1 for row in rows if (row.get("wrb_coverage_status") or "").strip() == status)
+
+    def _note_text(row: Dict[str, str]) -> str:
+        return " | ".join(
+            str(v).strip()
+            for v in (row.get("wrb_context_note") or "", row.get("wrb_source") or "")
+            if str(v).strip()
+        ).lower()
+
+    rows_out = [
+        ["metric", "value", "status", "note"],
+        ["wrb_overlay_valid_rows_nuts3", _count_status(wrb_n_rows, WRB_STATUS_PASS), "PASS", ""],
+        ["wrb_overlay_valid_rows_municipio", _count_status(wrb_m_rows, WRB_STATUS_PASS), "PASS", ""],
+        ["wrb_not_applicable_zero_burn_rows_nuts3", _count_status(wrb_n_rows, WRB_STATUS_NOT_APPLICABLE_ZERO_BURN), "PASS", ""],
+        ["wrb_not_applicable_zero_burn_rows_municipio", _count_status(wrb_m_rows, WRB_STATUS_NOT_APPLICABLE_ZERO_BURN), "PASS", ""],
+        ["wrb_positive_burn_missing_rows_nuts3", _count_status(wrb_n_rows, WRB_STATUS_BLOCKED_MISSING), "PASS" if _count_status(wrb_n_rows, WRB_STATUS_BLOCKED_MISSING) == 0 else "HOLD", ""],
+        ["wrb_positive_burn_missing_rows_municipio", _count_status(wrb_m_rows, WRB_STATUS_BLOCKED_MISSING), "PASS" if _count_status(wrb_m_rows, WRB_STATUS_BLOCKED_MISSING) == 0 else "HOLD", ""],
+        ["wrb_admin_unit_only_rows", sum(1 for row in all_rows if any(tok in _note_text(row) for tok in ("unidad territorial completa", "full administrative unit", "admin-unit-only", "admin_unit-only"))), "PASS" if sum(1 for row in all_rows if any(tok in _note_text(row) for tok in ("unidad territorial completa", "full administrative unit", "admin-unit-only", "admin_unit-only"))) == 0 else "HOLD", ""],
+        ["wrb_centroid_fallback_rows", sum(1 for row in all_rows if "centroid" in _note_text(row)), "PASS" if sum(1 for row in all_rows if "centroid" in _note_text(row)) == 0 else "HOLD", ""],
+        ["wrb_global_fallback_rows", sum(1 for row in all_rows if "global class" in _note_text(row)), "PASS" if sum(1 for row in all_rows if "global class" in _note_text(row)) == 0 else "HOLD", ""],
+        ["wrb_legacy_raster_canonical_rows", sum(1 for row in all_rows if "raster metadata" in _note_text(row)), "PASS" if sum(1 for row in all_rows if "raster metadata" in _note_text(row)) == 0 else "HOLD", ""],
+        ["wrb_distinct_dominant_classes_nuts3", len({(row.get("dominant_wrb_class") or "").strip() for row in wrb_n_rows if (row.get("dominant_wrb_class") or "").strip()}), "PASS", ""],
+        ["wrb_distinct_dominant_classes_municipio", len({(row.get("dominant_wrb_class") or "").strip() for row in wrb_m_rows if (row.get("dominant_wrb_class") or "").strip()}), "PASS", ""],
+        ["wrb_universal_single_class_flag", int(len({(row.get("dominant_wrb_class") or "").strip() for row in all_rows if (row.get("dominant_wrb_class") or "").strip()}) <= 1), "PASS", "Informational"],
+        ["wrb_universal_share_one_flag", int(all(((row.get("dominant_wrb_share") or "").strip() in ("", "1", "1.0", "1.000000")) for row in all_rows)), "PASS", "Informational"],
+        ["wrb_prevalidation_2022_status", "PASS" if (qa_dir / "wrb_2022_prevalidation.tsv").exists() else "HOLD", "PASS" if (qa_dir / "wrb_2022_prevalidation.tsv").exists() else "HOLD", str(qa_dir / "wrb_2022_prevalidation.tsv")],
+    ]
+    write_csv(qa_dir / "wrb_method_consistency_audit.tsv", rows_out[0], rows_out[1:], delim="\t")
+
 def write_territorial_and_wrb_audits(output_root: Path, wrb_nuts_csv: Path, wrb_muni_csv: Path, terr_nuts_csv: Path, terr_muni_csv: Path) -> None:
     qa_dir = output_root / "qa"
     brief_dir = output_root / "brief"
@@ -2260,7 +2550,7 @@ def write_territorial_and_wrb_audits(output_root: Path, wrb_nuts_csv: Path, wrb_
     wrb_n_missing = sum(1 for r in wrb_n_rows if int(safe_float(r.get("wrb_missing_flag")) or 0) >= 1)
     wrb_m_missing = sum(1 for r in wrb_m_rows if int(safe_float(r.get("wrb_missing_flag")) or 0) >= 1)
     wrb_n_dom = sum(1 for r in wrb_n_rows if (r.get("dominant_wrb_class") or "").strip() != "")
-    blocked_tokens = ("fallback", "centroid", "admin-unit-only", "admin_unit-only", "global class", "raster metadata")
+    blocked_tokens = WRB_FORBIDDEN_NOTE_TOKENS
 
     def _wrb_note_hits(rows: List[Dict[str, str]]) -> int:
         hits = 0
@@ -2494,7 +2784,7 @@ def generate_brief(output_root: Path, inputs: Dict[str, object]) -> Path:
     lines.append("- No equivale a concentracion contaminante, no es IECH normalizado y no valida por si solo una afirmacion sanitaria o epidemiologica.")
     lines.append("")
     lines.append("## Cobertura temporal")
-    lines.append("- HistÃƒÂ³rico: 2015-2024.")
+    lines.append("- HistÃƒÆ’Ã‚Â³rico: 2015-2024.")
     lines.append("- Escenarios: 2026-2030 (S0 y S1).")
     lines.append("")
     lines.append("## Cobertura espacial")
@@ -2508,7 +2798,7 @@ def generate_brief(output_root: Path, inputs: Dict[str, object]) -> Path:
     lines.append("")
     lines.append("## Resultados humo")
     lines.append(f"- Filas smoke NUTS3: {_table_rowcount(smoke_unit)}.")
-    lines.append("- Serie anual reconstruida/derivada segÃƒÂºn ruta de humo seleccionada.")
+    lines.append("- Serie anual reconstruida/derivada segÃƒÆ’Ã‚Âºn ruta de humo seleccionada.")
     route_selected = str(meta.get("smoke_route_selected", "")) if isinstance(meta, dict) else ""
     route_decision = str(meta.get("smoke_route_decision", "")) if isinstance(meta, dict) else ""
     route_status = str(meta.get("smoke_route_status", "")) if isinstance(meta, dict) else ""
@@ -2517,13 +2807,13 @@ def generate_brief(output_root: Path, inputs: Dict[str, object]) -> Path:
     if route_reason:
         lines.append(f"- Motivo ruta: {route_reason}.")
     lines.append("")
-    lines.append("## Resultados poblaciÃƒÂ³n")
-    lines.append(f"- Filas poblaciÃƒÂ³n NUTS3: {_table_rowcount(pop_unit)}.")
-    lines.append("- PoblaciÃƒÂ³n GHSL integrada para 2015/2020/2025/2030.")
+    lines.append("## Resultados poblaciÃƒÆ’Ã‚Â³n")
+    lines.append(f"- Filas poblaciÃƒÆ’Ã‚Â³n NUTS3: {_table_rowcount(pop_unit)}.")
+    lines.append("- PoblaciÃƒÆ’Ã‚Â³n GHSL integrada para 2015/2020/2025/2030.")
     lines.append("")
     lines.append("## Resultados recurrencia")
     lines.append(f"- Filas recurrencia NUTS3: {_table_rowcount(rec_unit)}.")
-    lines.append("- MÃƒÂ©tricas: total_burn_ha, years_area_gt_p75, n_events_gt_1000ha y clase de recurrencia.")
+    lines.append("- MÃƒÆ’Ã‚Â©tricas: total_burn_ha, years_area_gt_p75, n_events_gt_1000ha y clase de recurrencia.")
     lines.append("")
     lines.append("## Resultados municipales")
     if iech_muni.exists():
@@ -2532,7 +2822,7 @@ def generate_brief(output_root: Path, inputs: Dict[str, object]) -> Path:
         lines.append("- population_smoke_burden_proxy municipal no disponible (HOLD MUNICIPAL).")
     lines.append("")
     lines.append("## Resultados WRB")
-    lines.append(f"- Tabla WRB NUTS3: {'sÃƒÂ­' if wrb_nuts.exists() else 'no'}.")
+    lines.append(f"- Tabla WRB NUTS3: {'sÃƒÆ’Ã‚Â­' if wrb_nuts.exists() else 'no'}.")
     if wrb_top:
         lines.append("- Clases dominantes WRB (conteo unidades):")
         for cls, cnt in wrb_top:
@@ -2541,7 +2831,7 @@ def generate_brief(output_root: Path, inputs: Dict[str, object]) -> Path:
         lines.append("- Sin resumen WRB por unidad.")
     lines.append("")
     lines.append("## Resultados WUI / territorio")
-    lines.append(f"- Tabla territorial NUTS3: {'sÃƒÂ­' if terr_nuts.exists() else 'no'}.")
+    lines.append(f"- Tabla territorial NUTS3: {'sÃƒÆ’Ã‚Â­' if terr_nuts.exists() else 'no'}.")
     lines.append(f"- Unidades con wui_proxy > 0: {wui_positive}.")
     lines.append("")
     lines.append("## Matriz causal")
@@ -2561,11 +2851,11 @@ def generate_brief(output_root: Path, inputs: Dict[str, object]) -> Path:
     lines.append("")
     lines.append("## Recomendaciones")
     if missing_summary:
-        lines.append("- Mantener priorizaciÃƒÂ³n provisional; evitar ranking territorial fuerte mientras existan componentes en HOLD.")
+        lines.append("- Mantener priorizaciÃƒÆ’Ã‚Â³n provisional; evitar ranking territorial fuerte mientras existan componentes en HOLD.")
     else:
-        lines.append("- Priorizar intervenciÃƒÂ³n en unidades HIGH_PRIORITY con recurrencia alta y soporte completo de componentes.")
-    lines.append("- Mantener WRB como contexto edÃƒÂ¡fico interpretativo, no como causal directo.")
-    lines.append("- Consolidar proxy WUI con datos formales de combustible/landcover cuando estÃƒÂ©n disponibles.")
+        lines.append("- Priorizar intervenciÃƒÆ’Ã‚Â³n en unidades HIGH_PRIORITY con recurrencia alta y soporte completo de componentes.")
+    lines.append("- Mantener WRB como contexto edÃƒÆ’Ã‚Â¡fico interpretativo, no como causal directo.")
+    lines.append("- Consolidar proxy WUI con datos formales de combustible/landcover cuando estÃƒÆ’Ã‚Â©n disponibles.")
     lines.append("")
     lines.append("## Evidencia de QA")
     lines.append(f"- `{output_root / 'qa' / 'inputs_resolved.json'}`")
@@ -2779,6 +3069,19 @@ def main() -> int:
         brief_path = generate_brief(output_root, inputs)
         log_line(run_log, f"Brief rewritten: {brief_path}")
 
+
+        write_aggregate_consistency_audits(
+            output_root,
+            tables_dir / "IECH_unit_2015_2024.csv",
+            iech_unit_mean_csv,
+            iech_muni_csv,
+            iech_muni_mean_csv,
+            scen_unit_csv,
+            scen_unit_mean_csv,
+            scen_muni_csv,
+            scen_muni_mean_csv,
+        )
+        write_wrb_method_consistency_audit(output_root, wrb_nuts_csv, wrb_muni_csv)
         write_smoke_route_audit(output_root, inputs, smoke_unit_csv, smoke_muni_csv)
         write_fire_ingestion_audit(output_root, fire_paths)
         write_population_audit(output_root, pop_unit_csv, pop_muni_csv)
@@ -2790,9 +3093,12 @@ def main() -> int:
 
         touch_qa_fresh_files(output_root)
         log_line(run_log, "END PASS")
-        print("OK STEP7_MATRIZ_CAUSAL_EXTENDED")
-        print("output_root =", output_root)
-        print("brief =", brief_path)
+        try:
+            print("OK STEP7_MATRIZ_CAUSAL_EXTENDED")
+            print("output_root =", output_root)
+            print("brief =", brief_path)
+        except OSError:
+            pass
         return 0
     except Exception as exc:
         log_line(run_log, f"END FAIL: {exc}")
@@ -2810,6 +3116,7 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
 
 
 

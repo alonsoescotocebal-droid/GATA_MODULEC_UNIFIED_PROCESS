@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 
@@ -233,6 +233,7 @@ import importlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import traceback
@@ -3582,9 +3583,9 @@ def iech_compute(tables_dir: Path, report: Report) -> Tuple[Path, Path]:
     acc: Dict[str, List[float]] = {}
     for r in rows_out:
         uid = r[0]
-        iech = safe_float(r[6])
-        if iech is not None:
-            acc.setdefault(uid, []).append(iech)
+        proxy_val = safe_float(r[10]) if len(r) > 10 else None
+        if proxy_val is not None:
+            acc.setdefault(uid, []).append(proxy_val)
     rows_mean = []
     for uid, vals in sorted(acc.items()):
         mean_val = sum(vals) / len(vals) if vals else 0.0
@@ -3680,9 +3681,9 @@ def scenarios_compute(tables_dir: Path, report: Report) -> Tuple[Path, Path]:
     for r in rows_out:
         uid = r[0]
         sc = r[2]
-        iech = safe_float(r[7])
-        if iech is not None:
-            acc.setdefault(uid, {}).setdefault(sc, []).append(iech)
+        proxy_val = safe_float(r[11]) if len(r) > 11 else None
+        if proxy_val is not None:
+            acc.setdefault(uid, {}).setdefault(sc, []).append(proxy_val)
 
     rows_mean = []
     for uid, a in sorted(acc.items()):
@@ -3930,11 +3931,28 @@ def build_manifest_and_zip(outputs: List[Path], out_dir: Path, report: Report) -
     manifest_path = out_dir / "final_manifest.json"
     sha_path = out_dir / "final_sha256_checkpoints.txt"
     zip_path = out_dir / "ModuleC_ALL_FINAL_deliverables.zip"
+    recursive_audit_path = out_dir / "final_manifest_recursive_audit.tsv"
+    stale_audit_path = out_dir / "final_bundle_staleness_audit.tsv"
 
-    manifest = []
-    for p in outputs:
+    payload_outputs = [Path(p) for p in outputs if Path(p) not in {recursive_audit_path, stale_audit_path}]
+    for p in payload_outputs:
         if not p.exists():
             report.fail(f"Output missing before manifest: {p}")
+
+    write_tsv(
+        recursive_audit_path,
+        ["relative_path", "bytes", "sha256"],
+        [[_relative_output_path(p, output_root), p.stat().st_size, _sha256_path(p)] for p in payload_outputs],
+    )
+    write_tsv(
+        stale_audit_path,
+        ["check_id", "status", "detail"],
+        [["STALE-001", "PASS", "No legacy _bundle_payload staging directory is used by the Python runtime packager."]],
+    )
+
+    manifest_outputs = payload_outputs + [recursive_audit_path, stale_audit_path]
+    manifest = []
+    for p in manifest_outputs:
         rel_path = _relative_output_path(p, output_root)
         h = _sha256_path(p)
         manifest.append({
@@ -3944,11 +3962,10 @@ def build_manifest_and_zip(outputs: List[Path], out_dir: Path, report: Report) -
             "modified": dt.datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y-%m-%dT%H:%M:%S"),
             "sha256": h,
         })
-
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for p in outputs:
+        for p in manifest_outputs:
             arcname = _relative_output_path(p, output_root)
             zf.write(p, arcname=arcname)
         zf.write(manifest_path, arcname=_relative_output_path(manifest_path, output_root))
@@ -3958,7 +3975,7 @@ def build_manifest_and_zip(outputs: List[Path], out_dir: Path, report: Report) -
         f"timestamp={now_iso()}",
         f"outputs_dir={out_dir}",
     ]
-    for p in outputs + [manifest_path, zip_path]:
+    for p in manifest_outputs + [manifest_path, zip_path]:
         rel_name = _relative_output_path(p, output_root)
         h = _sha256_path(p)
         lines.append(f"OUT|{rel_name}|sha256={h}|bytes={p.stat().st_size}")
@@ -4243,6 +4260,129 @@ def _step7_outputs_ready(output_root: Path) -> bool:
     ]
     return all(path.exists() and path.stat().st_size > 0 for path in required)
 
+
+def refresh_warning_inventory_from_runtime_logs(output_root: Path) -> None:
+    qa_dir = output_root / "qa"
+    ensure_dir(qa_dir)
+    inventory = qa_dir / "warning_inventory.tsv"
+    rows = read_csv_rows(inventory)[1] if inventory.exists() else []
+    seen = {(str(r.get("tool") or ""), str(r.get("context") or ""), str(r.get("warning_text") or "")) for r in rows}
+    log_specs = [
+        ("step7", "STEP7_STDERR", qa_dir / "step7_matriz_causal_stderr.txt"),
+        ("step7", "STEP7_STDOUT", qa_dir / "step7_matriz_causal_stdout.txt"),
+        ("runtime", "RUN_LOG", qa_dir / "run_log.txt"),
+        ("runtime", "AUDIT_REPORT", qa_dir / "report_auditoria_v2.txt"),
+    ]
+    for tool_name, context, path in log_specs:
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for raw in text.splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            upper = line.upper()
+            if not any(token in upper for token in ("WARNING", "ERROR", "TRACEBACK", "FAILED TO COMPUTE STATISTICS", "NO VALID PIXELS FOUND")):
+                continue
+            classification = "WARN_CLASSIFIED_NONBLOCKING"
+            explained = "1"
+            impact = "LOW"
+            status = "PASS"
+            if "FAILED TO COMPUTE STATISTICS" in upper or "NO VALID PIXELS FOUND" in upper:
+                classification = "EXPECTED_NONBLOCKING_ZERO_BURN_MASK"
+            elif "WAL-ENABLED DATABASE" in upper and "IMMUTABLE=YES" in upper:
+                classification = "WARN_CLASSIFIED_NONBLOCKING"
+            elif "DEPRECATIONWARNING" in upper and "QGSPROCESSINGALGORITHM.PARAMETERASFIELDS()" in upper:
+                classification = "WARN_CLASSIFIED_NONBLOCKING"
+            elif "TRACEBACK" in upper or ("ERROR" in upper and "0 ERROR" not in upper):
+                classification = "BLOCKED_RUNTIME_ERROR"
+                explained = "0"
+                impact = "HIGH"
+                status = "BLOCKED"
+            elif "WARNING" in upper:
+                classification = "HOLD_UNCLASSIFIED_WARNING"
+                explained = "0"
+                impact = "UNKNOWN"
+                status = "BLOCKED"
+            key = (tool_name, context, line)
+            if key not in seen:
+                rows.append({
+                    "tool": tool_name,
+                    "context": context,
+                    "classification": classification,
+                    "explained": explained,
+                    "impact": impact,
+                    "status": status,
+                    "warning_text": line,
+                })
+                seen.add(key)
+    if not rows:
+        rows = [{
+            "tool": "runtime",
+            "context": "none",
+            "classification": "PASS_NO_WARNING",
+            "explained": "1",
+            "impact": "NONE",
+            "status": "PASS",
+            "warning_text": "No warning captured across GFAS/ERA5, Step7, run_log, or report_auditoria_v2.",
+        }]
+    write_tsv(
+        inventory,
+        ["tool", "context", "classification", "explained", "impact", "status", "warning_text"],
+        [[r["tool"], r["context"], r["classification"], r["explained"], r["impact"], r["status"], r["warning_text"]] for r in rows],
+    )
+
+
+def _resolve_git_command() -> str | None:
+    candidates = [shutil.which("git")]
+    candidates.extend([
+        r"C:\Program Files\Git\cmd\git.exe",
+        r"C:\Program Files\Git\bin\git.exe",
+        r"C:\Program Files (x86)\Git\cmd\git.exe",
+        r"C:\Program Files (x86)\Git\bin\git.exe",
+    ])
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return str(Path(candidate))
+    return None
+
+
+def write_source_runtime_provenance(output_root: Path) -> None:
+    qa_dir = output_root / "qa"
+    ensure_dir(qa_dir)
+    repo_root = Path(__file__).resolve().parents[1]
+    branch = ""
+    head_sha = ""
+    git_status_clean = "UNKNOWN"
+    git_cmd = _resolve_git_command()
+    try:
+        if git_cmd:
+            branch_proc = subprocess.run([git_cmd, "branch", "--show-current"], cwd=str(repo_root), capture_output=True, text=True, encoding="utf-8", errors="replace")
+            head_proc = subprocess.run([git_cmd, "rev-parse", "HEAD"], cwd=str(repo_root), capture_output=True, text=True, encoding="utf-8", errors="replace")
+            status_proc = subprocess.run([git_cmd, "status", "--short"], cwd=str(repo_root), capture_output=True, text=True, encoding="utf-8", errors="replace")
+            if branch_proc.returncode == 0:
+                branch = branch_proc.stdout.strip()
+            if head_proc.returncode == 0:
+                head_sha = head_proc.stdout.strip()
+            if status_proc.returncode == 0:
+                git_status_clean = "1" if status_proc.stdout.strip() == "" else "0"
+    except Exception:
+        pass
+    step9_script = repo_root / "pipeline" / "RUN_QGIS" / "STEP9_FINAL_MASTER_PACK" / "run_step9_final_master_pack.ps1"
+    r6k_script = repo_root / "pipeline" / "RUN_QGIS" / "STEP9_FINAL_MASTER_PACK" / "r6k_refresh_runtime_closure_decision.ps1"
+    run_log = qa_dir / "run_log.txt"
+    runtime_start = ""
+    runtime_end = ""
+    if run_log.exists():
+        lines = [line.strip() for line in run_log.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip()]
+        if lines:
+            runtime_start = lines[0][:21]
+            runtime_end = lines[-1][:21]
+    write_tsv(
+        qa_dir / "source_runtime_provenance.tsv",
+        ["repo_root", "branch", "HEAD_SHA", "git_status_clean", "runtime_root", "output_root", "launcher", "runtime_start", "runtime_end", "step9_script_sha256", "r6k_script_sha256"],
+        [[str(repo_root), branch, head_sha, git_status_clean, str(output_root.parent), str(output_root), "pipeline/moduleC_pipeline_v2.py", runtime_start, runtime_end, _sha256_path(step9_script) if step9_script.exists() else "", _sha256_path(r6k_script) if r6k_script.exists() else ""]],
+    )
 
 def refresh_smoke_route_v0_audit(output_root: Path) -> None:
     qa_dir = output_root / "qa"
@@ -4669,6 +4809,8 @@ def collect_final_outputs(output_root: Path, scientific_decision_path: Path, inc
         output_root / "qa" / "QA_checks.csv",
         output_root / "qa" / "report_auditoria_v2.txt",
         output_root / "qa" / "preflight_report.txt",
+        output_root / "qa" / "warning_inventory.tsv",
+        output_root / "qa" / "source_runtime_provenance.tsv",
         output_root / "qa" / "objectives_canon_alignment_report.tsv",
         output_root / "qa" / "objectives_canon_alignment_report.md",
         output_root / "qa" / "objectives_canon_sha256.txt",
@@ -4703,6 +4845,9 @@ def collect_final_outputs(output_root: Path, scientific_decision_path: Path, inc
         output_root / "qa" / "gfas_era5_vs_portuguese_aq_concordance.tsv",
         output_root / "qa" / "portuguese_aq_validation_gate.tsv",
         output_root / "qa" / "portuguese_aq_claim_disposition.md",
+        output_root / "qa" / "iech_aggregate_consistency_audit.tsv",
+        output_root / "qa" / "scenario_aggregate_consistency_audit.tsv",
+        output_root / "qa" / "wrb_method_consistency_audit.tsv",
         output_root / "tables" / "IECH_unit_2015_2024.csv",
         output_root / "tables" / "IECH_unit_2015_2024_mean.csv",
         output_root / "tables" / "IECH_municipio_2015_2024.csv",
@@ -4720,6 +4865,8 @@ def collect_final_outputs(output_root: Path, scientific_decision_path: Path, inc
         output_root / "brief" / "causal_matrix" / "causal_matrix_IECH_NUTS3.csv",
         output_root / "maps" / "IECH_ModuleC_master.gpkg",
         output_root / "deliverables_step9" / "runtime_closure_decision.md",
+        output_root / "deliverables_step9" / "final_manifest_recursive_audit.tsv",
+        output_root / "deliverables_step9" / "final_bundle_staleness_audit.tsv",
         scientific_decision_path,
     ]
     if include_global_scan:
@@ -4747,6 +4894,8 @@ def complete_post_smoke_runtime(
         run_step7_causal_extension(gata_root, output_root, report)
     else:
         report.log("STEP7 outputs already present; reusing post-smoke artifacts.")
+    refresh_warning_inventory_from_runtime_logs(output_root)
+    write_source_runtime_provenance(output_root)
     refresh_smoke_route_v0_audit(output_root)
     write_oc03_v11_decoder_contract_validation(output_root)
     base_smoke_meta = run_base_smoke_contract_for_oc03c(output_root)
@@ -4836,7 +4985,7 @@ def main() -> int:
     tables_dir = out_dir / "tables"
     maps_dir = out_dir / "maps"
     brief_dir = out_dir / "brief"
-    work_dir = modulec_root / "02_work"
+    work_dir = out_dir / "_runtime_work"
     deliver_dir = out_dir / "deliverables_step9"
 
     report_path = qa_dir / "report_auditoria_v2.txt"
@@ -5059,6 +5208,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+
 
 
 

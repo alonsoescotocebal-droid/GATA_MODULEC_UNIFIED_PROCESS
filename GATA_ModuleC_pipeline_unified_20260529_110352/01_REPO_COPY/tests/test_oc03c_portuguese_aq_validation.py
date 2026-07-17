@@ -141,13 +141,64 @@ def _seed_minimal_runtime(
         "qa/portuguese_aq_station_to_unit_assignment.tsv",
         "qa/gfas_era5_vs_portuguese_aq_concordance.tsv",
         "qa/portuguese_aq_claim_disposition.md",
+        "qa/objectives_canon_alignment_report.md",
+        "qa/objectives_canon_sha256.txt",
+        "qa/QA_checks.csv",
+        "qa/report_auditoria_v2.txt",
+        "qa/run_log.txt",
         "tables/portuguese_aq_daily_station_2015_2024.csv",
         "tables/portuguese_aq_daily_unit_2015_2024.csv",
         "tables/smoke_proxy_aq_concordance_by_unit.csv",
+        "deliverables_step9/final_manifest_recursive_audit.tsv",
+        "deliverables_step9/final_bundle_staleness_audit.tsv",
+        "deliverables_step9/runtime_scientific_closure_decision.md",
     ]:
         path = output_root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("stub\n", encoding="utf-8")
+
+    semantics_audit = (
+        "metric\tvalue\tstatus\tnote\n"
+        "IECH_REPORTING_REFRAME_STATUS\tPASS\tPASS\tseeded\n"
+        "population_smoke_burden_proxy_column_present\t1\tPASS\tseeded\n"
+        "population_total_column_present\t1\tPASS\tseeded\n"
+        "population_exposed_assumed_column_present\t1\tPASS\tseeded\n"
+        "exposure_fraction_assumption_all_1\t1\tPASS\tseeded\n"
+        "claim_status_proxy_not_normalized\t1\tPASS\tseeded\n"
+        "legacy_IECH_deprecated_if_present\t1\tPASS\tseeded\n"
+        "population_smoke_burden_proxy_equals_expo_person_hours\t1\tPASS\tseeded\n"
+        "population_smoke_burden_proxy_equals_smoke_hours_times_population_total\t1\tPASS\tseeded\n"
+        "forbidden_normalized_IECH_claims\t0\tPASS\tseeded\n"
+        "forbidden_health_exposure_claims\t0\tPASS\tseeded\n"
+    )
+    (qa_dir / "iech_reporting_semantics_audit.tsv").write_text(semantics_audit, encoding="utf-8")
+    (qa_dir / "iech_reporting_reframe_audit.tsv").write_text(semantics_audit, encoding="utf-8")
+    (qa_dir / "iech_calculation_audit.tsv").write_text(
+        "metric\tvalue\tstatus\tnote\nIECH_NUMERIC_CHANGE\tNO_NUMERIC_CHANGE_TO_POPULATION_SMOKE_BURDEN_PROXY_PERSON_HOURS\tPASS\tseeded\n",
+        encoding="utf-8",
+    )
+    (qa_dir / "warning_inventory.tsv").write_text(
+        "tool\tcontext\tclassification\texplained\timpact\tstatus\twarning_text\n"
+        "runtime\tnone\tPASS_NO_WARNING\t1\tNONE\tPASS\tNo warning captured across GFAS/ERA5, Step7, run_log, or report_auditoria_v2.\n",
+        encoding="utf-8",
+    )
+    (qa_dir / "source_runtime_provenance.tsv").write_text(
+        "repo_root\tbranch\tHEAD_SHA\tgit_status_clean\truntime_root\toutput_root\tlauncher\truntime_start\truntime_end\tstep9_script_sha256\tr6k_script_sha256\n"
+        "repo\tbranch\tsha\t0\truntime\toutput\tlauncher\tstart\tend\tstep9\tr6k\n",
+        encoding="utf-8",
+    )
+    (qa_dir / "iech_aggregate_consistency_audit.tsv").write_text(
+        "unit_id\tunit_level\texpected_proxy_mean\tobserved_proxy_mean\tabs_diff\tstatus\nA\tNUTS3\t1\t1\t0\tPASS\n",
+        encoding="utf-8",
+    )
+    (qa_dir / "scenario_aggregate_consistency_audit.tsv").write_text(
+        "unit_id\tunit_level\texpected_s0_mean\tobserved_s0_mean\texpected_s1_mean\tobserved_s1_mean\texpected_delta\tobserved_delta\tmax_abs_diff\tdetail_nonzero_s1_delta_rows\tstatus\nA\tNUTS3\t1\t1\t1\t1\t0\t0\t0\t0\tPASS\n",
+        encoding="utf-8",
+    )
+    (qa_dir / "wrb_method_consistency_audit.tsv").write_text(
+        "metric\tvalue\tstatus\tnote\nwrb_admin_unit_only_rows\t0\tPASS\tseeded\nwrb_positive_burn_missing_rows_nuts3\t0\tPASS\tseeded\nwrb_positive_burn_missing_rows_municipio\t0\tPASS\tseeded\n",
+        encoding="utf-8",
+    )
 
     (qa_dir / "oc03c_path_scope_preflight.tsv").write_text(
         "timestamp\tcheck_id\tstatus\tobserved\texpected\tdetail\n"
@@ -754,3 +805,95 @@ def test_qa_gate_prefers_tab_for_tsv_contracts_with_semicolon_detail(tmp_path):
     assert decision == "GO"
     assert "HOLD OBJECTIVES CANON" not in holds
     assert "HOLD SCIENTIFIC GATE" not in holds
+
+def test_aggregate_daily_station_rows_preserves_output_without_copying_full_payload(tmp_path):
+    mod = _load_aq_module()
+
+    observations = [
+        {
+            'station_id': 'S1',
+            'station_name': 'Lisboa',
+            'station_key': 'lisboa',
+            'pollutant': 'PM10',
+            'pollutant_raw': 'PM10',
+            'date': '2019-08-01',
+            'unit': 'ug/m3',
+            'value': 20.0,
+            'source_file': 'a.csv',
+            'quality_status': 'V',
+            'huge_payload': 'X' * 1000000,
+        },
+        {
+            'station_id': 'S1',
+            'station_name': 'Lisboa',
+            'station_key': 'lisboa',
+            'pollutant': 'PM10',
+            'pollutant_raw': 'PM10',
+            'date': '2019-08-01',
+            'unit': 'ug/m3',
+            'value': 40.0,
+            'source_file': 'a.csv',
+            'quality_status': 'V',
+            'huge_payload': 'Y' * 1000000,
+        },
+    ]
+
+    rows = mod.aggregate_daily_station_rows(observations)
+
+    assert len(rows) == 1
+    assert rows[0]['daily_value'] == 30.0
+    assert rows[0]['observation_count'] == 2
+    assert 'huge_payload' not in rows[0]
+
+
+def test_incremental_daily_station_aggregation_matches_materialized_aggregation(tmp_path):
+    mod = _load_aq_module()
+
+    observations = [
+        {
+            'station_id': 'S1',
+            'station_name': 'Lisboa',
+            'station_key': 'lisboa',
+            'pollutant': 'PM10',
+            'pollutant_raw': 'PM10',
+            'date': '2019-08-01',
+            'unit': 'ug/m3',
+            'value': 20.0,
+            'source_file': 'a.csv',
+            'quality_status': 'V',
+        },
+        {
+            'station_id': 'S1',
+            'station_name': 'Lisboa',
+            'station_key': 'lisboa',
+            'pollutant': 'PM10',
+            'pollutant_raw': 'PM10',
+            'date': '2019-08-01',
+            'unit': 'ug/m3',
+            'value': 40.0,
+            'source_file': 'a.csv',
+            'quality_status': 'V',
+        },
+        {
+            'station_id': 'S2',
+            'station_name': 'Porto',
+            'station_key': 'porto',
+            'pollutant': 'NO2',
+            'pollutant_raw': 'NO2',
+            'date': '2019-08-02',
+            'unit': 'ug/m3',
+            'value': 10.0,
+            'source_file': 'b.csv',
+            'quality_status': '',
+        },
+    ]
+
+    grouped = mod.defaultdict(list)
+    sample_rows = {}
+    mod.update_daily_station_aggregates(observations[:1], grouped, sample_rows)
+    mod.update_daily_station_aggregates(observations[1:], grouped, sample_rows)
+
+    incremental_rows = mod.finalize_daily_station_aggregates(grouped, sample_rows)
+    materialized_rows = mod.aggregate_daily_station_rows(observations)
+
+    assert incremental_rows == materialized_rows
