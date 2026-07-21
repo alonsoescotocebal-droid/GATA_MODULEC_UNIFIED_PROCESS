@@ -40,7 +40,7 @@ selected.
 ## Lock and isolated installation
 
 - repository lock: `01_REPO_COPY\config\requirements-test.lock`
-- lock SHA256: `6d371e7615b22e2e34802525fd71985fec3f00f2a7b4d1206973de9b97439eda`
+- lock SHA256: `810510d6d9014bc8b6952ccb2ad81e46ef1d7639646a653959e0f6cbe43882a0`
 - staging: `03_RUNTIMES\TEST_TOOLING_LOCK_BUILD_20260721_154500_BC113AA`
 - installation: staging `install_test\venv` only
 - pytest: `9.1.1`
