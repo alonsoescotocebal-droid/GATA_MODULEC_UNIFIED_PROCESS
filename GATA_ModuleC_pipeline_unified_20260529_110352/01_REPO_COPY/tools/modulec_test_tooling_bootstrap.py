@@ -222,6 +222,19 @@ def plan(args: argparse.Namespace, policy_path: Path) -> int:
     write_json(plan_path, plan_payload)
     plan_hash = sha256_file(plan_path)
     (root / "plan" / "plan_sha256.txt").write_text(plan_hash + "\n", encoding="utf-8")
+    (root / "plan" / "test_tooling_download_plan.md").write_text(
+        "# Module C test tooling download plan\n\n"
+        f"- phase: `{plan_payload['phase']}`\n"
+        f"- bootstrap_root: `{root}`\n"
+        f"- head: `{base['head']}`\n"
+        f"- python: `{probe['python_executable']}` ({probe['python_version']})\n"
+        f"- pytest: `{selected}`\n"
+        "- network_accessed: `false`\n"
+        "- download_authorized: `false`\n"
+        f"- plan_sha256: `{plan_hash}`\n\n"
+        "Download remains blocked until the exact approval token is supplied.\n",
+        encoding="utf-8",
+    )
     checkpoint = {"checkpoint_schema": "MODULEC_TEST_TOOLING_V1", "phase": "AWAITING_DOWNLOAD_APPROVAL", "repo_root": str(repo), "code_root": str(code), "branch": base["branch"], "head": base["head"], "git_status": "clean", "python_executable": probe["python_executable"], "python_version": probe["python_version"], "pytest_selected": selected, "bootstrap_root": str(root), "approved_targets_sha256": sha256_file(root / "plan" / "approved_targets.tsv"), "policy_sha256": sha256_file(policy_path), "plan_sha256": plan_hash, "scientific_runtime_allowed": False, "next_authorized_action": "DOWNLOAD_TEST_TOOLING_WHEELS"}
     checkpoint_path = Path(args.checkpoint).resolve()
     if checkpoint_path != root / "checkpoint" / "resume_checkpoint.json":
