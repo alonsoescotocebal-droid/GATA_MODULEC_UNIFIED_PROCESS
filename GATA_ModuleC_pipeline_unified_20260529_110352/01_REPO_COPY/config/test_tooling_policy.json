@@ -9,7 +9,8 @@
   "allow_plugins_autoload": false,
   "write_bytecode": false,
   "pytest_cache": "disabled",
-  "tooling_parent": "03_RUNTIMES",
+  "persistent_tooling_parent": "%LOCALAPPDATA%\\OpenAI\\Codex\\project-tools\\GATA_MODULEC_UNIFIED_PROCESS",
+  "resolution_staging_parent": "03_RUNTIMES",
   "compatibility": {
     ">=3.10": "9.1.1",
     "3.9": "8.4.2",

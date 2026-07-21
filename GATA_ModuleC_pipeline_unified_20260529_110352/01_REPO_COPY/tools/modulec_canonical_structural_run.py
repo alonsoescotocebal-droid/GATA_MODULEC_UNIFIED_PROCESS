@@ -4,10 +4,13 @@ import argparse
 import csv
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+from validate_controlled_test_environment import validate as validate_controlled_environment
 
 PASS_BY_MODE = {"preflight": "STRUCTURAL_PREFLIGHT_PASS", "smoke": "STRUCTURAL_SMOKERUN_PASS"}
 BLOCKED = "BLOCKED_STRUCTURAL_PROVENANCE"
@@ -93,8 +96,9 @@ def main() -> int:
     check("START_LINEAGE", start_ok, f"descendant of {cfg['EXPECTED_START_SHA']}")
     check("BRANCH", branch == cfg["EXPECTED_BRANCH"], f"{branch} expected {cfg['EXPECTED_BRANCH']}")
     check("TREE_CLEAN", status == "", status or "clean")
-    environment = repo / ".codex" / "environments" / "environment.toml"
-    check("ENVIRONMENT_INERT", environment.exists() and environment.read_text(encoding="utf-8").count('script = ""') >= 4, str(environment))
+    os.environ.update({"PYTHONDONTWRITEBYTECODE": "1", "PYTHONNOUSERSITE": "1", "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1", "PYTHONHASHSEED": "0"})
+    controlled_environment = validate_controlled_environment(repo, code)
+    check("CONTROLLED_PROJECT_TEST_ENVIRONMENT", controlled_environment["status"] == "PASS", json.dumps(controlled_environment, sort_keys=True))
     prefixes = [Path(value) for value in cfg["DATA_ROOT_ALLOWED_PREFIXES"]]
     check("MODULEC_DATA_ROOT", data.exists() and is_subpath(data, prefixes[0]), str(data))
     check("PORTUGUESE_ROOT", portuguese.exists() and is_subpath(portuguese, prefixes[2]), str(portuguese))
@@ -110,6 +114,13 @@ def main() -> int:
     check("SEMANTIC_CONTRACT_TSV", semantic_ok, str(semantic_tsv))
     check("NO_RESUME", True, "canonical launcher exposes no resume option")
     check("NO_SCIENTIFIC_RUNTIME", True, "structural tool does not import or invoke moduleC_pipeline_v2.py")
+    evidence_root = Path(os.environ.get("MODULEC_PYTEST_EVIDENCE_ROOT", "")).resolve() if os.environ.get("MODULEC_PYTEST_EVIDENCE_ROOT") else None
+    collection_audit = evidence_root / "pytest_collection_audit.tsv" if evidence_root else None
+    execution_audit = evidence_root / "pytest_execution_audit.tsv" if evidence_root else None
+    collection_ok = bool(collection_audit and collection_audit.exists() and "PASS" in collection_audit.read_text(encoding="utf-8"))
+    execution_ok = bool(execution_audit and execution_audit.exists() and "PASS" in execution_audit.read_text(encoding="utf-8"))
+    check("PYTEST_COLLECTION_AUDIT", collection_ok, str(collection_audit or "not supplied"))
+    check("PYTEST_EXECUTION_AUDIT", execution_ok, str(execution_audit or "not supplied"))
 
     runtime.mkdir(parents=True); qa, logs, provenance = runtime / "qa", runtime / "logs", runtime / "provenance"
     qa.mkdir(); logs.mkdir(); provenance.mkdir()
@@ -123,7 +134,7 @@ def main() -> int:
     (logs / "run_log.txt").write_text("\n".join(f"{name}={state} {detail}" for name, state, detail in checks), encoding="utf-8")
 
     container = launcher.parent.parent
-    producer_paths = [launcher, config_path, guard, code / "pipeline" / "moduleC_pipeline_v2.py", Path(__file__).resolve(), semantic, semantic_tsv, container / "02_LAUNCHERS" / "historical_launcher_blocklist.tsv", code / "tests" / "test_structural_launcher_contract.py", code / "tests" / "test_phase1b_structural_completion.py"]
+    producer_paths = [launcher, config_path, guard, code / "pipeline" / "moduleC_pipeline_v2.py", Path(__file__).resolve(), code / "tools" / "validate_controlled_test_environment.py", code / "config" / "test_tooling_policy.json", semantic, semantic_tsv, container / "02_LAUNCHERS" / "historical_launcher_blocklist.tsv", code / "tests" / "test_structural_launcher_contract.py", code / "tests" / "test_phase1b_structural_completion.py", code / "tests" / "test_phase1c_controlled_environment.py", code / "tests" / "test_requirements_test_lock_contract.py"]
     producer_rows = []
     for path in producer_paths:
         try:
@@ -149,7 +160,12 @@ def main() -> int:
     write_tsv(qa / "historical_output_reuse_audit.tsv", ("check", "status", "detail"), [("runtime_new", "PASS", str(runtime)), ("resume", "PASS", "not accepted")])
     write_tsv(qa / "untracked_producer_audit.tsv", ("check", "status", "detail"), [("producer_inventory", "PASS" if producers_ok else "BLOCKED", str(len(producer_rows)))])
     write_tsv(qa / "semantic_contract_gate.tsv", ("check", "status", "detail"), [("contract_tsv", "PASS" if semantic_ok else "BLOCKED", str(semantic_tsv))])
+    write_tsv(qa / "controlled_test_environment_gate.tsv", ("check", "status", "detail"), [("CONTROLLED_PROJECT_TEST_ENVIRONMENT", controlled_environment["status"], json.dumps(controlled_environment, sort_keys=True))])
+    write_tsv(qa / "pytest_collection_audit.tsv", ("check", "status", "detail"), [("collection", "PASS" if collection_ok else "BLOCKED", str(collection_audit or "not supplied"))])
+    write_tsv(qa / "pytest_execution_audit.tsv", ("check", "status", "detail"), [("execution", "PASS" if execution_ok else "BLOCKED", str(execution_audit or "not supplied"))])
     write_tsv(qa / "warning_inventory.tsv", ("source", "classification", "status"), [("structural_run", "NO_WARNINGS", "PASS")])
+    write_tsv(provenance / "test_environment.tsv", tuple(controlled_environment.keys()), [tuple(str(controlled_environment[key]) for key in controlled_environment.keys())])
+    (provenance / "requirements_test_lock_sha256.txt").write_text(controlled_environment["lock_sha256"] + "\n", encoding="ascii")
     decision = PASS_BY_MODE[args.mode] if all(state == "PASS" for _, state, _ in checks) else BLOCKED
     (runtime / "smokerun_decision.md").write_text(f"# Canonical structural {args.mode}\n\n- decision: `{decision}`\n- expected_head_sha: `{args.expected_head_sha}`\n- scientific_runtime_started: `false`\n", encoding="utf-8")
     (qa / "source_runtime_provenance.json").write_text(json.dumps({"runtime_kind": "CANONICAL_" + args.mode.upper(), "decision": decision, "head": head, "branch": branch, "runtime_root": str(runtime), "scientific_runtime_started": False, "guard_decision": "PATH_SCOPE_PASS" if guard_pass else BLOCKED}, indent=2), encoding="utf-8")

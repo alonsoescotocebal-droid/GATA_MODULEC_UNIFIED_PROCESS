@@ -2,9 +2,12 @@
 
 This contract defines the test-tooling boundary for Phase 2A/2B.
 
-The bootstrap is a repository tool, not a scientific launcher. It may create
-files only below a new `03_RUNTIMES\TEST_TOOLING_BOOTSTRAP_<timestamp>_<sha8>`
-root. It must never create a virtual environment or site-packages directory in
+The bootstrap is a repository tool, not a scientific launcher. Resolution
+artifacts (wheels, metadata, logs and temporary installation tests) may be
+created only below a new `03_RUNTIMES\TEST_TOOLING_*` root. The controlled
+project test environment is persistent, but its ToolRoot is outside the
+worktree at `%LOCALAPPDATA%\OpenAI\Codex\project-tools\GATA_MODULEC_UNIFIED_PROCESS`.
+It must never create a virtual environment or site-packages directory in
 `01_REPO_COPY`, install globally or for the user, modify `environment.toml`,
 write external data, or invoke the Module C scientific runtime.
 

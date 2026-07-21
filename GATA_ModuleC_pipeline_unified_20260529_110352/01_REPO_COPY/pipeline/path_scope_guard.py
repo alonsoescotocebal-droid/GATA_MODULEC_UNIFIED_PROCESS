@@ -12,7 +12,12 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-from wrb_source_route import catalog_resolved_paths
+try:
+    from wrb_source_route import catalog_resolved_paths
+except ModuleNotFoundError:
+    # Tests may load this file directly instead of importing the pipeline package.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from wrb_source_route import catalog_resolved_paths
 
 STATE_PATH_SCOPE_PASS = "PATH_SCOPE_PASS"
 STATE_BLOCKED_PATH_DESYNC = "BLOCKED_PATH_DESYNC"
