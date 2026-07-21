@@ -17,10 +17,8 @@ def _r7q_runtime_cli_contract_patch():
     from pathlib import Path as _R7QPath
 
     def _r7q_env_first(names):
-        for name in names:
-            val = _r7q_os.environ.get(name)
-            if val and str(val).strip():
-                return str(val)
+        # Canonical contract: roots must be explicit CLI values. Environment
+        # variables are never allowed to inject runtime/data/output paths.
         return None
 
     def _r7q_dest_key(dest):
@@ -4127,7 +4125,7 @@ def run_objectives_gate(output_root: Path, report: Report, mode: str = "post") -
     report.log(f"Objectives gate completed. mode={mode}")
 
 
-def run_path_scope_guard(data_root: Path, output_root: Path, report: Report, enforce_clean_tree: bool = False) -> Path:
+def run_path_scope_guard(data_root: Path, output_root: Path, report: Report, enforce_clean_tree: bool = True) -> Path:
     guard_script = Path(__file__).resolve().parent / "path_scope_guard.py"
     repo_root = Path(__file__).resolve().parents[1]
     pipeline_root = Path(__file__).resolve().parent
@@ -5028,7 +5026,7 @@ def main() -> int:
                 report,
                 qgis_ready=False,
             )
-            run_path_scope_guard(Path(args.modulec_datos), out_dir, report, enforce_clean_tree=False)
+            run_path_scope_guard(Path(args.modulec_datos), out_dir, report, enforce_clean_tree=True)
             write_smoke_route_source_trace_audit(qa_dir, inputs, sources, route_decision)
             write_gfas_era5_presence_audit(qa_dir, sources)
             complete_post_smoke_runtime(
@@ -5079,7 +5077,7 @@ def main() -> int:
             report,
             qgis_ready=True,
         )
-        run_path_scope_guard(Path(args.modulec_datos), out_dir, report, enforce_clean_tree=False)
+        run_path_scope_guard(Path(args.modulec_datos), out_dir, report, enforce_clean_tree=True)
         write_smoke_route_source_trace_audit(qa_dir, inputs, sources, route_decision)
         write_gfas_era5_presence_audit(qa_dir, sources)
         write_gfas_era5_decoder_audit(

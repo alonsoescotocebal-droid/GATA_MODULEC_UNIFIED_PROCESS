@@ -1,12 +1,14 @@
 ﻿{
+    "EXPECTED_GIT_TOPLEVEL":  "D:\\GATA_MODULEC_UNIFIED_PROCESS",
     "EXPECTED_REPO_ROOT":  "D:\\GATA_MODULEC_UNIFIED_PROCESS\\GATA_ModuleC_pipeline_unified_20260529_110352\\01_REPO_COPY",
     "EXPECTED_BRANCH":  "codex/wrb-source-route-repair-b9cb373d",
-    "EXPECTED_BASE_SHA":  "b9cb373d90c3372c4cdcc7ed1236e13cbbc598b1",
+    "EXPECTED_BASE_SHA":  "dbcda0b6f3e00d67a7e4a3701e0f2422f87253e9",
+    "EXPECTED_START_SHA":  "57aaf4e9c7bb0af545d5653ce8f6cf06cd06af0f",
     "FORBIDDEN_CODE_ROOT":  "D:\\Mestrado\\GATA_2025_2026\\Prueba_aislada\\ISO_GATA_20260121_130505\\_qa_catalogs\\moduleC_local_pipeline",
     "DATA_ROOT_ALLOWED_PREFIX":  "D:\\Mestrado\\GATA_2025_2026\\Prueba_aislada\\ISO_GATA_20260121_130505\\Complementariedad de analisis\\Module C\\Datos",
     "DATA_ROOT_ALLOWED_PREFIXES":  [
         "D:\\Mestrado\\GATA_2025_2026\\Prueba_aislada\\ISO_GATA_20260121_130505\\Complementariedad de analisis\\Module C\\Datos",
-        "D:\\Mestrado\\GATA_2025_2026\\Prueba_aislada\\ISO_GATA_20260121_130505\\Complementariedad de analisis\\Module C\\Datos_RECOVERY_2015_2024_PIPELINE_GRIB",
+        "D:\\Mestrado\\GATA_2025_2026\\Prueba_aislada\\ISO_GATA_20260121_130505\\Complementariedad de analisis\\Module C\\Datos\\Datos_RECOVERY_2015_2024_PIPELINE_GRIB",
         "D:\\Mestrado\\GATA_2025_2026\\Prueba_aislada\\ISO_GATA_20260121_130505\\Complementariedad de analisis\\Module C\\Datos_RECOVERY_PORTUGUESE_AGENCIES_2015_2024",
         "D:\\Mestrado\\GATA_2025_2026\\Prueba_aislada\\ISO_GATA_20260121_130505\\Complementariedad de analisis\\Module C\\Datos_RECOVERY_2015_2024",
         "D:\\Mestrado\\GATA_2025_2026\\Prueba_aislada\\ISO_GATA_20260121_130505\\Incendios_Nueva version"

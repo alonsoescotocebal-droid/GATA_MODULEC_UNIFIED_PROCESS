@@ -26,6 +26,7 @@ STATE_BLOCKED_INPUT_PATH_OUTSIDE_ALLOWED_ROOT = "BLOCKED_INPUT_PATH_OUTSIDE_ALLO
 STATE_BLOCKED_OUTPUT_ROOT_PARENT_MISSING = "BLOCKED_OUTPUT_ROOT_PARENT_MISSING"
 STATE_BLOCKED_OUTPUT_ROOT_INSIDE_REPO = "BLOCKED_OUTPUT_ROOT_INSIDE_REPO"
 STATE_BLOCKED_CODE_WRITE_OUTSIDE_GITHUB_REPO = "BLOCKED_CODE_WRITE_OUTSIDE_GITHUB_REPO"
+STATE_BLOCKED_HEAD_SHA_MISMATCH = "BLOCKED_HEAD_SHA_MISMATCH"
 
 
 def now_iso() -> str:
@@ -100,6 +101,7 @@ def load_config(config_path: Path) -> Dict[str, str]:
         "EXPECTED_REPO_ROOT",
         "EXPECTED_BRANCH",
         "EXPECTED_BASE_SHA",
+        "EXPECTED_START_SHA",
         "FORBIDDEN_CODE_ROOT",
         "DATA_ROOT_ALLOWED_PREFIX",
         "OUTPUT_ROOT_ALLOWED_PREFIX",
@@ -167,6 +169,7 @@ def evaluate(
     expected_repo_root = Path(cfg["EXPECTED_REPO_ROOT"])
     expected_branch = cfg["EXPECTED_BRANCH"]
     expected_base_sha = cfg["EXPECTED_BASE_SHA"]
+    expected_start_sha = cfg["EXPECTED_START_SHA"]
     forbidden_code_root = Path(cfg["FORBIDDEN_CODE_ROOT"])
     data_prefixes = _allowed_data_prefixes(cfg)
     output_prefix = Path(cfg["OUTPUT_ROOT_ALLOWED_PREFIX"])
@@ -262,6 +265,23 @@ def evaluate(
                 head,
                 f"descendant of {expected_base_sha}",
                 "HEAD lineage includes expected base SHA.",
+            )
+        rc_start, _start_out, _start_err = run_git(repo_root, ["merge-base", "--is-ancestor", expected_start_sha, head])
+        if rc_start != 0:
+            add(
+                "G003_start_sha",
+                STATE_BLOCKED_HEAD_SHA_MISMATCH,
+                head,
+                f"descendant of {expected_start_sha}",
+                "HEAD must descend from the canonical structural-unification starting SHA.",
+            )
+        else:
+            add(
+                "G003_start_sha",
+                "PASS",
+                head,
+                f"descendant of {expected_start_sha}",
+                "HEAD descends from the canonical structural-unification starting SHA.",
             )
 
     rc, status_short, err = run_git(repo_root, ["status", "--short"])
