@@ -44,6 +44,9 @@ def validate(repo_root: Path, code_root: Path) -> dict[str, Any]:
             failures.append(f"modified:{rel}:{status}")
     if not lock.exists() or sha256(lock) != EXPECTED_LOCK_SHA256:
         failures.append("lock_sha256")
+    marker = tool_root / ".requirements-test.lock.sha256"
+    if not marker.exists() or marker.read_text(encoding="ascii").strip().lower() != EXPECTED_LOCK_SHA256:
+        failures.append("tool_root_lock_marker")
     try:
         policy = json.loads(policy_path.read_text(encoding="utf-8-sig"))
         if policy.get("persistent_tooling_parent") != "%LOCALAPPDATA%\\OpenAI\\Codex\\project-tools\\GATA_MODULEC_UNIFIED_PROCESS":
@@ -91,7 +94,7 @@ def validate(repo_root: Path, code_root: Path) -> dict[str, Any]:
             failures.append("pytest_path")
         if pip_check != "PASS":
             failures.append("pip_check")
-    result = {"status": "PASS" if not failures else "BLOCKED", "failures": failures, "base_python": r"C:\Python314\python.exe", "base_python_version": "3.14.x", "test_python": str(tool_python), "python_version": python_version, "pytest_version": pytest_version, "pytest_path": pytest_path, "tool_root": str(tool_root), "lock_path": str(lock), "lock_sha256": sha256(lock) if lock.exists() else "MISSING", "pip_check": pip_check, "plugins_autoload": "disabled", "bytecode": "disabled", "pytest_cache": "disabled", "download_performed_this_phase": "false", "installation_performed_this_phase": "false", "scientific_runtime_started": "false"}
+    result = {"status": "PASS" if not failures else "BLOCKED", "failures": failures, "base_python": r"C:\Python314\python.exe", "base_python_version": "3.14.x", "test_python": str(tool_python), "python_version": python_version, "pytest_version": pytest_version, "pytest_path": pytest_path, "tool_root": str(tool_root), "tool_root_lock_marker": str(marker), "lock_path": str(lock), "lock_sha256": sha256(lock) if lock.exists() else "MISSING", "pip_check": pip_check, "plugins_autoload": "disabled", "bytecode": "disabled", "pytest_cache": "disabled", "download_performed_this_phase": "false", "installation_performed_this_phase": "false", "scientific_runtime_started": "false"}
     return result
 
 

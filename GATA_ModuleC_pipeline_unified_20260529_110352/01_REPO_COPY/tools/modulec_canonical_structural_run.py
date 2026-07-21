@@ -164,6 +164,11 @@ def main() -> int:
     write_tsv(qa / "pytest_collection_audit.tsv", ("check", "status", "detail"), [("collection", "PASS" if collection_ok else "BLOCKED", str(collection_audit or "not supplied"))])
     write_tsv(qa / "pytest_execution_audit.tsv", ("check", "status", "detail"), [("execution", "PASS" if execution_ok else "BLOCKED", str(execution_audit or "not supplied"))])
     write_tsv(qa / "warning_inventory.tsv", ("source", "classification", "status"), [("structural_run", "NO_WARNINGS", "PASS")])
+    evidence_logs = ("pytest_collect_stdout.txt", "pytest_collect_stderr.txt", "pytest_run_stdout.txt", "pytest_run_stderr.txt")
+    for filename in evidence_logs:
+        source = evidence_root / "logs" / filename if evidence_root else None
+        content = source.read_text(encoding="utf-8", errors="replace") if source and source.exists() else "ABSENT: pytest evidence log was not supplied\n"
+        (logs / filename).write_text(content, encoding="utf-8")
     write_tsv(provenance / "test_environment.tsv", tuple(controlled_environment.keys()), [tuple(str(controlled_environment[key]) for key in controlled_environment.keys())])
     (provenance / "requirements_test_lock_sha256.txt").write_text(controlled_environment["lock_sha256"] + "\n", encoding="ascii")
     decision = PASS_BY_MODE[args.mode] if all(state == "PASS" for _, state, _ in checks) else BLOCKED
