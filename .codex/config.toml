@@ -1,2 +1,2 @@
 [sandbox_workspace_write]
-network_access = false
+network_access = true
