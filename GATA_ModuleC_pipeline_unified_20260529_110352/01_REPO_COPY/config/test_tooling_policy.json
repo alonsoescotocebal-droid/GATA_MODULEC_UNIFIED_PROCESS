@@ -1,0 +1,32 @@
+{
+  "policy_schema": "MODULEC_TEST_TOOLING_POLICY_V1",
+  "official_index": "https://pypi.org/simple",
+  "only_binary": true,
+  "allow_source_distributions": false,
+  "allow_pip_upgrade": false,
+  "allow_global_install": false,
+  "allow_user_install": false,
+  "allow_plugins_autoload": false,
+  "write_bytecode": false,
+  "pytest_cache": "disabled",
+  "tooling_parent": "03_RUNTIMES",
+  "compatibility": {
+    ">=3.10": "9.1.1",
+    "3.9": "8.4.2",
+    "3.8": "8.3.5",
+    "3.7": "7.4.4"
+  },
+  "allowed_packages": [
+    "pytest",
+    "iniconfig",
+    "packaging",
+    "pluggy",
+    "pygments",
+    "colorama",
+    "exceptiongroup",
+    "tomli",
+    "typing-extensions",
+    "atomicwrites"
+  ],
+  "scientific_runtime_allowed": false
+}
