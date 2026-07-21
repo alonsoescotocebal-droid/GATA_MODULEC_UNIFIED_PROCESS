@@ -12,12 +12,13 @@ SMOKERUN = ROOT / "tools" / "modulec_structural_smokerun.py"
 CONFIG = ROOT / "config" / "module_c_canonical_paths.json"
 
 
-def test_canonical_launcher_is_single_explicit_smoke_entrypoint() -> None:
+def test_canonical_launcher_is_single_explicit_structural_entrypoint() -> None:
     text = LAUNCHER.read_text(encoding="utf-8")
-    assert "ValidateSet('smoke')" in text
-    assert "MODULEC_OUTPUT_ROOT" not in text
+    assert "ValidateSet('Preflight','Smoke','Full')" in text
+    assert "MODULEC_OUTPUT_ROOT" in text
     assert "03_RUNTIMES" in text
-    assert "modulec_structural_smokerun.py" in text
+    assert "modulec_canonical_structural_run.py" in text
+    assert "path_scope_guard.py" in text
     assert "BLOCKED_OUTPUT_ROOT_EXISTS" in text
 
 

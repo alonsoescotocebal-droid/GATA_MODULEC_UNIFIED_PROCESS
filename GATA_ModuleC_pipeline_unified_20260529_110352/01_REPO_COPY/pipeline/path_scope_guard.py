@@ -98,7 +98,8 @@ def write_report(output_root: Path, rows: List[Dict[str, str]]) -> None:
 def load_config(config_path: Path) -> Dict[str, str]:
     payload = json.loads(config_path.read_text(encoding="utf-8-sig"))
     required = [
-        "EXPECTED_REPO_ROOT",
+        "EXPECTED_GIT_TOPLEVEL",
+        "EXPECTED_PIPELINE_CODE_ROOT",
         "EXPECTED_BRANCH",
         "EXPECTED_BASE_SHA",
         "EXPECTED_START_SHA",
@@ -166,7 +167,7 @@ def evaluate(
         if status.startswith("BLOCKED_") and counts_as_blocker:
             blockers.append(status)
 
-    expected_repo_root = Path(cfg["EXPECTED_REPO_ROOT"])
+    expected_repo_root = Path(cfg["EXPECTED_PIPELINE_CODE_ROOT"])
     expected_branch = cfg["EXPECTED_BRANCH"]
     expected_base_sha = cfg["EXPECTED_BASE_SHA"]
     expected_start_sha = cfg["EXPECTED_START_SHA"]
@@ -320,7 +321,7 @@ def evaluate(
             "P001_data_root_exists",
             STATE_BLOCKED_DATA_ROOT_MISSING,
             str(data_root),
-            f"existing path under {data_prefix}",
+            f"existing path under {data_prefixes}",
             "Data root is missing.",
         )
     elif not any(is_same_or_subpath(data_root, prefix) for prefix in data_prefixes):
@@ -421,17 +422,27 @@ def evaluate(
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--repo-root", required=True)
-    ap.add_argument("--pipeline-root", required=True)
-    ap.add_argument("--data-root", required=True)
+    ap.add_argument("--repo-root", required=False)
+    ap.add_argument("--pipeline-root", required=False)
+    ap.add_argument("--data-root", required=False)
+    ap.add_argument("--git-toplevel", required=False)
+    ap.add_argument("--pipeline-code-root", required=False)
+    ap.add_argument("--modulec-data-root", required=False)
+    ap.add_argument("--portuguese-agencies-root", required=False)
+    ap.add_argument("--recovery-2015-2024-root", required=False)
+    ap.add_argument("--incendios-root", required=False)
+    ap.add_argument("--gfas-root", required=False)
     ap.add_argument("--output-root", required=True)
     ap.add_argument("--config-path", required=False, default=None)
     ap.add_argument("--enforce-clean-tree", required=False, default="1")
+    ap.add_argument("--expected-head-sha", required=False, default=None)
+    ap.add_argument("--allow-resume", required=False, default="0")
     args = ap.parse_args()
 
-    repo_root = Path(args.repo_root)
-    pipeline_root = Path(args.pipeline_root)
-    data_root = Path(args.data_root)
+    repo_root = Path(args.pipeline_code_root or args.repo_root)
+    pipeline_root = Path(args.pipeline_code_root or args.pipeline_root)
+    data_root = Path(args.modulec_data_root or args.data_root)
+    git_toplevel = Path(args.git_toplevel or repo_root)
     output_root = Path(args.output_root)
 
     enforce_clean_tree = str(args.enforce_clean_tree).strip().lower() not in ("0", "false", "no")
@@ -448,6 +459,38 @@ def main() -> int:
     try:
         cfg = load_config(config_path)
         overall, rows = evaluate(repo_root, pipeline_root, data_root, output_root, cfg, enforce_clean_tree=enforce_clean_tree)
+        extra = []
+        head = run_git(git_toplevel, ["rev-parse", "HEAD"])[1]
+        if norm_path(git_toplevel) != norm_path(Path(cfg["EXPECTED_GIT_TOPLEVEL"])):
+            extra.append(("G004_git_toplevel", STATE_BLOCKED_REPO_ROOT_MISMATCH, str(git_toplevel), cfg["EXPECTED_GIT_TOPLEVEL"], "Git top-level mismatch."))
+        else:
+            extra.append(("G004_git_toplevel", "PASS", str(git_toplevel), cfg["EXPECTED_GIT_TOPLEVEL"], "Git top-level matches."))
+        if args.expected_head_sha and head != args.expected_head_sha:
+            extra.append(("G005_expected_head", STATE_BLOCKED_HEAD_SHA_MISMATCH, head, args.expected_head_sha, "HEAD exact match failed."))
+        else:
+            extra.append(("G005_expected_head", "PASS", head, args.expected_head_sha or "not supplied", "HEAD exact check passed or was not requested."))
+        if str(args.allow_resume).strip().lower() not in ("0", "false", "no", ""):
+            extra.append(("P007_no_resume", "BLOCKED_RESUME", args.allow_resume, "0", "Resume is forbidden by the canonical launcher."))
+        else:
+            extra.append(("P007_no_resume", "PASS", "0", "0", "Resume is disabled."))
+        prefixes = [Path(value) for value in json.loads(cfg["DATA_ROOT_ALLOWED_PREFIXES"])]
+        root_checks = [
+            ("P008_portuguese_root", args.portuguese_agencies_root, prefixes[2]),
+            ("P009_recovery_root", args.recovery_2015_2024_root, prefixes[3]),
+            ("P010_incendios_root", args.incendios_root, prefixes[4]),
+            ("P011_gfas_effective_root", args.gfas_root, prefixes[1]),
+        ]
+        for check_id, raw, expected_path in root_checks:
+            if not raw:
+                extra.append((check_id, "PASS", "not supplied", str(expected_path), "Optional legacy invocation."))
+            elif norm_path(Path(raw)) == norm_path(expected_path) and Path(raw).exists():
+                extra.append((check_id, "PASS", str(Path(raw)), str(expected_path), "Explicit root matches canonical allowlist."))
+            else:
+                extra.append((check_id, STATE_BLOCKED_INPUT_PATH_OUTSIDE_ALLOWED_ROOT, str(Path(raw)), str(expected_path), "Explicit root does not match canonical allowlist."))
+        for check_id, status, observed, expected, detail in extra:
+            rows.append({"timestamp": now_iso(), "check_id": check_id, "status": status, "observed": observed, "expected": expected, "detail": detail})
+        if any(str(row.get("status", "")).startswith("BLOCKED_") for row in rows):
+            overall = STATE_BLOCKED_PATH_DESYNC
         write_report(output_root, rows)
         print(overall)
         if overall != STATE_PATH_SCOPE_PASS:

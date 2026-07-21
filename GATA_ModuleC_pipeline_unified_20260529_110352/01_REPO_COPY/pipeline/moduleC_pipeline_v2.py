@@ -11,6 +11,10 @@ def _r7q_runtime_cli_contract_patch():
     - Inject env-backed values only when the existing parser requires matching options/positionals.
     - Do not copy or read canonical 03_outputs as active output.
     """
+    # Disabled compatibility marker. The former global argparse monkeypatch
+    # is intentionally not installed.
+    return
+
     import argparse as _r7q_argparse
     import os as _r7q_os
     import sys as _r7q_sys
@@ -205,8 +209,7 @@ def _r7q_runtime_cli_contract_patch():
 
         return ns
 
-    _r7q_argparse.ArgumentParser.error = _r7q_patched_error
-    _r7q_argparse.ArgumentParser.parse_args = _r7q_patched_parse_args
+    # Historical global argparse mutation removed.
 
     try:
         _r7q_write_trace("r7q_runtime_contract_trace.txt", "R7Q_RUNTIME_CLI_CONTRACT_PATCH_ACTIVE=1")
@@ -218,7 +221,7 @@ def _r7q_runtime_cli_contract_patch():
     except Exception:
         pass
 
-_r7q_runtime_cli_contract_patch()
+# Historical R7Q argparse compatibility code is retained only as inert legacy text; no global patch is installed.
 # <<< R7Q_RUNTIME_CLI_CONTRACT_PATCH
 
 

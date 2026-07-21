@@ -3,6 +3,9 @@
     [string]$OutputRoot
 )
 $ErrorActionPreference = 'Stop'
+Write-Error 'BLOCKED_NON_CANONICAL_LAUNCHER'
+Write-Error 'Use: ..\02_LAUNCHERS\run_modulec_canonical.ps1'
+exit 97
 Set-Location 'D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110352\01_REPO_COPY'
 & 'C:\OSGeo4W64\bin\python-qgis-ltr.bat' `
   'D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110352\01_REPO_COPY\pipeline\moduleC_pipeline_v2.py' `

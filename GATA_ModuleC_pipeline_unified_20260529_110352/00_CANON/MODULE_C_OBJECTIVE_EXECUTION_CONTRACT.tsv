@@ -1,0 +1,5 @@
+objective_id	current_semantic	allowed_claim	forbidden_claim	runtime_status	required_future_validation
+OC-05	POPULATION_SMOKE_BURDEN_PROXY	operational population burden proxy	measured pollutant concentration;health exposure;normalized IECH without formula	UNVERIFIED_UNDER_CANONICAL_CLEAN_RUNTIME	fresh smoke and GHSL runtime with declared formula
+OC-07	BUILT_UP_FUEL_TERRITORIAL_PROXY	territorial context proxy	formal WUI claim without formal WUI layer	UNVERIFIED_UNDER_CANONICAL_CLEAN_RUNTIME	formal WUI input or explicit proxy revalidation
+OC-09	INTEGRATED_SCREENING_ASSOCIATION	integrated screening/association matrix	causal identification or causal closure	UNVERIFIED_UNDER_CANONICAL_CLEAN_RUNTIME	independent causal methodology if causal claims are requested
+MUNICIPAL_SIGNAL	EXPLICIT_DIRECT_OR_REGIONAL_ALLOCATION	municipal result with signal provenance	direct municipal concentration when allocated from regional signal	UNVERIFIED_UNDER_CANONICAL_CLEAN_RUNTIME	resolved direct-vs-regional allocation audit

@@ -1,14 +1,6 @@
-﻿Set-Location 'D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110352\01_REPO_COPY'
-$argsList = @(
-    '-u',
-    'pipeline\\moduleC_pipeline_v2.py',
-    '--gata-root',
-    'D:\Mestrado\GATA_2025_2026\Prueba_aislada\ISO_GATA_20260121_130505',
-    '--modulec-datos',
-    'D:\Mestrado\GATA_2025_2026\Prueba_aislada\ISO_GATA_20260121_130505\Complementariedad de analisis\Module C\Datos',
-    '--inc-new',
-    'D:\Mestrado\GATA_2025_2026\Prueba_aislada\ISO_GATA_20260121_130505\Complementariedad de analisis\Incendios_Nueva version',
-    '--output-root',
-    'D:\GATA_MODULEC_UNIFIED_PROCESS\GATA_ModuleC_pipeline_unified_20260529_110352\03_RUNTIMES\IECH_WRB_AGGREGATE_STRICT_REPAIR_20260715_231752'
-)
-& 'C:\OSGeo4W64\bin\python-qgis-ltr.bat' @argsList
+# HISTORICAL_LAUNCHER_PRESERVED_AS_BLOCKED
+# Original behavior was a direct python-qgis invocation of pipeline/moduleC_pipeline_v2.py
+# with --gata-root, --modulec-datos, --inc-new and --output-root.
+Write-Error 'BLOCKED_NON_CANONICAL_LAUNCHER'
+Write-Error 'Use: .\GATA_ModuleC_pipeline_unified_20260529_110352\02_LAUNCHERS\run_modulec_canonical.ps1'
+exit 97

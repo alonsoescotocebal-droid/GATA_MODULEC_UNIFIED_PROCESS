@@ -1,4 +1,8 @@
 ﻿@echo off
+echo BLOCKED_NON_CANONICAL_LAUNCHER
+echo Use: ..\..\02_LAUNCHERS\run_modulec_canonical.ps1
+exit /b 97
+
 setlocal
 
 set "GATA_ROOT=D:\Mestrado\GATA_2025_2026\Prueba_aislada\ISO_GATA_20260121_130505"
