@@ -74,7 +74,7 @@ def select_pytest(version_info: tuple[int, int, int] | None = None) -> str:
 
 
 def runtime_parent(code_root: Path) -> Path:
-    return code_root.resolve().parent.parent / "03_RUNTIMES"
+    return code_root.resolve().parent / "03_RUNTIMES"
 
 
 def validate_root(repo_root: Path, code_root: Path, bootstrap_root: Path) -> None:
