@@ -1769,6 +1769,26 @@ def _iter_grib_message_offsets_by_next_grib(
 
 
 def _count_gfas_pm_messages_from_grib(src_grib: Path) -> int:
+    # The recovery files are fixed-size annual GRIB message streams. Validate
+    # the first two offsets before using the file-size quotient; irregular
+    # files retain the complete scanner fallback below.
+    try:
+        offsets = iter(_iter_grib_message_offsets_by_next_grib(src_grib))
+        first = next(offsets)
+        second = next(offsets)
+        payload_bytes = int(first[2])
+        if (
+            int(first[1]) == 0
+            and int(second[1]) == payload_bytes
+            and int(second[2]) == payload_bytes
+            and payload_bytes > 0
+        ):
+            file_size = int(src_grib.stat().st_size)
+            if file_size > 0 and file_size % payload_bytes == 0:
+                return file_size // payload_bytes
+    except (FileNotFoundError, OSError, StopIteration, ValueError, TypeError):
+        pass
+
     message_count = 0
     for message_count, _byte_offset, _payload_bytes in _iter_grib_message_offsets_by_next_grib(src_grib):
         pass

@@ -94,6 +94,19 @@ def test_fallback_gfas_pm_rows_from_gribs_uses_year_day_count(tmp_path, monkeypa
     ]
 
 
+def test_count_gfas_pm_messages_uses_validated_fixed_size_stream(tmp_path, monkeypatch):
+    mod = _load_module()
+    src = tmp_path / "GFAS_PM2P5FIRE_2015_GLOBAL_OFFICIAL.grib"
+    src.write_bytes(b"x" * 30)
+    monkeypatch.setattr(
+        mod,
+        "_iter_grib_message_offsets_by_next_grib",
+        lambda _path: iter([(1, 0, 10), (2, 10, 10)]),
+    )
+
+    assert mod._count_gfas_pm_messages_from_grib(src) == 3
+
+
 def test_gfas_decoder_reads_message_via_vsisubfile(monkeypatch):
     mod = _load_module()
     full_raster = [
