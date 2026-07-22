@@ -102,6 +102,10 @@ def write_report(output_root: Path, rows: List[Dict[str, str]]) -> None:
 
 def load_config(config_path: Path) -> Dict[str, str]:
     payload = json.loads(config_path.read_text(encoding="utf-8-sig"))
+    # Accept the pre-Phase-1C key names when loading isolated legacy fixtures.
+    payload.setdefault("EXPECTED_GIT_TOPLEVEL", payload.get("EXPECTED_REPO_ROOT", ""))
+    payload.setdefault("EXPECTED_PIPELINE_CODE_ROOT", payload.get("EXPECTED_REPO_ROOT", ""))
+    payload.setdefault("EXPECTED_START_SHA", payload.get("EXPECTED_BASE_SHA", ""))
     required = [
         "EXPECTED_GIT_TOPLEVEL",
         "EXPECTED_PIPELINE_CODE_ROOT",
@@ -172,10 +176,10 @@ def evaluate(
         if status.startswith("BLOCKED_") and counts_as_blocker:
             blockers.append(status)
 
-    expected_repo_root = Path(cfg["EXPECTED_PIPELINE_CODE_ROOT"])
+    expected_repo_root = Path(cfg.get("EXPECTED_PIPELINE_CODE_ROOT") or cfg["EXPECTED_REPO_ROOT"])
     expected_branch = cfg["EXPECTED_BRANCH"]
     expected_base_sha = cfg["EXPECTED_BASE_SHA"]
-    expected_start_sha = cfg["EXPECTED_START_SHA"]
+    expected_start_sha = cfg.get("EXPECTED_START_SHA") or expected_base_sha
     forbidden_code_root = Path(cfg["FORBIDDEN_CODE_ROOT"])
     data_prefixes = _allowed_data_prefixes(cfg)
     output_prefix = Path(cfg["OUTPUT_ROOT_ALLOWED_PREFIX"])

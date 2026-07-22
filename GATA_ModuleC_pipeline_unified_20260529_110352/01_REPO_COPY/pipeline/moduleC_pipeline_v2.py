@@ -21,7 +21,6 @@ import sys
 import traceback
 import zipfile
 from collections import defaultdict
-from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -1797,7 +1796,7 @@ def _epoch_seconds_to_iso_date(value: object) -> str:
 def _days_in_year(year: int) -> int:
     return 366 if calendar.isleap(year) else 365
 
-def _fallback_gfas_pm_rows_from_gribs(gfas_dir: Path) -> List[Dict[str, str]]:
+def _fallback_gfas_pm_rows_from_gribs(gfas_dir: Path, count_messages: bool = False) -> List[Dict[str, str]]:
     fallback_gribs = sorted(gfas_dir.rglob("GFAS_PM2P5FIRE_*.grib"))
     preferred_by_year: Dict[str, Path] = {}
     for grib_path in fallback_gribs:
@@ -1820,6 +1819,10 @@ def _fallback_gfas_pm_rows_from_gribs(gfas_dir: Path) -> List[Dict[str, str]]:
         grib_path = preferred_by_year[year]
         year_int = int(year)
         message_count = _days_in_year(year_int)
+        if count_messages:
+            counted = _count_gfas_pm_messages_from_grib(grib_path)
+            if counted > 0:
+                message_count = counted
         pm_rows.append(
             {
                 "file": str(grib_path.relative_to(gfas_dir)).replace("/", "\\"),
@@ -1873,7 +1876,7 @@ def _load_gfas_pm_summary_rows(gfas_dir: Path) -> List[Dict[str, str]]:
         )
 
     if not pm_rows:
-        fallback_rows = _fallback_gfas_pm_rows_from_gribs(gfas_dir)
+        fallback_rows = _fallback_gfas_pm_rows_from_gribs(gfas_dir, count_messages=True)
         if fallback_rows:
             return fallback_rows
         raise RuntimeError(f"No PM2P5FIRE candidate rows found in {summary_path.name}")
@@ -2530,114 +2533,75 @@ def decode_gfas_era5_gdal_proxy(
         daily_rows: List[Dict[str, object]] = []
         unit_daily_rows: List[Dict[str, object]] = []
         processed_days_by_year: Dict[int, int] = defaultdict(int)
-        chunk_size = 8
-        max_decode_workers = max(1, min(8, int(os.cpu_count() or 1)))
-        with ProcessPoolExecutor(max_workers=max_decode_workers) as chunk_executor:
-            for r in pm_rows:
-                file_name = (r.get("file") or "").strip()
-                if not file_name:
+        for r in pm_rows:
+            file_name = (r.get("file") or "").strip()
+            if not file_name:
+                continue
+            src_grib = gfas_dir / file_name
+            if not src_grib.exists():
+                continue
+            min_date = _yyyymmdd_to_date(str(r.get("minDate") or ""))
+            if min_date is None:
+                raise RuntimeError(f"GFAS PM2P5FIRE row missing valid minDate for {src_grib}")
+            file_year = int(base_year) if (base_year := str(r.get("minDate") or "")[:4]).isdigit() else min_date.year
+            if preferred_direct_years and file_year not in preferred_direct_years:
+                report.log(f"GFAS decoder skip file: {src_grib.name} year={file_year} not in direct anchor years.")
+                continue
+            message_count = int(safe_float(r.get("message_count")) or 0)
+            if message_count <= 0:
+                raise RuntimeError(f"GFAS PM2P5FIRE row missing message_count for {src_grib}")
+            pm_start_index, base_date_iso = _probe_gfas_pm_message_pattern(src_grib, _yyyymmdd_to_iso(str(r.get("minDate") or "")))
+            base_date = _yyyymmdd_to_date(base_date_iso.replace("-", "")) or min_date
+            pm_stride = max(1, int(safe_float(r.get("pm_stride_hint")) or 1))
+            planned_pm_messages = _planned_pm_message_count(message_count, pm_stride)
+            report.log(
+                "GFAS decoder file start: "
+                f"{src_grib.name} pm_start_index={pm_start_index} pm_stride={pm_stride} "
+                f"base_date={base_date.isoformat()} planned_pm_messages={planned_pm_messages}"
+            )
+            scheduled_messages: List[Tuple[int, int, int, str]] = []
+            for msg_index, byte_offset, payload_bytes in _iter_grib_message_offsets_by_next_grib(src_grib):
+                if msg_index < pm_start_index:
                     continue
-                src_grib = gfas_dir / file_name
-                if not src_grib.exists():
+                if (msg_index - pm_start_index) % pm_stride != 0:
                     continue
-                min_date = _yyyymmdd_to_date(str(r.get("minDate") or ""))
-                if min_date is None:
-                    raise RuntimeError(f"GFAS PM2P5FIRE row missing valid minDate for {src_grib}")
-                file_year = int(base_year) if (base_year := str(r.get("minDate") or "")[:4]).isdigit() else min_date.year
-                if preferred_direct_years and file_year not in preferred_direct_years:
-                    report.log(f"GFAS decoder skip file: {src_grib.name} year={file_year} not in direct anchor years.")
-                    continue
-                message_count = int(safe_float(r.get("message_count")) or 0)
-                if message_count <= 0:
-                    raise RuntimeError(f"GFAS PM2P5FIRE row missing message_count for {src_grib}")
-                pm_start_index, base_date_iso = _probe_gfas_pm_message_pattern(src_grib, _yyyymmdd_to_iso(str(r.get("minDate") or "")))
-                base_date = _yyyymmdd_to_date(base_date_iso.replace("-", "")) or min_date
-                pm_stride = max(1, int(safe_float(r.get("pm_stride_hint")) or 1))
-                planned_pm_messages = _planned_pm_message_count(message_count, pm_stride)
-                report.log(
-                    "GFAS decoder file start: "
-                    f"{src_grib.name} pm_start_index={pm_start_index} pm_stride={pm_stride} "
-                    f"base_date={base_date.isoformat()} planned_pm_messages={planned_pm_messages}"
+                day_offset = (msg_index - pm_start_index) // pm_stride
+                fallback_date = (base_date + dt.timedelta(days=day_offset)).strftime("%Y-%m-%d")
+                scheduled_messages.append((msg_index, byte_offset, payload_bytes, fallback_date))
+                if len(scheduled_messages) >= planned_pm_messages:
+                    break
+            if not scheduled_messages:
+                raise RuntimeError(f"No PM2P5FIRE daily messages were scheduled from {src_grib}")
+            processed_pm = 0
+            last_date_seen = ""
+            for msg_index, byte_offset, payload_bytes, fallback_date in scheduled_messages:
+                item = _decode_gfas_pm_subfile_to_unit_rows(
+                    src_grib,
+                    file_name,
+                    msg_index,
+                    byte_offset,
+                    payload_bytes,
+                    fallback_date,
+                    unit_samples,
                 )
-                scheduled_messages: List[Tuple[int, int, int, str]] = []
-                for msg_index, byte_offset, payload_bytes in _iter_grib_message_offsets_by_next_grib(src_grib):
-                    if msg_index < pm_start_index:
-                        continue
-                    if (msg_index - pm_start_index) % pm_stride != 0:
-                        continue
-                    day_offset = (msg_index - pm_start_index) // pm_stride
-                    fallback_date = (base_date + dt.timedelta(days=day_offset)).strftime("%Y-%m-%d")
-                    scheduled_messages.append((msg_index, byte_offset, payload_bytes, fallback_date))
-                    if len(scheduled_messages) >= planned_pm_messages:
-                        break
-                if not scheduled_messages:
-                    raise RuntimeError(f"No PM2P5FIRE daily messages were scheduled from {src_grib}")
-                processed_pm = 0
-                last_date_seen = ""
-                if max_decode_workers > 1 and len(scheduled_messages) > 1:
-                    chunks = [scheduled_messages[i : i + chunk_size] for i in range(0, len(scheduled_messages), chunk_size)]
-                    worker_count = min(max_decode_workers, len(chunks))
+                inv_rows.append(list(item["inventory_row"]))
+                daily_summary_rows.append(list(item["daily_summary_row"]))
+                daily_rows.append(dict(item["daily_row"]))
+                unit_daily_rows.extend(list(item["unit_rows"]))
+                processed_pm += 1
+                last_date_seen = str(item["daily_row"].get("date") or fallback_date)
+                if processed_pm == 1 or processed_pm % 31 == 0:
                     report.log(
-                        "GFAS decoder chunk plan: "
-                        f"{src_grib.name} worker_count={worker_count} chunk_count={len(chunks)} chunk_size={chunk_size}"
+                        "GFAS decoder progress: "
+                        f"{src_grib.name} processed_pm={processed_pm} last_date={last_date_seen}"
                     )
-                    future_map = {
-                        chunk_executor.submit(
-                            _decode_gfas_pm_chunk_worker,
-                            str(src_grib),
-                            file_name,
-                            chunk,
-                            unit_samples,
-                        ): chunk_index
-                        for chunk_index, chunk in enumerate(chunks, start=1)
-                    }
-                    for future in as_completed(future_map):
-                        chunk_index = future_map[future]
-                        chunk_result = future.result()
-                        inv_rows.extend(list(chunk_result["inv_rows"]))
-                        daily_summary_rows.extend(list(chunk_result["daily_summary_rows"]))
-                        daily_rows.extend(list(chunk_result["daily_rows"]))
-                        unit_daily_rows.extend(list(chunk_result["unit_rows"]))
-                        chunk_processed = int(chunk_result["processed_pm"])
-                        processed_pm += chunk_processed
-                        chunk_last_date = str(chunk_result.get("last_date") or "")
-                        if chunk_last_date > last_date_seen:
-                            last_date_seen = chunk_last_date
-                        report.log(
-                            "GFAS decoder chunk complete: "
-                            f"{src_grib.name} chunk={chunk_index}/{len(chunks)} "
-                            f"chunk_processed={chunk_processed} processed_pm={processed_pm}/{planned_pm_messages} "
-                            f"last_date={chunk_last_date or 'UNKNOWN'}"
-                        )
-                else:
-                    for msg_index, byte_offset, payload_bytes, fallback_date in scheduled_messages:
-                        item = _decode_gfas_pm_subfile_to_unit_rows(
-                            src_grib,
-                            file_name,
-                            msg_index,
-                            byte_offset,
-                            payload_bytes,
-                            fallback_date,
-                            unit_samples,
-                        )
-                        inv_rows.append(list(item["inventory_row"]))
-                        daily_summary_rows.append(list(item["daily_summary_row"]))
-                        daily_rows.append(dict(item["daily_row"]))
-                        unit_daily_rows.extend(list(item["unit_rows"]))
-                        processed_pm += 1
-                        last_date_seen = str(item["daily_row"].get("date") or fallback_date)
-                        if processed_pm == 1 or processed_pm % 31 == 0:
-                            report.log(
-                                "GFAS decoder progress: "
-                                f"{src_grib.name} processed_pm={processed_pm} last_date={last_date_seen}"
-                            )
-                if processed_pm >= planned_pm_messages:
-                    report.log(
-                        "GFAS decoder planned PM message count reached: "
-                        f"{src_grib.name} processed_pm={processed_pm} last_date={last_date_seen or 'UNKNOWN'}"
-                    )
-                processed_days_by_year[file_year] += processed_pm
-                report.log(f"GFAS decoder file complete: {src_grib.name} processed_pm={processed_pm}")
+            if processed_pm >= planned_pm_messages:
+                report.log(
+                    "GFAS decoder planned PM message count reached: "
+                    f"{src_grib.name} processed_pm={processed_pm} last_date={last_date_seen or 'UNKNOWN'}"
+                )
+            processed_days_by_year[file_year] += processed_pm
+            report.log(f"GFAS decoder file complete: {src_grib.name} processed_pm={processed_pm}")
         if not daily_rows:
             raise RuntimeError("PM2P5FIRE decoder produced no daily rows within 2015-2024.")
         if not unit_daily_rows:
