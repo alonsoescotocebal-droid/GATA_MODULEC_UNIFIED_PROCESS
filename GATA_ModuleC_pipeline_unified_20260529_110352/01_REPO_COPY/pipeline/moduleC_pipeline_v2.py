@@ -2487,6 +2487,8 @@ def decode_gfas_era5_gdal_proxy(
     from osgeo import gdal  # type: ignore
 
     ensure_dir(qa_dir)
+    # Let GDAL parallelize GRIB bit unpacking within each message.
+    gdal.SetConfigOption("GDAL_NUM_THREADS", "ALL_CPUS")
     gdal_translate = _resolve_gdal_tool("gdal_translate.exe")
     gdalinfo = _resolve_gdal_tool("gdalinfo.exe")
     result: Dict[str, object] = {
