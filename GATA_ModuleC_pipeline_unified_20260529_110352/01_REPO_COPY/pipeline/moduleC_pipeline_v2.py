@@ -21,6 +21,7 @@ import sys
 import traceback
 import zipfile
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -2574,26 +2575,40 @@ def decode_gfas_era5_gdal_proxy(
                 raise RuntimeError(f"No PM2P5FIRE daily messages were scheduled from {src_grib}")
             processed_pm = 0
             last_date_seen = ""
-            for msg_index, byte_offset, payload_bytes, fallback_date in scheduled_messages:
-                item = _decode_gfas_pm_subfile_to_unit_rows(
-                    src_grib,
-                    file_name,
-                    msg_index,
-                    byte_offset,
-                    payload_bytes,
-                    fallback_date,
-                    unit_samples,
-                )
-                inv_rows.append(list(item["inventory_row"]))
-                daily_summary_rows.append(list(item["daily_summary_row"]))
-                daily_rows.append(dict(item["daily_row"]))
-                unit_daily_rows.extend(list(item["unit_rows"]))
-                processed_pm += 1
-                last_date_seen = str(item["daily_row"].get("date") or fallback_date)
-                if processed_pm == 1 or processed_pm % 31 == 0:
+            chunks = [scheduled_messages[i : i + 8] for i in range(0, len(scheduled_messages), 8)]
+            worker_count = min(8, len(chunks))
+            report.log(
+                "GFAS decoder in-process thread plan: "
+                f"{src_grib.name} worker_count={worker_count} chunk_count={len(chunks)}"
+            )
+            with ThreadPoolExecutor(max_workers=worker_count) as pool:
+                future_map = {
+                    pool.submit(
+                        _decode_gfas_pm_chunk_worker,
+                        str(src_grib),
+                        file_name,
+                        chunk,
+                        unit_samples,
+                    ): chunk_index
+                    for chunk_index, chunk in enumerate(chunks, start=1)
+                }
+                for future in as_completed(future_map):
+                    chunk_index = future_map[future]
+                    chunk_result = future.result()
+                    inv_rows.extend(list(chunk_result["inv_rows"]))
+                    daily_summary_rows.extend(list(chunk_result["daily_summary_rows"]))
+                    daily_rows.extend(list(chunk_result["daily_rows"]))
+                    unit_daily_rows.extend(list(chunk_result["unit_rows"]))
+                    chunk_processed = int(chunk_result["processed_pm"])
+                    processed_pm += chunk_processed
+                    chunk_last_date = str(chunk_result.get("last_date") or "")
+                    if chunk_last_date > last_date_seen:
+                        last_date_seen = chunk_last_date
                     report.log(
                         "GFAS decoder progress: "
-                        f"{src_grib.name} processed_pm={processed_pm} last_date={last_date_seen}"
+                        f"{src_grib.name} chunk={chunk_index}/{len(chunks)} "
+                        f"chunk_processed={chunk_processed} processed_pm={processed_pm}/{planned_pm_messages} "
+                        f"last_date={chunk_last_date or 'UNKNOWN'} in_process_threads=1"
                     )
             if processed_pm >= planned_pm_messages:
                 report.log(
