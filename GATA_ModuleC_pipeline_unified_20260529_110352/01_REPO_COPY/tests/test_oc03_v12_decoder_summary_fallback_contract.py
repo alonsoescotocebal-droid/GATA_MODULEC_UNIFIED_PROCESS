@@ -26,4 +26,5 @@ def test_decoder_processes_payloads_in_process_with_progress_logging():
     assert "GFAS decoder target direct years:" in pipeline
     assert "GFAS decoder planned PM message count reached:" in pipeline
     assert "pm_stride_hint" in pipeline
+    assert "worker_count = min(2, len(chunks))" in pipeline
 

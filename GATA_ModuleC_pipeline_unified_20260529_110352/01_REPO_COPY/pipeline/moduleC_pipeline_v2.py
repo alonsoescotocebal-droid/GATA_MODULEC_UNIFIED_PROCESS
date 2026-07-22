@@ -2576,7 +2576,8 @@ def decode_gfas_era5_gdal_proxy(
             processed_pm = 0
             last_date_seen = ""
             chunks = [scheduled_messages[i : i + 8] for i in range(0, len(scheduled_messages), 8)]
-            worker_count = min(8, len(chunks))
+            # GDAL GRIB opens become non-progressing above two concurrent readers.
+            worker_count = min(2, len(chunks))
             report.log(
                 "GFAS decoder in-process thread plan: "
                 f"{src_grib.name} worker_count={worker_count} chunk_count={len(chunks)}"
