@@ -118,4 +118,6 @@ def test_path_scope_guard_passes_git_root_and_code_root_separately():
     assert "git_root = code_root.parents[1]" in section
     assert '"--repo-root",\n        str(git_root)' in section
     assert '"--pipeline-root",\n        str(code_root)' in section
+    assert '"--git-toplevel",\n        str(git_root)' in section
+    assert '"--pipeline-code-root",\n        str(code_root)' in section
     assert 'config_path = code_root / "config" / "module_c_canonical_paths.json"' in section
