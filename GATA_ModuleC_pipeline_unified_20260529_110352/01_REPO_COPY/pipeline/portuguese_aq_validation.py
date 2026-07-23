@@ -1088,6 +1088,9 @@ def write_path_scope_preflight(
     allowed_data_prefixes = _read_allowed_data_prefixes(repo_root, modulec_datos)
     allowed_output_root = repo_root.parent / "03_RUNTIMES"
     cwd = Path.cwd()
+    # The canonical launcher starts from the outer checkout root, while the
+    # executable repository is the nested 01_REPO_COPY directory.
+    authorized_checkout_root = repo_root.parents[2]
     rows: List[List[object]] = []
     blockers: List[str] = []
 
@@ -1098,10 +1101,10 @@ def write_path_scope_preflight(
 
     add(
         "OC03C_CWD",
-        "PASS" if _is_same_or_subpath(cwd, repo_root) else "BLOCKED_PATH_SCOPE_DESYNC",
+        "PASS" if _is_same_or_subpath(cwd, authorized_checkout_root) else "BLOCKED_PATH_SCOPE_DESYNC",
         cwd,
-        repo_root,
-        "Current working directory must stay inside the authorized repository.",
+        authorized_checkout_root,
+        "Current working directory must stay inside the authorized checkout.",
     )
     add(
         "OC03C_REPO_ROOT",

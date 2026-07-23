@@ -161,13 +161,13 @@ def _write_layer(gpkg: Path, source_layer, layer_name: str, table_path: Path, ke
     mem = QgsVectorLayer(f"{source_layer.wkbType() == 6 and 'MultiPolygon' or 'MultiPolygon'}?crs={source_layer.crs().authid()}", layer_name, "memory")
     provider = mem.dataProvider()
     fields = QgsFields()
-    fields.append(QgsField("unit_id", QVariant.String))
+    fields.append(QgsField("unit_id", QVariant.String, "string", 255))
     for col in header:
         if col == key_field or col == "unit_id" or col.lower() == "geometry":
             continue
-        fields.append(QgsField(col[:60], QVariant.String))
+        fields.append(QgsField(col[:60], QVariant.String, "string", 255))
     if assignment_note:
-        fields.append(QgsField("signal_assignment", QVariant.String))
+        fields.append(QgsField("signal_assignment", QVariant.String, "string", 255))
     provider.addAttributes(list(fields))
     mem.updateFields()
     out_features = []
@@ -219,7 +219,7 @@ def _write_fire_gpkg(output_root: Path, fire_paths: Sequence[Path]) -> None:
         if mem is None:
             mem = QgsVectorLayer(f"MultiPolygon?crs={layer.crs().authid()}", "fires_normalized_2015_2024", "memory")
             provider = mem.dataProvider()
-            provider.addAttributes([QgsField("fire_id", QVariant.String), QgsField("year", QVariant.Int), QgsField("source_file", QVariant.String), QgsField("source", QVariant.String), QgsField("area_ha", QVariant.Double), QgsField("source_crs", QVariant.String), QgsField("working_crs", QVariant.String), QgsField("feature_semantics", QVariant.String)])
+            provider.addAttributes([QgsField("fire_id", QVariant.String, "string", 255), QgsField("year", QVariant.Int, "integer", 10), QgsField("source_file", QVariant.String, "string", 255), QgsField("source", QVariant.String, "string", 32), QgsField("area_ha", QVariant.Double, "double", 20, 6), QgsField("source_crs", QVariant.String, "string", 32), QgsField("working_crs", QVariant.String, "string", 32), QgsField("feature_semantics", QVariant.String, "string", 64)])
             mem.updateFields()
         for feature in layer.getFeatures():
             geom = feature.geometry()
@@ -313,7 +313,7 @@ def _rewrite_brief_and_matrix_names(output_root: Path) -> None:
         text += (
             "\n## Semantica de cierre Fase 3\n"
             "- `population_smoke_burden_proxy` es carga poblacional proxy de humo: `smoke_hours_equiv * population_total`.\n"
-            "- No es IECH normalizado, exposicion individual, exposicion sanitaria ni riesgo epidemiologico.\n"
+            "- No es IECH normalizado ni una afirmacion clinica o epidemiologica.\n"
             "- La matriz es `TERRITORIAL_SCREENING_ASSOCIATION_MATRIX`, no inferencia causal.\n"
             "- El humo municipal es una asignacion de la senal NUTS3 (`MAPPED_FROM_NUTS3`), no una senal atmosferica municipal independiente.\n"
             "- S1 2026-2030 es un escenario normativo, no una proyeccion empiricamente validada.\n"

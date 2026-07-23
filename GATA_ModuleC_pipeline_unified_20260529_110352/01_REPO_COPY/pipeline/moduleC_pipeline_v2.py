@@ -4668,6 +4668,8 @@ def collect_final_outputs(output_root: Path, scientific_decision_path: Path, inc
         output_root / "qa" / "landcover_wui_input_inventory.tsv",
         output_root / "qa" / "formal_wui_feasibility.tsv",
         output_root / "qa" / "formal_wui_feasibility.md",
+        output_root / "qa" / "phase3_vs_phase2_scientific_comparison.tsv",
+        output_root / "qa" / "phase3_vs_phase2_scientific_comparison.md",
         output_root / "qa" / "fires_normalized_gpkg_audit.tsv",
         output_root / "qa" / "oc03c_path_scope_preflight.tsv",
         output_root / "qa" / "portuguese_aq_input_inventory.tsv",
