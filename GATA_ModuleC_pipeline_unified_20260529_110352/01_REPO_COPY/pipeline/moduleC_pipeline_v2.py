@@ -1728,6 +1728,38 @@ def _iter_grib_message_offsets_by_next_grib(
 ) -> Iterable[Tuple[int, int, int]]:
     if not src.exists():
         raise FileNotFoundError(f"GFAS source GRIB missing: {src}")
+    file_size = int(src.stat().st_size)
+    # These recovery files are GRIB1 payloads padded between records. Their
+    # declared message length is the usable GDAL subfile, not the next GRIB
+    # marker; validate every regular-stream header before using this fast path.
+    with src.open("rb") as f:
+        header = f.read(8)
+        if header[:4] == b"GRIB" and len(header) == 8 and header[7] == 1:
+            declared_length = int.from_bytes(header[4:7], "big")
+            if 8 <= declared_length <= max_message_bytes:
+                probe = f.read(min(file_size, max_message_bytes))
+                next_idx = probe.find(b"GRIB")
+                if next_idx >= 0:
+                    next_idx += 8
+                if next_idx > 0 and file_size % next_idx == 0:
+                    record_count = file_size // next_idx
+                    regular = record_count > 1
+                    for record_index in range(record_count):
+                        f.seek(record_index * next_idx)
+                        record_header = f.read(8)
+                        if (
+                            len(record_header) != 8
+                            or record_header[:4] != b"GRIB"
+                            or record_header[7] != 1
+                            or int.from_bytes(record_header[4:7], "big") != declared_length
+                        ):
+                            regular = False
+                            break
+                    if regular:
+                        for record_index in range(record_count):
+                            yield record_index + 1, record_index * next_idx, declared_length
+                        return
+
     chunk_size = 4 * 1024 * 1024
     buf = bytearray()
     count = 0

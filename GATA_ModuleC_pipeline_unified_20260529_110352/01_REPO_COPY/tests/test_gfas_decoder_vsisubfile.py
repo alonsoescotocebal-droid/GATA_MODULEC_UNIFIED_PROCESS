@@ -94,6 +94,19 @@ def test_fallback_gfas_pm_rows_from_gribs_uses_year_day_count(tmp_path, monkeypa
     ]
 
 
+def test_iter_grib_message_offsets_uses_validated_grib1_declared_length(tmp_path):
+    mod = _load_module()
+    src = tmp_path / "padded.grib"
+    header = b"GRIB" + (8).to_bytes(3, "big") + b"\x01"
+    src.write_bytes(header + b"abcd" + b"\x00" * 4 + header + b"efgh" + b"\x00" * 4 + header + b"ijkl" + b"\x00" * 4)
+
+    assert list(mod._iter_grib_message_offsets_by_next_grib(src)) == [
+        (1, 0, 8),
+        (2, 16, 8),
+        (3, 32, 8),
+    ]
+
+
 def test_count_gfas_pm_messages_uses_validated_fixed_size_stream(tmp_path, monkeypatch):
     mod = _load_module()
     src = tmp_path / "GFAS_PM2P5FIRE_2015_GLOBAL_OFFICIAL.grib"
