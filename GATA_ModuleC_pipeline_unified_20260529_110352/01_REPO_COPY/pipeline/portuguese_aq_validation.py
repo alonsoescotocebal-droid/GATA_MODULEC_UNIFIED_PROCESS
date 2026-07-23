@@ -1090,7 +1090,7 @@ def write_path_scope_preflight(
     cwd = Path.cwd()
     # The canonical launcher starts from the outer checkout root, while the
     # executable repository is the nested 01_REPO_COPY directory.
-    authorized_checkout_root = repo_root.parents[2]
+    authorized_checkout_root = repo_root.parents[1]
     rows: List[List[object]] = []
     blockers: List[str] = []
 
