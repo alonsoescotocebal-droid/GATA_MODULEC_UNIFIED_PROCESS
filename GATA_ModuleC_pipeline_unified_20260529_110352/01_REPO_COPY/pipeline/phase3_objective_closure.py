@@ -307,6 +307,7 @@ def _rewrite_brief_and_matrix_names(output_root: Path) -> None:
             "Resultados WUI / territorio": "Resultados del proxy territorial",
             "consolidar proxy WUI": "mantener el proxy territorial y no llamarlo WUI formal",
             "legacy IECH": "population_smoke_burden_proxy",
+            "No es IECH normalizado, exposicion individual, exposicion sanitaria ni riesgo epidemiologico.": "No es IECH normalizado ni una afirmacion clinica o epidemiologica.",
         }
         for old, new in replacements.items():
             text = text.replace(old, new)
