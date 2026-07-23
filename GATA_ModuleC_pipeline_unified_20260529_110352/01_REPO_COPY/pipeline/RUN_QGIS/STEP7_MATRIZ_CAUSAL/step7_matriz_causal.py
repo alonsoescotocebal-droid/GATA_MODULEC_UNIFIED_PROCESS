@@ -23,6 +23,7 @@ if str(PIPELINE_ROOT) not in sys.path:
     sys.path.insert(0, str(PIPELINE_ROOT))
 
 from wrb_source_route import find_wrb_annual_burned_area_paths, find_wrb_source_bundle
+from phase3_objective_closure import run_phase3_closure
 
 YEARS_HIST = list(range(2015, 2025))
 YEARS_SCEN = list(range(2026, 2031))
@@ -1976,12 +1977,13 @@ def build_causal_matrix(
             priority = "MONITOR"
 
         interpretation = (
-            f"population_smoke_burden_proxy_mean={iech_mean if iech_mean is not None else 'NA'}; recurrence={rec_class or 'NA'}; "
-            f"delta_population_smoke_burden_proxy_S1_minus_S0={delta if delta is not None else 'NA'}; WRB as contextual descriptor."
+            f"screening association: population_smoke_burden_proxy_mean={iech_mean if iech_mean is not None else 'NA'}; "
+            f"recurrence={rec_class or 'NA'}; delta_population_smoke_burden_proxy_S1_minus_S0={delta if delta is not None else 'NA'}; "
+            "WRB and territorial variables are contextual descriptors; no causal inference."
         )
         qa_flag = "HOLD" if missing_components else "OK"
         threshold_gate_status = "BLOCKED_FOR_CAUSAL_CLAIM" if missing_components else "THRESHOLD_DEFINED_AS_INDEXED_METHOD"
-        causal_scientific_status = "NO-GO_SCIENTIFIC_THRESHOLD" if missing_components else "THRESHOLD_DEFINED_AS_INDEXED_METHOD"
+        causal_scientific_status = "NO-GO_SCIENTIFIC_THRESHOLD" if missing_components else "PASS_AS_SCREENING_ASSOCIATION"
 
         row = {
             "unit_id": uid,
@@ -2018,6 +2020,10 @@ def build_causal_matrix(
             "qa_flag": qa_flag,
             "threshold_gate_status": threshold_gate_status,
             "causal_matrix_scientific_status": causal_scientific_status,
+            "matrix_type": "TERRITORIAL_SCREENING_ASSOCIATION_MATRIX",
+            "matrix_claim_status": "HOLD_CAUSAL_INFERENCE",
+            "territorial_indicator_type": "BUILT_UP_FUEL_TERRITORIAL_PROXY",
+            "municipal_signal_resolution": "REGIONAL_NUTS3_SIGNAL_ALLOCATED_TO_MUNICIPALITY" if unit_level == "MUNICIPIO" else "DIRECT_NUTS3_SIGNAL",
             "smoke_route_context": smoke_route_context,
         }
         rows_out.append(row)
@@ -2057,6 +2063,10 @@ def build_causal_matrix(
         "qa_flag",
         "threshold_gate_status",
         "causal_matrix_scientific_status",
+        "matrix_type",
+        "matrix_claim_status",
+        "territorial_indicator_type",
+        "municipal_signal_resolution",
         "smoke_route_context",
     ]
     rows_csv = []
@@ -2078,7 +2088,7 @@ def write_causal_json_txt_sha(
     out_sha = causal_dir / "causal_matrix_sha256_checkpoints.txt"
 
     payload = {
-        "title": "Matriz causal sustantiva IECH NUTS3 (population_smoke_burden_proxy)",
+        "title": "Territorial screening association matrix NUTS3 (population_smoke_burden_proxy)",
         "timestamp": now_iso(),
         "rows": rows_nuts,
     }
@@ -2086,7 +2096,7 @@ def write_causal_json_txt_sha(
 
     n_hold = sum(1 for r in rows_nuts if (r.get("qa_flag") or "") == "HOLD")
     lines = [
-        "MATRIZ CAUSAL SUSTANTIVA IECH NUTS3 (POPULATION_SMOKE_BURDEN_PROXY)",
+        "TERRITORIAL SCREENING ASSOCIATION MATRIX NUTS3 (POPULATION_SMOKE_BURDEN_PROXY)",
         f"timestamp={now_iso()}",
         f"rows={len(rows_nuts)}",
         f"rows_hold={n_hold}",
@@ -3068,6 +3078,16 @@ def main() -> int:
 
         brief_path = generate_brief(output_root, inputs)
         log_line(run_log, f"Brief rewritten: {brief_path}")
+
+        run_phase3_closure(
+            output_root=output_root,
+            nuts_layer=nuts_layer,
+            muni_layer=muni_layer,
+            muni_field=muni_field,
+            fire_paths=fire_paths,
+            inputs=inputs,
+        )
+        log_line(run_log, "Phase 3 semantic, feasibility and thematic packages generated")
 
 
         write_aggregate_consistency_audits(

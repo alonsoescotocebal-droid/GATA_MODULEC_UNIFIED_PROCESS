@@ -43,7 +43,7 @@ OBJECTIVES: List[Dict[str, object]] = [
         "objective_id": "OC-02",
         "objective_name": "Incendios y recurrencia 2015-2024",
         "required_database": "ardida_2015..2024_TM06.gpkg",
-        "required_output": ["tables/recurrence_unit_2015_2024.csv", "tables/recurrence_municipio_2015_2024.csv", "qa/fire_ingestion_audit.tsv"],
+        "required_output": ["tables/recurrence_unit_2015_2024.csv", "tables/recurrence_municipio_2015_2024.csv", "qa/fire_ingestion_audit.tsv", "maps/fires_normalized_2015_2024.gpkg", "qa/fires_normalized_gpkg_audit.tsv"],
         "producer_script": "moduleC_pipeline_v2.py + step7_matriz_causal.py",
         "validation_rule": "Recurrence unit+municipio presentes y auditorÃ­a de ingestiÃ³n presente.",
     },
@@ -116,7 +116,7 @@ OBJECTIVES: List[Dict[str, object]] = [
         "objective_id": "OC-07",
         "objective_name": "WUI / territorio",
         "required_database": "GHSL built + proxies combustible",
-        "required_output": ["tables/territorial_context_nuts3.csv", "tables/territorial_context_municipio.csv", "qa/territorial_variables_audit.tsv"],
+        "required_output": ["tables/territorial_context_nuts3.csv", "tables/territorial_context_municipio.csv", "qa/territorial_variables_audit.tsv", "qa/formal_wui_feasibility.tsv", "qa/landcover_wui_input_inventory.tsv"],
         "producer_script": "step7_matriz_causal.py",
         "validation_rule": "Contexto territorial existe y WUI no estÃ¡ totalmente vacÃ­o.",
     },
@@ -139,6 +139,10 @@ OBJECTIVES: List[Dict[str, object]] = [
             "brief/causal_matrix/causal_matrix_IECH_municipio.csv",
             "brief/causal_matrix/causal_matrix_audit.tsv",
             "brief/causal_matrix/causal_matrix_sha256_checkpoints.txt",
+            "brief/causal_matrix/territorial_screening_matrix_nuts3.csv",
+            "brief/causal_matrix/territorial_screening_matrix_municipio.csv",
+            "brief/causal_matrix/territorial_screening_narrative.md",
+            "qa/matrix_semantic_gate.tsv",
         ],
         "producer_script": "step7_matriz_causal.py",
         "validation_rule": "No qa_flag=HOLD y missing_components vacÃ­o para cierre GO.",
@@ -162,7 +166,7 @@ OBJECTIVES: List[Dict[str, object]] = [
         "objective_id": "OC-11",
         "objective_name": "Brief de polÃ­tica",
         "required_database": "Outputs cientÃ­ficos integrados",
-        "required_output": ["brief/Brief_Politica_IECH_2030.md"],
+        "required_output": ["brief/Brief_Politica_IECH_2030.md", "qa/objective_semantic_contract_audit.tsv", "qa/cartographic_package_gate.tsv", "maps/ModuleC_territorial_results.gpkg"],
         "producer_script": "step7_matriz_causal.py + step8",
         "validation_rule": "Brief sustantivo sin placeholders.",
     },
@@ -917,6 +921,25 @@ def _check_oc03c_aq_validation(output_root: Path) -> Tuple[bool, str]:
     return True, f"OC-03C anchored proxy validated: status={gate_status}; protocol={protocol}; health={health_status}"
 
 
+def _phase3_contract_check(output_root: Path, objective_id: str) -> Tuple[bool, str]:
+    path = output_root / "qa" / "objective_semantic_contract_audit.tsv"
+    rows = read_csv_rows(path) if path.exists() else []
+    by_contract = {str(r.get("contract") or "").strip(): r for r in rows}
+    required = {
+        "OC-05": [("normalized_IECH_claim_status", "BLOCKED_NORMALIZED_IECH_CLAIM"), ("population_burden_proxy_claim_status", "OPERATIONAL_POPULATION_BURDEN_PROXY")],
+        "OC-07": [("territorial_indicator_type", "BUILT_UP_FUEL_TERRITORIAL_PROXY"), ("formal_wui_claim_status", "HOLD_FORMAL_WUI")],
+        "OC-09": [("matrix_type", "TERRITORIAL_SCREENING_ASSOCIATION"), ("causal_claim_status", "HOLD_CAUSAL_INFERENCE")],
+        "OC-10": [("scenario_type", "NORMATIVE_ASSUMPTION")],
+    }.get(objective_id, [])
+    if not path.exists() or not rows:
+        return False, "objective_semantic_contract_audit.tsv missing or empty."
+    for contract, expected in required:
+        observed = str(by_contract.get(contract, {}).get("value") or "").strip()
+        if observed != expected:
+            return False, f"{contract}={observed or 'EMPTY'}; expected {expected}."
+    return True, "Substantive semantic contract verified."
+
+
 def objective_specific_check(obj_id: str, output_root: Path, inputs: Dict[str, object]) -> Tuple[bool, str]:
     if obj_id == "OC-03":
         ok, reason = _check_smoke_inputs_clean(inputs)
@@ -940,15 +963,23 @@ def objective_specific_check(obj_id: str, output_root: Path, inputs: Dict[str, o
     if obj_id == "OC-03C":
         return _check_oc03c_aq_validation(output_root)
     if obj_id == "OC-05":
-        return _v10b_iech_non_degenerate(output_root)
+        ok, reason = _v10b_iech_non_degenerate(output_root)
+        if not ok:
+            return ok, reason
+        return _phase3_contract_check(output_root, obj_id)
     if obj_id == "OC-07":
-        return _check_wui_quality(output_root)
+        ok, reason = _phase3_contract_check(output_root, obj_id)
+        return (ok, reason) if not ok else (True, reason)
     if obj_id == "OC-08":
         return _check_wrb_quality(output_root)
     if obj_id == "OC-09":
-        return _check_causal_quality(output_root)
+        ok, reason = _phase3_contract_check(output_root, obj_id)
+        return (ok, reason) if not ok else (True, reason)
     if obj_id == "OC-11":
-        return _check_brief_quality(output_root)
+        ok, reason = _check_brief_quality(output_root)
+        if not ok:
+            return ok, reason
+        return _phase3_contract_check(output_root, obj_id) if (output_root / "qa" / "objective_semantic_contract_audit.tsv").exists() else (True, reason)
     if obj_id == "OC-12":
         return _check_step9_zip_contents(output_root)
     return True, ""
