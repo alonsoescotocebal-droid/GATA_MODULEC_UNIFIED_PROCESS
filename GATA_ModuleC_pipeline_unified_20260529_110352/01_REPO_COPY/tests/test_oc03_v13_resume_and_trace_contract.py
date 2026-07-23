@@ -104,3 +104,18 @@ def test_post_smoke_completion_runs_step9_build_before_post_objectives_and_suppo
         "build_manifest_and_zip(outputs, deliver_dir, report)",
         section.index('run_objectives_gate(output_root, report, mode="post")')
     )
+
+
+def test_path_scope_guard_passes_git_root_and_code_root_separately():
+    repo_root = Path(__file__).resolve().parents[1]
+    pipeline = repo_root / "pipeline" / "moduleC_pipeline_v2.py"
+    text = pipeline.read_text(encoding="utf-8", errors="replace")
+    start = text.index("def run_path_scope_guard(")
+    end = text.index("\ndef ", start + 1)
+    section = text[start:end]
+
+    assert "code_root = Path(__file__).resolve().parents[1]" in section
+    assert "git_root = code_root.parents[1]" in section
+    assert '"--repo-root",\n        str(git_root)' in section
+    assert '"--pipeline-root",\n        str(code_root)' in section
+    assert 'config_path = code_root / "config" / "module_c_canonical_paths.json"' in section

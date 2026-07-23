@@ -3945,17 +3945,18 @@ def run_objectives_gate(output_root: Path, report: Report, mode: str = "post") -
 
 def run_path_scope_guard(data_root: Path, output_root: Path, report: Report, enforce_clean_tree: bool = True) -> Path:
     guard_script = Path(__file__).resolve().parent / "path_scope_guard.py"
-    repo_root = Path(__file__).resolve().parents[1]
+    code_root = Path(__file__).resolve().parents[1]
+    git_root = code_root.parents[1]
     pipeline_root = Path(__file__).resolve().parent
-    config_path = repo_root / "config" / "module_c_canonical_paths.json"
+    config_path = code_root / "config" / "module_c_canonical_paths.json"
     cmd = [
         sys.executable,
         "-u",
         str(guard_script),
         "--repo-root",
-        str(repo_root),
+        str(git_root),
         "--pipeline-root",
-        str(pipeline_root),
+        str(code_root),
         "--data-root",
         str(data_root),
         "--output-root",
