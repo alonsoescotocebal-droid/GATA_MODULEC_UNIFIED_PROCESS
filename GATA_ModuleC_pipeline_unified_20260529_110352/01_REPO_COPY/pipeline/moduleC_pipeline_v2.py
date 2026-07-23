@@ -4113,6 +4113,8 @@ def refresh_warning_inventory_from_runtime_logs(output_root: Path) -> None:
                 classification = "WARN_CLASSIFIED_NONBLOCKING"
             elif "DEPRECATIONWARNING" in upper and "QGSPROCESSINGALGORITHM.PARAMETERASFIELDS()" in upper:
                 classification = "WARN_CLASSIFIED_NONBLOCKING"
+            elif "DEPRECATIONWARNING" in upper and "PHASE3_OBJECTIVE_CLOSURE.PY" in upper:
+                classification = "WARN_CLASSIFIED_NONBLOCKING"
             elif "TRACEBACK" in upper or ("ERROR" in upper and "0 ERROR" not in upper):
                 classification = "BLOCKED_RUNTIME_ERROR"
                 explained = "0"
