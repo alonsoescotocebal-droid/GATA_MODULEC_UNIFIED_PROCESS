@@ -42,7 +42,9 @@ def _sha(path: Path) -> str:
 
 def _row_count(path: Path) -> str:
     if not path.exists() or path.suffix.lower() not in {".csv", ".tsv"}:
-    return ""
+        return ""
+    with path.open("r", encoding="utf-8-sig", errors="replace") as stream:
+        return str(max(sum(1 for _ in stream) - 1, 0))
 
 
 def _normalized_cell(value: str) -> str:
@@ -71,10 +73,6 @@ def _csv_semantically_equal(old: Path, new: Path) -> bool:
                 if old_value != new_value:
                     return False
     return True
-    with path.open("r", encoding="utf-8-sig", errors="replace") as stream:
-        return str(max(sum(1 for _ in stream) - 1, 0))
-
-
 def build_comparison(phase2: Path, phase3: Path) -> None:
     rows = [["surface", "category", "phase2_exists", "phase3_exists", "phase2_rows", "phase3_rows", "sha_equal", "status", "detail"]]
     for category, surfaces in (("preserved_scientific_result", NUMERIC_SURFACES), ("semantic_correction", SEMANTIC_SURFACES), ("new_phase3_deliverable", NEW_SURFACES)):
