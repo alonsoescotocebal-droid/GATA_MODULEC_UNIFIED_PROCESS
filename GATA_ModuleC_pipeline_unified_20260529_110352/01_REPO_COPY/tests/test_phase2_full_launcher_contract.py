@@ -16,6 +16,8 @@ def test_full_requires_authorization_and_uses_scientific_producer() -> None:
     assert "--modulec-data-root" in text
     assert "--incendios-root" in text
     assert "-B -u $ScientificPipeline" in text
+    assert "Push-Location $RepoRoot" in text
+    assert "Pop-Location" in text
 
 
 def test_full_keeps_canonical_guards_and_disables_resume() -> None:

@@ -72,8 +72,14 @@ if ($Mode -eq 'Full') {
     $command = @($ScientificPython, '-B', '-u', $ScientificPipeline, '--gata-root', $GitRoot, '--modulec-datos', $ModuleCDataRoot, '--inc-new', $IncendiosRoot, '--output-root', $RuntimeRoot) -join ' '
     [IO.File]::WriteAllText((Join-Path $provenanceDir 'launcher_command.txt'), $command + [Environment]::NewLine)
     [IO.File]::WriteAllText((Join-Path $provenanceDir 'launcher_roots.tsv'), "role`tpath`nmodulec_data`t$ModuleCDataRoot`nportuguese_agencies`t$PortugueseAgenciesDataRoot`nrecovery`t$Recovery20152024Root`nincendios`t$IncendiosRoot`ngfas_effective`t$GfasRoot`nruntime`t$RuntimeRoot`n")
-    & $ScientificPython -B -u $ScientificPipeline --gata-root $GitRoot --modulec-datos $ModuleCDataRoot --inc-new $IncendiosRoot --output-root $RuntimeRoot 1> (Join-Path $logsDir 'scientific_stdout.txt') 2> (Join-Path $logsDir 'scientific_stderr.txt')
-    $scientificExit = $LASTEXITCODE
+    Push-Location $RepoRoot
+    try {
+        & $ScientificPython -B -u $ScientificPipeline --gata-root $GitRoot --modulec-datos $ModuleCDataRoot --inc-new $IncendiosRoot --output-root $RuntimeRoot 1> (Join-Path $logsDir 'scientific_stdout.txt') 2> (Join-Path $logsDir 'scientific_stderr.txt')
+        $scientificExit = $LASTEXITCODE
+    }
+    finally {
+        Pop-Location
+    }
     [IO.File]::WriteAllText((Join-Path $logsDir 'launcher_stdout.txt'), "mode=Full`n$command`n")
     if ($scientificExit -ne 0) { throw "CANONICAL_FULL_RUNTIME_FAILED: exit=$scientificExit" }
     exit 0
