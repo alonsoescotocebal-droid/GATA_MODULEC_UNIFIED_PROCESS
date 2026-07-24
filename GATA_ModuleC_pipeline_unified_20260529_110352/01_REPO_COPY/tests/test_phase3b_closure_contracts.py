@@ -35,6 +35,8 @@ def test_final_gate_order_and_freshness_artifacts_are_coded():
     assert "write_gate_dependency_freshness_audit(output_root)" in PIPELINE
     assert PIPELINE.rfind("scientific_decision_path = run_scientific_gate") < PIPELINE.rfind("write_gate_dependency_freshness_audit")
     assert 'output_root / "qa" / "pytest_result_summary.tsv"' in PIPELINE
+    assert "run_phase3_phase2_scientific_comparison(output_root, report)" in PIPELINE
+    assert PIPELINE.index("run_phase3_phase2_scientific_comparison(output_root, report)") < PIPELINE.index("run_global_audit_status_scan(output_root, report)")
 
 
 def test_wui_and_resolution_audits_are_not_placeholder_only():

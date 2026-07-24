@@ -4015,6 +4015,37 @@ def run_global_audit_status_scan(output_root: Path, report: Report) -> Path:
     return out_tsv
 
 
+def run_phase3_phase2_scientific_comparison(output_root: Path, report: Report) -> None:
+    """Materialize the comparison against the immutable approved Phase 2 runtime."""
+    comparison_script = Path(__file__).resolve().parent / "phase3_scientific_comparison.py"
+    phase2_output_root = (
+        output_root.parent / "PHASE2_FULL_20260723_1202_2712250" / "03_outputs"
+    )
+    if not phase2_output_root.exists():
+        report.fail(f"Immutable Phase 2 baseline missing: {phase2_output_root}")
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-u",
+            str(comparison_script),
+            "--phase2",
+            str(phase2_output_root),
+            "--phase3",
+            str(output_root),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if proc.returncode != 0:
+        report.fail(
+            "Phase 3 versus Phase 2 comparison failed "
+            f"(exit={proc.returncode}): {proc.stderr.strip()}"
+        )
+    report.log("Phase 3 versus Phase 2 scientific comparison completed.")
+
+
 def assert_global_audit_status_clear(output_root: Path, report: Report) -> None:
     scan_tsv = output_root / "qa" / "global_audit_status_scan.tsv"
     if not scan_tsv.exists():
@@ -4873,6 +4904,7 @@ def complete_post_smoke_runtime(
     report.log(f"QA gate decision (final): {qa_decision} | {qa_summary} | objectives=post")
     if qa_holds:
         report.log("QA holds in final gate: " + ", ".join(qa_holds))
+    run_phase3_phase2_scientific_comparison(output_root, report)
     run_global_audit_status_scan(output_root, report)
     assert_global_audit_status_clear(output_root, report)
     write_gate_dependency_freshness_audit(output_root)

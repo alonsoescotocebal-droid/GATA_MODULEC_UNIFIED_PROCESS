@@ -80,6 +80,7 @@ def test_complete_post_smoke_runtime_blocks_portuguese_aq_after_base_smoke_regre
         return scientific_path
 
     monkeypatch.setattr(mod, 'run_scientific_gate', fake_scientific_gate)
+    monkeypatch.setattr(mod, 'run_phase3_phase2_scientific_comparison', lambda _output_root, _report: None)
     monkeypatch.setattr(mod, 'run_qa_gate', lambda _tables_dir, _brief_path, _report: ('GO', 'stubbed', []))
 
     def fake_build_manifest(outputs, _out_dir, _report):
