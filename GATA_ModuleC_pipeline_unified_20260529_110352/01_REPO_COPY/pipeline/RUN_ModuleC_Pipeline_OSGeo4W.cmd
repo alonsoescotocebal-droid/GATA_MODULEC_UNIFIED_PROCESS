@@ -7,6 +7,7 @@ set "SCRIPT_DIR=%~dp0"
 for %%I in ("%SCRIPT_DIR%.") do set "SCRIPT_DIR=%%~fI"
 for %%I in ("%SCRIPT_DIR%") do set "PIPELINE_ROOT=%%~fI"
 for %%I in ("%PIPELINE_ROOT%\..") do set "REPO_ROOT=%%~fI"
+for %%I in ("%REPO_ROOT%\..\..") do set "GIT_ROOT=%%~fI"
 
 set "PYQGIS=C:\OSGeo4W64\bin\python-qgis-ltr.bat"
 set "PIPEPY=%PIPELINE_ROOT%\moduleC_pipeline_v2.py"
@@ -161,7 +162,7 @@ set "PYGUARD=C:\OSGeo4W64\apps\Python312\python.exe"
 if not exist "%PYGUARD%" set "PYGUARD=python"
 
 echo [RUN] PATH_SCOPE_GUARD
-call "%PYGUARD%" -u "%PATH_SCOPE_GUARD%" --repo-root "%REPO_ROOT%" --pipeline-root "%PIPELINE_ROOT%" --data-root "%DATOS_MODC%" --output-root "%OUTPUT_ROOT%" --config-path "%PATH_SCOPE_CONFIG%" --enforce-clean-tree 0
+call "%PYGUARD%" -u "%PATH_SCOPE_GUARD%" --repo-root "%REPO_ROOT%" --pipeline-root "%PIPELINE_ROOT%" --git-toplevel "%GIT_ROOT%" --data-root "%DATOS_MODC%" --output-root "%OUTPUT_ROOT%" --config-path "%PATH_SCOPE_CONFIG%" --enforce-clean-tree 0
 if errorlevel 1 (
   set "PSG_RC=!ERRORLEVEL!"
   echo [NO-GO] BLOCKED_PATH_DESYNC path_scope_guard_exit=!PSG_RC!
