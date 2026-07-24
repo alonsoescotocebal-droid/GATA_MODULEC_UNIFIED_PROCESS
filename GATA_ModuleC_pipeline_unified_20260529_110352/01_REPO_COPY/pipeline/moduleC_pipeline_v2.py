@@ -4018,9 +4018,10 @@ def run_global_audit_status_scan(output_root: Path, report: Report) -> Path:
 def run_phase3_phase2_scientific_comparison(output_root: Path, report: Report) -> None:
     """Materialize the comparison against the immutable approved Phase 2 runtime."""
     comparison_script = Path(__file__).resolve().parent / "phase3_scientific_comparison.py"
-    phase2_output_root = (
-        output_root.parents[1] / "PHASE2_FULL_20260723_1202_2712250" / "03_outputs"
-    )
+    phase2_runtime_root = output_root.parents[1] / "PHASE2_FULL_20260723_1202_2712250"
+    phase2_output_root = phase2_runtime_root / "03_outputs"
+    if not phase2_output_root.exists():
+        phase2_output_root = phase2_runtime_root
     if not phase2_output_root.exists():
         report.fail(f"Immutable Phase 2 baseline missing: {phase2_output_root}")
     proc = subprocess.run(
