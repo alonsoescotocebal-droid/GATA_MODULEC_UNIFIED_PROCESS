@@ -460,7 +460,7 @@ def _bisect_admin_prepare(stage: int, inputs: Dict[str, object], out_maps: Path,
         report.fail(f"NUTS3 invalid: {nuts_path}")
 
     if stage >= 1:
-        pt_expr = "\"CNTR_CODE\" = 'PT' AND \"LEVL_CODE\" = 3"
+        pt_expr = "\"CNTR_CODE\" = 'PT' AND \"LEVL_CODE\" = 3 AND \"NUTS_ID\" NOT IN ('PT200', 'PT300')"
         layer = processing.run("native:extractbyexpression", {"INPUT": layer, "EXPRESSION": pt_expr, "OUTPUT": "memory:"})["OUTPUT"]
 
     if stage >= 2:
@@ -739,7 +739,7 @@ def admin_prepare(inputs: Dict[str, object], out_maps: Path, report: Report) -> 
     if not layer.isValid():
         report.fail(f"NUTS3 invalid: {nuts_path}")
 
-    pt_expr = "\"CNTR_CODE\" = 'PT' AND \"LEVL_CODE\" = 3"
+    pt_expr = "\"CNTR_CODE\" = 'PT' AND \"LEVL_CODE\" = 3 AND \"NUTS_ID\" NOT IN ('PT200', 'PT300')"
     report.log("MARK: admin_prepare BEFORE processing native:extractbyexpression")
     report.log("MARK: admin_prepare BEFORE processing native:extractbyexpression")
     layer = processing.run("native:extractbyexpression", {"INPUT": layer, "EXPRESSION": pt_expr, "OUTPUT": "memory:"})["OUTPUT"]
@@ -4217,6 +4217,61 @@ def write_source_runtime_provenance(output_root: Path) -> None:
         [[str(repo_root), branch, head_sha, git_status_clean, str(output_root.parent), str(output_root), "pipeline/moduleC_pipeline_v2.py", runtime_start, runtime_end, _sha256_path(step9_script) if step9_script.exists() else "", _sha256_path(r6k_script) if r6k_script.exists() else ""]],
     )
 
+
+def write_gate_dependency_freshness_audit(output_root: Path) -> Path:
+    """Prove that final gates and packaging consume current artifacts."""
+    qa = output_root / "qa"
+    deliver = output_root / "deliverables_step9"
+    required = [
+        ("warning_inventory", qa / "warning_inventory.tsv"),
+        ("semantic_audit", qa / "objective_semantic_contract_audit.tsv"),
+        ("cartographic_gate", qa / "cartographic_package_gate.tsv"),
+        ("scientific_gate", qa / "scientific_validation_gate.tsv"),
+        ("qa_decision", deliver / "runtime_closure_decision.md"),
+    ]
+    rows = []
+    for name, path in required:
+        rows.append([name, str(path), path.exists(), path.stat().st_mtime_ns if path.exists() else ""])
+    mtime = {name: value for name, _, exists, value in rows if exists}
+    checks = [
+        ("scientific_after_warning", mtime.get("scientific_gate", 0) >= mtime.get("warning_inventory", 0)),
+        ("scientific_after_semantic", mtime.get("scientific_gate", 0) >= mtime.get("semantic_audit", 0)),
+        ("qa_after_scientific", mtime.get("qa_decision", 0) >= mtime.get("scientific_gate", 0)),
+        ("all_required_present", len(mtime) == len(required)),
+    ]
+    rows.extend([[name, "", value, "PASS" if value else "FAIL"] for name, value in checks])
+    out = qa / "gate_dependency_freshness_audit.tsv"
+    write_tsv(out, ["artifact", "path", "value", "status"], rows)
+    if os.environ.get("MODULEC_PHASE3B_GATE_FRESHNESS_REQUIRED", "0") == "1" and not all(value for _, value in checks):
+        raise RuntimeError("Final gate dependency freshness audit failed")
+    return out
+
+
+def persist_phase3b_test_evidence(output_root: Path) -> None:
+    """Copy externally captured focal-test evidence into this runtime only."""
+    source = os.environ.get("MODULEC_PHASE3B_TEST_EVIDENCE", "").strip()
+    logs = output_root / "logs"
+    qa = output_root / "qa"
+    ensure_dir(logs)
+    ensure_dir(qa)
+    names = ["pytest_command.txt", "pytest_stdout.txt", "pytest_stderr.txt", "pytest_environment.txt"]
+    copied = 0
+    if source:
+        source_root = Path(source).resolve()
+        for name in names:
+            src = source_root / name
+            if src.exists():
+                shutil.copy2(src, logs / name)
+                copied += 1
+        summary = source_root / "pytest_result_summary.tsv"
+        if summary.exists():
+            shutil.copy2(summary, qa / summary.name)
+    write_tsv(qa / "pytest_evidence_inventory.tsv", ["artifact", "status", "detail"], [
+        [name, "PASS" if (logs / name).exists() else "INFO", "Persisted focal test evidence." ] for name in names
+    ] + [["pytest_result_summary.tsv", "PASS" if (qa / "pytest_result_summary.tsv").exists() else "INFO", f"copied={copied}"]])
+    if os.environ.get("MODULEC_PHASE3B_TEST_EVIDENCE_REQUIRED", "0") == "1" and (copied != len(names) or not (qa / "pytest_result_summary.tsv").exists()):
+        raise RuntimeError("Persisted Phase3B pytest evidence is incomplete")
+
 def refresh_smoke_route_v0_audit(output_root: Path) -> None:
     qa_dir = output_root / "qa"
     ensure_dir(qa_dir)
@@ -4685,6 +4740,14 @@ def collect_final_outputs(output_root: Path, scientific_decision_path: Path, inc
         output_root / "qa" / "phase3_vs_phase2_scientific_comparison.tsv",
         output_root / "qa" / "phase3_vs_phase2_scientific_comparison.md",
         output_root / "qa" / "fires_normalized_gpkg_audit.tsv",
+        output_root / "qa" / "fire_area_reconciliation_audit.tsv",
+        output_root / "qa" / "gate_dependency_freshness_audit.tsv",
+        output_root / "qa" / "pytest_evidence_inventory.tsv",
+        output_root / "qa" / "pytest_result_summary.tsv",
+        output_root / "logs" / "pytest_command.txt",
+        output_root / "logs" / "pytest_stdout.txt",
+        output_root / "logs" / "pytest_stderr.txt",
+        output_root / "logs" / "pytest_environment.txt",
         output_root / "qa" / "oc03c_path_scope_preflight.tsv",
         output_root / "qa" / "portuguese_aq_input_inventory.tsv",
         output_root / "qa" / "portuguese_aq_file_format_audit.tsv",
@@ -4798,24 +4861,21 @@ def complete_post_smoke_runtime(
         report.fail(f"Expected brief missing after STEP7_MATRIZ_CAUSAL: {brief_path}")
 
     run_objectives_gate(output_root, report, mode="pre")
-    scientific_decision_path = run_scientific_gate(output_root, report)
-
     qa_decision, qa_summary, qa_holds = run_qa_gate(tables_dir, brief_path, report)
     report.log(f"QA gate decision (post-step7/pre-step9): {qa_decision} | {qa_summary}")
     if qa_holds:
         report.log("QA holds: " + ", ".join(qa_holds))
 
-    outputs = collect_final_outputs(output_root, scientific_decision_path, include_global_scan=False)
-    build_manifest_and_zip(outputs, deliver_dir, report)
-
     run_objectives_gate(output_root, report, mode="post")
+    scientific_decision_path = run_scientific_gate(output_root, report)
+    persist_phase3b_test_evidence(output_root)
     qa_decision, qa_summary, qa_holds = run_qa_gate(tables_dir, brief_path, report)
-    report.log(f"QA gate decision (post-step9): {qa_decision} | {qa_summary} | objectives=post")
+    report.log(f"QA gate decision (final): {qa_decision} | {qa_summary} | objectives=post")
     if qa_holds:
-        report.log("QA holds after Step9 packaging: " + ", ".join(qa_holds))
-
+        report.log("QA holds in final gate: " + ", ".join(qa_holds))
     run_global_audit_status_scan(output_root, report)
     assert_global_audit_status_clear(output_root, report)
+    write_gate_dependency_freshness_audit(output_root)
     outputs = collect_final_outputs(output_root, scientific_decision_path, include_global_scan=True)
     build_manifest_and_zip(outputs, deliver_dir, report)
 

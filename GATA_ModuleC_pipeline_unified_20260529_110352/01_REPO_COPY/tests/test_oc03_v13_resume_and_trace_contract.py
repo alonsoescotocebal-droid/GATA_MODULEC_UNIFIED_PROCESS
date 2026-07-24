@@ -97,12 +97,14 @@ def test_post_smoke_completion_runs_step9_build_before_post_objectives_and_suppo
     end = text.index("def main()")
     section = text[start:end]
 
-    assert section.index("build_manifest_and_zip(outputs, deliver_dir, report)") < section.index(
-        'run_objectives_gate(output_root, report, mode="post")'
+    assert section.index('run_objectives_gate(output_root, report, mode="post")') < section.index(
+        "run_scientific_gate(output_root, report)"
+    )
+    assert section.index("run_scientific_gate(output_root, report)") < section.index(
+        "run_global_audit_status_scan(output_root, report)"
     )
     assert section.index("run_global_audit_status_scan(output_root, report)") < section.index(
-        "build_manifest_and_zip(outputs, deliver_dir, report)",
-        section.index('run_objectives_gate(output_root, report, mode="post")')
+        "build_manifest_and_zip(outputs, deliver_dir, report)"
     )
 
 

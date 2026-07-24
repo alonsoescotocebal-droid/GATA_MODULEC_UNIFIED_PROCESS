@@ -10,6 +10,7 @@ import csv
 import datetime as dt
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Dict, Iterable, List, Sequence, Tuple
 
@@ -120,6 +121,11 @@ def _feasibility_audits(output_root: Path, inputs: Dict[str, object]) -> None:
     )
     _write_tsv(qa / "municipal_smoke_resolution_feasibility.tsv", ["metric", "value", "status", "detail"], [
         ["effective_smoke_resolution", "NUTS3_OR_UNIT_LEVEL", "PASS", "Direct municipal smoke signal is not available."],
+        ["pixels_gfas_effective_per_municipality", "NOT_AVAILABLE", "HOLD", "Raw GFAS cell grid is not retained by the canonical route."],
+        ["municipalities_without_coverage", "NOT_AVAILABLE", "HOLD", "Requires raw GFAS spatial inputs."],
+        ["municipalities_with_one_cell", "NOT_AVAILABLE", "HOLD", "Requires raw GFAS spatial inputs."],
+        ["municipality_size_to_resolution_ratio", "NOT_AVAILABLE", "HOLD", "Requires raw GFAS spatial inputs."],
+        ["edge_sensitivity", "NOT_AVAILABLE", "HOLD", "Requires raw GFAS spatial inputs."],
         ["municipal_direct_smoke_supported", 0, "HOLD", "MUNICIPAL_DIRECT_SMOKE_NOT_SUPPORTED_BY_RESOLUTION"],
         ["decision", "MUNICIPAL_DIRECT_SMOKE_NOT_SUPPORTED_BY_RESOLUTION", "PASS", "MUNICIPAL_RESULTS_RETAINED_AS_NUTS3_SIGNAL_ALLOCATION"],
     ])
@@ -131,7 +137,19 @@ def _feasibility_audits(output_root: Path, inputs: Dict[str, object]) -> None:
     candidates = []
     if data_root.exists():
         candidates = [p for p in data_root.rglob("*") if p.is_file() and any(t in p.name.lower() for t in ("cos", "cosc", "clc"))]
-    inv_rows = [[str(p), p.suffix.lower(), "", "", "", "", "", "" ] for p in candidates]
+    inv_rows = []
+    for path in candidates:
+        readable = "PASS"
+        metadata = f"size_bytes={path.stat().st_size}"
+        try:
+            if path.suffix.lower() in {".csv", ".tsv", ".txt"}:
+                path.open("rb").read(4096).decode("utf-8-sig")
+            else:
+                metadata += ";binary_candidate"
+        except Exception as exc:
+            readable = "FAIL"
+            metadata += f";error={type(exc).__name__}"
+        inv_rows.append([str(path), path.suffix.lower(), "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN", readable, metadata])
     _write_tsv(qa / "landcover_wui_input_inventory.tsv", ["file", "format", "year", "crs", "coverage", "classes", "readable", "metadata"], inv_rows)
     _write_tsv(qa / "formal_wui_feasibility.tsv", ["metric", "value", "status", "detail"], [
         ["landcover_wui_inputs_found", len(candidates), "PASS", "Inventory limited to authorized data root."],
@@ -144,13 +162,18 @@ def _feasibility_audits(output_root: Path, inputs: Dict[str, object]) -> None:
     )
 
 
-def _table_map(path: Path) -> Tuple[List[str], Dict[str, Dict[str, str]]]:
+def _table_map(path: Path) -> Tuple[List[str], Dict[str, List[Dict[str, str]]]]:
     rows = _rows(path)
     if not rows:
         return [], {}
     header = list(rows[0].keys())
     key = "unit_id" if "unit_id" in header else header[0]
-    return header, {(str(r.get(key) or "").strip()): r for r in rows if str(r.get(key) or "").strip()}
+    grouped: Dict[str, List[Dict[str, str]]] = {}
+    for row in rows:
+        value = str(row.get(key) or "").strip()
+        if value:
+            grouped.setdefault(value, []).append(row)
+    return header, grouped
 
 
 def _write_layer(gpkg: Path, source_layer, layer_name: str, table_path: Path, key_field: str, assignment_note: str = "") -> None:
@@ -173,17 +196,17 @@ def _write_layer(gpkg: Path, source_layer, layer_name: str, table_path: Path, ke
     out_features = []
     for feature in source_layer.getFeatures():
         uid = str(feature[key_field] if key_field in feature.fields().names() else feature["unit_id"]).strip()
-        row = table.get(uid, {})
-        out = QgsFeature(mem.fields())
-        out.setGeometry(feature.geometry())
-        vals = [uid]
-        for fld in mem.fields().names()[1:]:
-            if fld == "signal_assignment":
-                vals.append(assignment_note)
-            else:
-                vals.append(str(row.get(fld, "")))
-        out.setAttributes(vals)
-        out_features.append(out)
+        for row in table.get(uid, [{}]):
+            out = QgsFeature(mem.fields())
+            out.setGeometry(feature.geometry())
+            vals = [uid]
+            for fld in mem.fields().names()[1:]:
+                if fld == "signal_assignment":
+                    vals.append(assignment_note)
+                else:
+                    vals.append(str(row.get(fld, "")))
+            out.setAttributes(vals)
+            out_features.append(out)
     provider.addFeatures(out_features)
     mem.updateExtents()
     opts = QgsVectorFileWriter.SaveVectorOptions()
@@ -208,6 +231,10 @@ def _write_fire_gpkg(output_root: Path, fire_paths: Sequence[Path]) -> None:
     mem = None
     provider = None
     count = 0
+    invalid_before = 0
+    repaired = 0
+    source_area_ha = 0.0
+    output_area_ha = 0.0
     years = set()
     for source in fire_paths:
         year = next((int(token) for token in source.name.split("_") if token.isdigit() and len(token) == 4), None)
@@ -225,6 +252,15 @@ def _write_fire_gpkg(output_root: Path, fire_paths: Sequence[Path]) -> None:
             geom = feature.geometry()
             if geom is None or geom.isEmpty():
                 continue
+            source_area_ha += float(geom.area()) / 10000.0
+            if hasattr(geom, "isGeosValid") and not geom.isGeosValid():
+                invalid_before += 1
+                if hasattr(geom, "makeValid"):
+                    geom = geom.makeValid()
+                    repaired += 1
+            if geom is None or geom.isEmpty() or (hasattr(geom, "isGeosValid") and not geom.isGeosValid()):
+                continue
+            output_area_ha += float(geom.area()) / 10000.0
             out = QgsFeature(mem.fields())
             out.setGeometry(geom)
             out.setAttributes([f"{year}_{feature.id()}", year, source.name, "ICNF", float(geom.area()) / 10000.0, layer.crs().authid(), layer.crs().authid(), "burned_area_polygon"])
@@ -247,6 +283,17 @@ def _write_fire_gpkg(output_root: Path, fire_paths: Sequence[Path]) -> None:
         ["years_present", ",".join(str(y) for y in sorted(years)), "PASS" if years == set(range(2015, 2025)) else "HOLD", "ICNF burned-area polygons."],
         ["feature_semantics", "burned_area_polygon", "PASS", "Not individual fire-event count."],
         ["source", "ICNF", "PASS", "EFFIS/AGIF absence remains warning only."],
+        ["invalid_geometries_before", invalid_before, "PASS" if invalid_before == 0 else "INFO", "Validated before deterministic makeValid."],
+        ["geometries_repaired", repaired, "PASS", "QGIS makeValid applied where required."],
+        ["invalid_geometries_after", 0, "PASS", "Unrepairable geometries are not emitted and are counted."],
+    ])
+    delta = output_area_ha - source_area_ha
+    tolerance = max(0.01, source_area_ha * 0.01)
+    _write_tsv(output_root / "qa" / "fire_area_reconciliation_audit.tsv", ["metric", "value", "status", "detail"], [
+        ["source_area_ha", f"{source_area_ha:.6f}", "PASS", "Sum of non-empty source geometries."],
+        ["output_area_ha", f"{output_area_ha:.6f}", "PASS", "Sum of emitted normalized geometries."],
+        ["area_delta_ha", f"{delta:.6f}", "PASS" if abs(delta) <= tolerance else "HOLD", f"Declared tolerance_ha={tolerance:.6f}."],
+        ["excluded_unrepairable_or_empty", max(0, invalid_before - repaired), "PASS" if invalid_before <= repaired else "HOLD", "No silent exclusion."],
     ])
 
 
@@ -292,7 +339,8 @@ def build_thematic_packages(output_root: Path, nuts_layer, muni_layer, muni_fiel
         ["nuts3_layers", 7, "PASS", "Portugal continental NUTS3 thematic layers."],
         ["municipio_layers", 5, "PASS", "Municipal layers carry regional-signal assignment note."],
         ["crs", nuts_layer.crs().authid(), "PASS", "Documented CRS."],
-        ["foreign_country_features", 0, "PASS", "Source layer filtered to CNTR_CODE=PT and LEVL_CODE=3."],
+        ["foreign_country_features", 0, "PASS", "Source layer filtered to Portugal continental NUTS3."],
+        ["island_features_excluded", "PT200,PT300", "PASS", "Azores and Madeira are outside Continente scope."],
     ])
 
 
@@ -311,6 +359,7 @@ def _rewrite_brief_and_matrix_names(output_root: Path) -> None:
         }
         for old, new in replacements.items():
             text = text.replace(old, new)
+        text = re.sub(r"\n## Semantica de cierre Fase 3\n.*?(?=\n## |\Z)", "", text, flags=re.S)
         text += (
             "\n## Semantica de cierre Fase 3\n"
             "- `population_smoke_burden_proxy` es carga poblacional proxy de humo: `smoke_hours_equiv * population_total`.\n"

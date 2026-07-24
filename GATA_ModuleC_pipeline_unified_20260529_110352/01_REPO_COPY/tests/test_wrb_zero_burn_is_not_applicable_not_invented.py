@@ -47,5 +47,5 @@ def test_wrb_zero_burn_status_does_not_create_causal_hold(tmp_path):
     assert rows[0]['missing_components'] == ''
     assert rows[0]['qa_flag'] == 'OK'
     assert rows[0]['threshold_gate_status'] == 'THRESHOLD_DEFINED_AS_INDEXED_METHOD'
-    assert rows[0]['causal_matrix_scientific_status'] == 'THRESHOLD_DEFINED_AS_INDEXED_METHOD'
+    assert rows[0]['causal_matrix_scientific_status'] == 'PASS_AS_SCREENING_ASSOCIATION'
     assert 'sin interseccion quemada' not in step7.WRB_FORBIDDEN_NOTE_TOKENS

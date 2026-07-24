@@ -367,7 +367,7 @@ def prepare_admin_nuts3(paths: Dict[str, object], maps_dir: Path, processing):
     if not layer.isValid():
         raise RuntimeError(f"NUTS3 layer invalid: {nuts_src}")
 
-    pt_expr = "\"CNTR_CODE\" = 'PT' AND \"LEVL_CODE\" = 3"
+    pt_expr = "\"CNTR_CODE\" = 'PT' AND \"LEVL_CODE\" = 3 AND \"NUTS_ID\" NOT IN ('PT200', 'PT300')"
     layer = processing.run("native:extractbyexpression", {"INPUT": layer, "EXPRESSION": pt_expr, "OUTPUT": "memory:"})["OUTPUT"]
     layer = processing.run("native:fixgeometries", {"INPUT": layer, "OUTPUT": "memory:"})["OUTPUT"]
     layer = processing.run(

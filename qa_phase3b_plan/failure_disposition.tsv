@@ -1,0 +1,15 @@
+id	status	first_cause	source	hypothesis_test	minimal_edit	closure_artifact
+F3B-01	OPEN	pre-final provenance	moduleC_pipeline_v2.py	SHA mismatch abort	pre-runtime identity gate	source_runtime_provenance.tsv
+F3B-02	OPEN	post-END writes	moduleC_pipeline_v2.py	write ordering audit	finalize before package	gate_dependency_freshness_audit.tsv
+F3B-03	OPEN	stale gate ordering	moduleC_pipeline_v2.py	dependency freshness test	reorder final gates	gate_dependency_freshness_audit.tsv
+F3B-04	OPEN	separate decisions	moduleC_pipeline_v2.py;phase3_objective_closure.py	decision token contract	canonical decision writer	decision artifacts
+F3B-05	OPEN	year omitted from join	phase3_objective_closure.py	260 source rows not collapsed	unit-year feature join	cartographic_join_audit.tsv
+F3B-06	OPEN	Portugal-total filter used	moduleC_pipeline_v2.py;step7_matriz_causal.py	PT200/PT300 exclusion test	canonical Continente predicate	cartographic_layers_inventory.tsv
+F3B-07	OPEN	no geometry gate	phase3_objective_closure.py	invalid geometry fixture	validate/repair/account	fires_normalized_gpkg_audit.tsv
+F3B-08	OPEN	no area conservation	phase3_objective_closure.py	reconciliation tolerance test	write area audit	fire_area_reconciliation_audit.tsv
+F3B-09	OPEN	aggregates substituted for raw cells	phase3_objective_closure.py	raw-input inventory test	inspect authorized spatial inputs	population_weighted_smoke_feasibility.tsv
+F3B-10	OPEN	missing resolution metrics	phase3_objective_closure.py	metric completeness test	add municipal metrics	municipal_smoke_resolution_feasibility.tsv
+F3B-11	OPEN	incomplete DataRoot inventory	phase3_objective_closure.py	root exclusion test	metadata/disposition inventory	formal_wui_feasibility.tsv
+F3B-12	OPEN	missing persisted tests	moduleC_pipeline_v2.py	artifact existence test	persist pytest evidence	pytest_result_summary.tsv
+F3B-13	OPEN	partial manifest	moduleC_pipeline_v2.py	manifest required-set test	authoritative final inventory	final_manifest.json
+F3B-14	OPEN	non-idempotent brief rewrite	phase3_objective_closure.py	encoding/duplicate test	canonical section replacement	brief audit
