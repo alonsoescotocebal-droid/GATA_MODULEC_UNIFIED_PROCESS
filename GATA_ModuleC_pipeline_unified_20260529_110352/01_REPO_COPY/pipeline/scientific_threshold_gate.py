@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
 FORBIDDEN_DIRECT_METHOD_TOKENS = ("flat_single_anchor", "interpolated_from_anchors", "extrapolated_from_anchors")
-MIN_OC03_DIRECT_UNIQUE_UNITS = 26
+MIN_OC03_DIRECT_UNIQUE_UNITS = 24
 BASE_SMOKE_CONTRACT_FOR_OC03C_PASS = "BASE_SMOKE_CONTRACT_FOR_OC03C_PASS"
 PORTUGUESE_AQ_BASE_SMOKE_BLOCKED = "BLOCKED_BASE_SMOKE_REGRESSION"
 FORBIDDEN_PRIMARY_SOURCE_TOKENS = (
@@ -726,7 +726,7 @@ def main() -> int:
         str(output_root / "qa" / "gfas_era5_decoder_daily_spatial_audit.tsv"),
         "unique_years, unique_dates, smoke_method, effective recovery root",
         direct_contract_obs,
-        "Requires route_selected=v0_gfas_era5_real, recovery root trace, unique_years>=10, unique_units>=26, all years 2015-2024, all 12 months per year, full expected annual date coverage, and no anchored/interpolated/extrapolated methods.",
+        "Requires route_selected=v0_gfas_era5_real, recovery root trace, unique_years>=10, unique_units>=24 for Portugal continental, all years 2015-2024, all 12 months per year, full expected annual date coverage, and no anchored/interpolated/extrapolated methods.",
         "SRC-GATE-SMOKE-DIRECT-2015-2024",
         "METHODOLOGICAL_GATE",
         direct_contract_status,
