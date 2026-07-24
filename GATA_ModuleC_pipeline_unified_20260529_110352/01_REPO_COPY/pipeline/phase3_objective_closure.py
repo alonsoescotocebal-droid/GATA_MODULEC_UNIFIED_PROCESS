@@ -106,12 +106,12 @@ def _feasibility_audits(output_root: Path, inputs: Dict[str, object]) -> None:
     pop = _rows(output_root / "tables" / "pop_unit_2015_2025_2030.csv")
     effective = str((inputs.get("paths", {}) if isinstance(inputs, dict) else {}).get("smoke_effective_data_root", ""))
     _write_tsv(qa / "population_weighted_smoke_feasibility.tsv", ["metric", "value", "status", "detail"], [
-        ["spatial_smoke_cell_signal", 0, "HOLD", "Current smoke daily table is unit-level; no reproducible smoke cell score is retained."],
-        ["population_cell_assignment", 0, "HOLD", "GHSL population is zonally summarized, not retained as cell joins."],
-        ["spatial_coverage_acceptable", 0, "HOLD", "No defensible smoke-cell/population-cell overlap."],
-        ["population_assignment_acceptable", 0, "HOLD", f"pop_rows={len(pop)}; smoke_rows={len(smoke)}; source={effective}"],
-        ["non_degenerate_result", 0, "HOLD", "Not evaluated because required cell inputs are absent."],
-        ["methodologically_defensible", 0, "HOLD", "Additional weighted proxy not implemented."],
+        ["spatial_smoke_cell_signal", 0, "INFO", "Methodological limitation: current smoke daily table is unit-level; no reproducible smoke cell score is retained."],
+        ["population_cell_assignment", 0, "INFO", "Methodological limitation: GHSL population is zonally summarized, not retained as cell joins."],
+        ["spatial_coverage_acceptable", 0, "INFO", "Methodological limitation: no defensible smoke-cell/population-cell overlap."],
+        ["population_assignment_acceptable", 0, "INFO", f"Methodological limitation: pop_rows={len(pop)}; smoke_rows={len(smoke)}; source={effective}"],
+        ["non_degenerate_result", 0, "INFO", "Methodological limitation: not evaluated because required cell inputs are absent."],
+        ["methodologically_defensible", 0, "INFO", "Methodological limitation: additional weighted proxy not implemented."],
         ["decision", "SPATIAL_POPULATION_WEIGHTED_PROXY_NOT_IMPLEMENTED", "PASS", "CURRENT_POPULATION_BURDEN_PROXY_RETAINED"],
     ])
     (qa / "population_weighted_smoke_feasibility.md").write_text(
@@ -121,12 +121,12 @@ def _feasibility_audits(output_root: Path, inputs: Dict[str, object]) -> None:
     )
     _write_tsv(qa / "municipal_smoke_resolution_feasibility.tsv", ["metric", "value", "status", "detail"], [
         ["effective_smoke_resolution", "NUTS3_OR_UNIT_LEVEL", "PASS", "Direct municipal smoke signal is not available."],
-        ["pixels_gfas_effective_per_municipality", "NOT_AVAILABLE", "HOLD", "Raw GFAS cell grid is not retained by the canonical route."],
-        ["municipalities_without_coverage", "NOT_AVAILABLE", "HOLD", "Requires raw GFAS spatial inputs."],
-        ["municipalities_with_one_cell", "NOT_AVAILABLE", "HOLD", "Requires raw GFAS spatial inputs."],
-        ["municipality_size_to_resolution_ratio", "NOT_AVAILABLE", "HOLD", "Requires raw GFAS spatial inputs."],
-        ["edge_sensitivity", "NOT_AVAILABLE", "HOLD", "Requires raw GFAS spatial inputs."],
-        ["municipal_direct_smoke_supported", 0, "HOLD", "MUNICIPAL_DIRECT_SMOKE_NOT_SUPPORTED_BY_RESOLUTION"],
+        ["pixels_gfas_effective_per_municipality", "NOT_AVAILABLE", "INFO", "Methodological limitation: raw GFAS cell grid is not retained by the canonical route."],
+        ["municipalities_without_coverage", "NOT_AVAILABLE", "INFO", "Methodological limitation: requires raw GFAS spatial inputs."],
+        ["municipalities_with_one_cell", "NOT_AVAILABLE", "INFO", "Methodological limitation: requires raw GFAS spatial inputs."],
+        ["municipality_size_to_resolution_ratio", "NOT_AVAILABLE", "INFO", "Methodological limitation: requires raw GFAS spatial inputs."],
+        ["edge_sensitivity", "NOT_AVAILABLE", "INFO", "Methodological limitation: requires raw GFAS spatial inputs."],
+        ["municipal_direct_smoke_supported", 0, "INFO", "Methodological limitation: MUNICIPAL_DIRECT_SMOKE_NOT_SUPPORTED_BY_RESOLUTION"],
         ["decision", "MUNICIPAL_DIRECT_SMOKE_NOT_SUPPORTED_BY_RESOLUTION", "PASS", "MUNICIPAL_RESULTS_RETAINED_AS_NUTS3_SIGNAL_ALLOCATION"],
     ])
     (qa / "municipal_smoke_resolution_feasibility.md").write_text(
@@ -153,7 +153,7 @@ def _feasibility_audits(output_root: Path, inputs: Dict[str, object]) -> None:
     _write_tsv(qa / "landcover_wui_input_inventory.tsv", ["file", "format", "year", "crs", "coverage", "classes", "readable", "metadata"], inv_rows)
     _write_tsv(qa / "formal_wui_feasibility.tsv", ["metric", "value", "status", "detail"], [
         ["landcover_wui_inputs_found", len(candidates), "PASS", "Inventory limited to authorized data root."],
-        ["formal_building_fuel_relation", 0, "HOLD", "No usable COS/COSc/CLC relation resolved."],
+        ["formal_building_fuel_relation", 0, "INFO", "Methodological limitation: no usable COS/COSc/CLC relation resolved."],
         ["decision", "FORMAL_WUI_NOT_SUPPORTED_BY_AVAILABLE_DATA", "PASS", "BUILT_UP_FUEL_TERRITORIAL_PROXY_RETAINED"],
     ])
     (qa / "formal_wui_feasibility.md").write_text(

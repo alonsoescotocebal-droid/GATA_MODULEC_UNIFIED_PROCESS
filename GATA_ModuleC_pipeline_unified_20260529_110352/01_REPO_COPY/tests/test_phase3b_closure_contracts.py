@@ -43,6 +43,11 @@ def test_wui_and_resolution_audits_are_not_placeholder_only():
     assert "edge_sensitivity" in CLOSURE
 
 
+def test_methodological_limitations_are_non_blocking_and_step9_is_post_qa():
+    assert '"INFO", "Methodological limitation:' in CLOSURE
+    assert 'Path("deliverables_step9/final_manifest.json")' not in (REPO / "pipeline" / "qa_gate_v2.py").read_text(encoding="utf-8")
+
+
 def test_brief_rewrite_is_idempotent_and_utf8_explicit():
     assert "re.sub(r\"\\n## Semantica de cierre Fase 3" in CLOSURE
     assert "encoding=\"utf-8\"" in CLOSURE

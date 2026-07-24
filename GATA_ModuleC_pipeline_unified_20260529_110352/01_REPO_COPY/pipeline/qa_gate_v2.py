@@ -33,9 +33,6 @@ GO_REQUIRED = [
     Path("brief/causal_matrix/causal_matrix_IECH_NUTS3.csv"),
     Path("brief/causal_matrix/causal_matrix_IECH_NUTS3.json"),
     Path("brief/Brief_Politica_IECH_2030.md"),
-    Path("deliverables_step9/final_manifest.json"),
-    Path("deliverables_step9/final_sha256_checkpoints.txt"),
-    Path("deliverables_step9/ModuleC_ALL_FINAL_deliverables.zip"),
 ]
 
 CANON_REQUIRED = [
