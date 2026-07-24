@@ -4019,7 +4019,7 @@ def run_phase3_phase2_scientific_comparison(output_root: Path, report: Report) -
     """Materialize the comparison against the immutable approved Phase 2 runtime."""
     comparison_script = Path(__file__).resolve().parent / "phase3_scientific_comparison.py"
     phase2_output_root = (
-        output_root.parent / "PHASE2_FULL_20260723_1202_2712250" / "03_outputs"
+        output_root.parents[1] / "PHASE2_FULL_20260723_1202_2712250" / "03_outputs"
     )
     if not phase2_output_root.exists():
         report.fail(f"Immutable Phase 2 baseline missing: {phase2_output_root}")
