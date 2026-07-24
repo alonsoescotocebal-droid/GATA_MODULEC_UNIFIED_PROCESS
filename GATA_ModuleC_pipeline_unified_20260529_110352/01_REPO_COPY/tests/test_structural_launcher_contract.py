@@ -29,7 +29,7 @@ def test_structural_smokerun_uses_current_head_and_never_scientific_pipeline() -
     assert "--resume" not in text
     cfg = json.loads(CONFIG.read_text(encoding="utf-8-sig"))
     assert cfg["EXPECTED_GIT_TOPLEVEL"] == "D:\\GATA_MODULEC_UNIFIED_PROCESS"
-    assert cfg["EXPECTED_BASE_SHA"] == "dbcda0b6f3e00d67a7e4a3701e0f2422f87253e9"
+    assert cfg["EXPECTED_BASE_SHA"] == "5fc85e83b092559fe332f1aa5006b7d33d04b727"
     assert cfg["EXPECTED_START_SHA"] == "57aaf4e9c7bb0af545d5653ce8f6cf06cd06af0f"
 
 
