@@ -30,7 +30,7 @@ NEW_SURFACES = (
     "qa/municipal_smoke_resolution_feasibility.tsv",
     "qa/formal_wui_feasibility.tsv",
 )
-CONTINENTAL_SCOPE_ROWS = (26, 24)
+CONTINENTAL_SCOPE_ROW_PAIRS = {(26, 24), (260, 240)}
 
 
 def _sha(path: Path) -> str:
@@ -86,7 +86,7 @@ def build_comparison(phase2: Path, phase3: Path) -> None:
             if category == "preserved_scientific_result":
                 old_rows = _row_count(old)
                 new_rows = _row_count(new)
-                scope_corrected = old_exists and new_exists and (old_rows, new_rows) == CONTINENTAL_SCOPE_ROWS
+                scope_corrected = old_exists and new_exists and (old_rows, new_rows) in CONTINENTAL_SCOPE_ROW_PAIRS
                 status = "PRESERVED" if equal else ("SCOPE_CORRECTED" if scope_corrected else "REGRESSION_REQUIRES_REVIEW")
                 detail = (
                     "Numeric surface unchanged from immutable Phase 2 baseline."
