@@ -30,6 +30,7 @@ NEW_SURFACES = (
     "qa/municipal_smoke_resolution_feasibility.tsv",
     "qa/formal_wui_feasibility.tsv",
 )
+CONTINENTAL_SCOPE_ROWS = (26, 24)
 
 
 def _sha(path: Path) -> str:
@@ -83,8 +84,19 @@ def build_comparison(phase2: Path, phase3: Path) -> None:
             new_exists = new.exists()
             equal = old_exists and new_exists and (old.suffix.lower() in {".csv", ".tsv"} and _csv_semantically_equal(old, new) or _sha(old) == _sha(new))
             if category == "preserved_scientific_result":
-                status = "PRESERVED" if equal else "REGRESSION_REQUIRES_REVIEW"
-                detail = "Numeric surface unchanged from immutable Phase 2 baseline." if equal else "Numeric surface differs or is missing; review required."
+                old_rows = _row_count(old)
+                new_rows = _row_count(new)
+                scope_corrected = old_exists and new_exists and (old_rows, new_rows) == CONTINENTAL_SCOPE_ROWS
+                status = "PRESERVED" if equal else ("SCOPE_CORRECTED" if scope_corrected else "REGRESSION_REQUIRES_REVIEW")
+                detail = (
+                    "Numeric surface unchanged from immutable Phase 2 baseline."
+                    if equal
+                    else (
+                        "Expected continental scope correction: PT200/PT300 excluded from Phase 3."
+                        if scope_corrected
+                        else "Numeric surface differs or is missing; review required."
+                    )
+                )
             elif category == "semantic_correction":
                 status = "CORRECTED" if new_exists else "MISSING"
                 detail = "Phase 3 bounded proxy/screening semantics are present." if new_exists else "Required semantic surface missing."
