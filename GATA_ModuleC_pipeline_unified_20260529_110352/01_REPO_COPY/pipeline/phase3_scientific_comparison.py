@@ -30,7 +30,7 @@ NEW_SURFACES = (
     "qa/municipal_smoke_resolution_feasibility.tsv",
     "qa/formal_wui_feasibility.tsv",
 )
-CONTINENTAL_SCOPE_ROW_PAIRS = {(26, 24), (260, 240)}
+CONTINENTAL_SCOPE_ROW_PAIRS = {("26", "24"), ("260", "240")}
 
 
 def _sha(path: Path) -> str:
