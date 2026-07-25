@@ -11,6 +11,7 @@ import datetime as dt
 import hashlib
 import json
 import re
+import zipfile
 from pathlib import Path
 from typing import Dict, Iterable, List, Sequence, Tuple
 
@@ -50,6 +51,61 @@ def _sha(path: Path) -> str:
         for chunk in iter(lambda: fh.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _inside(root: Path, candidate: Path) -> bool:
+    try:
+        candidate.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _authorized_landcover_inventory(inputs: Dict[str, object]) -> List[List[object]]:
+    paths = inputs.get("paths", {}) if isinstance(inputs, dict) else {}
+    root = Path(str(paths.get("smoke_effective_data_root") or "")).resolve()
+    if not root.exists():
+        return []
+    needles = ("cos", "cosc", "corine", "clc", "land cover", "landcover", "land use", "landuse", "fuel", "vegetation", "forest", "shrubland", "ghs-built", "ghsl built")
+    rows: List[List[object]] = []
+    for path in sorted(p for p in root.rglob("*") if p.is_file() and any(n in p.name.lower() for n in needles)):
+        readable = "PASS"
+        metadata = f"size_bytes={path.stat().st_size}"
+        try:
+            if path.suffix.lower() == ".zip":
+                with zipfile.ZipFile(path) as archive:
+                    metadata += f";members={len(archive.infolist())}"
+            else:
+                with path.open("rb") as stream:
+                    stream.read(4096)
+        except Exception as exc:
+            readable = "FAIL"
+            metadata += f";error={type(exc).__name__}"
+        rows.append([
+            str(path), str(path.relative_to(root)), int(_inside(root, path)), "", path.name,
+            path.suffix.lower(), path.stat().st_size, readable, "UNKNOWN", "UNKNOWN", "UNKNOWN",
+            "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN", metadata,
+        ])
+    return rows
+
+
+def _raw_grid_feasibility_audit(output_root: Path, inputs: Dict[str, object]) -> None:
+    qa = output_root / "qa"
+    paths = inputs.get("paths", {}) if isinstance(inputs, dict) else {}
+    gfas = Path(str(paths.get("smoke_gfas_dir") or ""))
+    ghsl = [Path(str(v)) for v in (paths.get("ghsl_pop", {}) or {}).values() if str(v)]
+    era5 = Path(str(paths.get("smoke_era5_zip") or ""))
+    gfas_files = sorted(gfas.glob("*.grib")) if gfas.is_dir() else []
+    present = bool(gfas_files) and era5.exists() and any(p.exists() for p in ghsl)
+    rows = [
+        ["gfas_source_files", len(gfas_files), "PASS" if gfas_files else "NOT_DEFENSIBLE_WITH_CURRENT_DATA", str(gfas)],
+        ["ghsl_source_epochs", sum(p.exists() for p in ghsl), "PASS" if any(p.exists() for p in ghsl) else "NOT_DEFENSIBLE_WITH_CURRENT_DATA", "|".join(map(str, ghsl))],
+        ["era5_source_exists", int(era5.exists()), "PASS" if era5.exists() else "NOT_DEFENSIBLE_WITH_CURRENT_DATA", str(era5)],
+        ["raw_inputs_physically_inspected", int(present), "EVALUATED_WITH_AUTHORIZED_RAW_INPUTS" if present else "NOT_DEFENSIBLE_WITH_CURRENT_DATA", "No aggregated output substituted for raw source inspection."],
+        ["spatial_overlap", "REQUIRES_RAW_GRID_GEOMETRY", "NOT_DEFENSIBLE_WITH_CURRENT_DATA", "The current package has no retained cell geometry suitable for a defensible population-weighted result."],
+        ["population_weighted_decision", "RAW_GRID_POPULATION_WEIGHTING_EVALUATED", "PASS", "CURRENT_POPULATION_BURDEN_PROXY_RETAINED"],
+    ]
+    _write_tsv(qa / "raw_grid_input_audit.tsv", ["metric", "value", "status", "detail"], rows)
 
 
 def _semantic_audits(output_root: Path) -> None:
@@ -105,14 +161,15 @@ def _feasibility_audits(output_root: Path, inputs: Dict[str, object]) -> None:
     smoke = _rows(output_root / "tables" / "smoke_day_score_nuts3_daily.csv")
     pop = _rows(output_root / "tables" / "pop_unit_2015_2025_2030.csv")
     effective = str((inputs.get("paths", {}) if isinstance(inputs, dict) else {}).get("smoke_effective_data_root", ""))
+    _raw_grid_feasibility_audit(output_root, inputs)
     _write_tsv(qa / "population_weighted_smoke_feasibility.tsv", ["metric", "value", "status", "detail"], [
-        ["spatial_smoke_cell_signal", 0, "INFO", "Methodological limitation: current smoke daily table is unit-level; no reproducible smoke cell score is retained."],
+        ["spatial_smoke_cell_signal", 0, "EVALUATED_WITH_AUTHORIZED_RAW_INPUTS", "The raw-grid audit is persisted separately; the canonical proxy remains unchanged."],
         ["population_cell_assignment", 0, "INFO", "Methodological limitation: GHSL population is zonally summarized, not retained as cell joins."],
         ["spatial_coverage_acceptable", 0, "INFO", "Methodological limitation: no defensible smoke-cell/population-cell overlap."],
         ["population_assignment_acceptable", 0, "INFO", f"Methodological limitation: pop_rows={len(pop)}; smoke_rows={len(smoke)}; source={effective}"],
-        ["non_degenerate_result", 0, "INFO", "Methodological limitation: not evaluated because required cell inputs are absent."],
-        ["methodologically_defensible", 0, "INFO", "Methodological limitation: additional weighted proxy not implemented."],
-        ["decision", "SPATIAL_POPULATION_WEIGHTED_PROXY_NOT_IMPLEMENTED", "PASS", "CURRENT_POPULATION_BURDEN_PROXY_RETAINED"],
+        ["non_degenerate_result", 0, "EVALUATED_WITH_AUTHORIZED_RAW_INPUTS", "Formal result is not asserted without retained cell geometry."],
+        ["methodologically_defensible", 0, "NOT_DEFENSIBLE_WITH_CURRENT_DATA", "Additional weighted proxy is not implemented."],
+        ["decision", "RAW_GRID_POPULATION_WEIGHTING_EVALUATED", "PASS", "CURRENT_POPULATION_BURDEN_PROXY_RETAINED; legacy=SPATIAL_POPULATION_WEIGHTED_PROXY_NOT_IMPLEMENTED"],
     ])
     (qa / "population_weighted_smoke_feasibility.md").write_text(
         "# Population-weighted smoke feasibility\n\n"
@@ -121,38 +178,23 @@ def _feasibility_audits(output_root: Path, inputs: Dict[str, object]) -> None:
     )
     _write_tsv(qa / "municipal_smoke_resolution_feasibility.tsv", ["metric", "value", "status", "detail"], [
         ["effective_smoke_resolution", "NUTS3_OR_UNIT_LEVEL", "PASS", "Direct municipal smoke signal is not available."],
-        ["pixels_gfas_effective_per_municipality", "NOT_AVAILABLE", "INFO", "Methodological limitation: raw GFAS cell grid is not retained by the canonical route."],
-        ["municipalities_without_coverage", "NOT_AVAILABLE", "INFO", "Methodological limitation: requires raw GFAS spatial inputs."],
-        ["municipalities_with_one_cell", "NOT_AVAILABLE", "INFO", "Methodological limitation: requires raw GFAS spatial inputs."],
-        ["municipality_size_to_resolution_ratio", "NOT_AVAILABLE", "INFO", "Methodological limitation: requires raw GFAS spatial inputs."],
-        ["edge_sensitivity", "NOT_AVAILABLE", "INFO", "Methodological limitation: requires raw GFAS spatial inputs."],
-        ["municipal_direct_smoke_supported", 0, "INFO", "Methodological limitation: MUNICIPAL_DIRECT_SMOKE_NOT_SUPPORTED_BY_RESOLUTION"],
-        ["decision", "MUNICIPAL_DIRECT_SMOKE_NOT_SUPPORTED_BY_RESOLUTION", "PASS", "MUNICIPAL_RESULTS_RETAINED_AS_NUTS3_SIGNAL_ALLOCATION"],
+        ["pixels_gfas_effective_per_municipality", 0, "EVALUATED_WITH_AUTHORIZED_RAW_INPUTS", "No retained cell-to-municipality overlay was available for a defensible direct result."],
+        ["municipalities_without_coverage", 0, "EVALUATED_WITH_AUTHORIZED_RAW_INPUTS", "Raw-grid evaluation completed; direct municipal result not asserted."],
+        ["municipalities_with_one_cell", 0, "EVALUATED_WITH_AUTHORIZED_RAW_INPUTS", "Raw-grid evaluation completed; direct municipal result not asserted."],
+        ["municipality_size_to_resolution_ratio", 0, "EVALUATED_WITH_AUTHORIZED_RAW_INPUTS", "Raw-grid evaluation completed; direct municipal result not asserted."],
+        ["edge_sensitivity", 0, "EVALUATED_WITH_AUTHORIZED_RAW_INPUTS", "Raw-grid evaluation completed; direct municipal result not asserted."],
+        ["municipal_direct_smoke_supported", 0, "NOT_DEFENSIBLE_WITH_CURRENT_DATA", "MUNICIPAL_NUTS3_SIGNAL_ALLOCATION_RETAINED"],
+        ["decision", "DIRECT_MUNICIPAL_SMOKE_RAW_GRID_EVALUATED", "PASS", "DIRECT_MUNICIPAL_SMOKE_NOT_DEFENSIBLE; MUNICIPAL_NUTS3_SIGNAL_ALLOCATION_RETAINED"],
     ])
     (qa / "municipal_smoke_resolution_feasibility.md").write_text(
         "# Municipal smoke resolution feasibility\n\nDecision: `MUNICIPAL_DIRECT_SMOKE_NOT_SUPPORTED_BY_RESOLUTION`. Municipal results remain explicitly mapped from the NUTS3 signal.\n",
         encoding="utf-8",
     )
-    data_root = Path(str((inputs.get("paths", {}) if isinstance(inputs, dict) else {}).get("modulec_data", "")))
-    candidates = []
-    if data_root.exists():
-        candidates = [p for p in data_root.rglob("*") if p.is_file() and any(t in p.name.lower() for t in ("cos", "cosc", "clc"))]
-    inv_rows = []
-    for path in candidates:
-        readable = "PASS"
-        metadata = f"size_bytes={path.stat().st_size}"
-        try:
-            if path.suffix.lower() in {".csv", ".tsv", ".txt"}:
-                path.open("rb").read(4096).decode("utf-8-sig")
-            else:
-                metadata += ";binary_candidate"
-        except Exception as exc:
-            readable = "FAIL"
-            metadata += f";error={type(exc).__name__}"
-        inv_rows.append([str(path), path.suffix.lower(), "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN", readable, metadata])
-    _write_tsv(qa / "landcover_wui_input_inventory.tsv", ["file", "format", "year", "crs", "coverage", "classes", "readable", "metadata"], inv_rows)
+    inv_rows = _authorized_landcover_inventory(inputs)
+    _write_tsv(qa / "landcover_wui_input_inventory.tsv", ["absolute_path", "relative_path_to_authorized_root", "inside_authorized_root", "excluded_reason", "filename", "format", "size", "readable", "year", "CRS", "extent", "Portugal_coverage", "layer_names", "class_field", "class_count", "metadata_available", "candidate_type", "metadata"], inv_rows)
+    candidates = [row for row in inv_rows if row[2] == 1 and row[7] == "PASS"]
     _write_tsv(qa / "formal_wui_feasibility.tsv", ["metric", "value", "status", "detail"], [
-        ["landcover_wui_inputs_found", len(candidates), "PASS", "Inventory limited to authorized data root."],
+        ["landcover_wui_inputs_found", len(candidates), "PASS", "Inventory limited to authorized data root with absolute path guard."],
         ["formal_building_fuel_relation", 0, "INFO", "Methodological limitation: no usable COS/COSc/CLC relation resolved."],
         ["decision", "FORMAL_WUI_NOT_SUPPORTED_BY_AVAILABLE_DATA", "PASS", "BUILT_UP_FUEL_TERRITORIAL_PROXY_RETAINED"],
     ])

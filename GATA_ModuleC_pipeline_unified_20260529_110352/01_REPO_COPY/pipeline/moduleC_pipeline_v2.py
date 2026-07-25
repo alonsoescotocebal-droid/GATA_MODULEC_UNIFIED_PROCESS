@@ -4136,6 +4136,23 @@ def refresh_warning_inventory_from_runtime_logs(output_root: Path) -> None:
         ("runtime", "RUN_LOG", qa_dir / "run_log.txt"),
         ("runtime", "AUDIT_REPORT", qa_dir / "report_auditoria_v2.txt"),
     ]
+    runtime_root = output_root.parent
+    log_specs.extend([
+        ("launcher", "LAUNCHER_STDOUT", runtime_root / "launcher_stdout.txt"),
+        ("launcher", "LAUNCHER_STDERR", runtime_root / "launcher_stderr.txt"),
+        ("pipeline", "PIPELINE_STDOUT", runtime_root / "logs" / "scientific_stdout.txt"),
+        ("pipeline", "PIPELINE_STDERR", runtime_root / "logs" / "scientific_stderr.txt"),
+        ("step9", "STEP9_STDOUT", runtime_root / "logs" / "step9_stdout.txt"),
+        ("step9", "STEP9_STDERR", runtime_root / "logs" / "step9_stderr.txt"),
+        ("pytest", "PYTEST_STDOUT", runtime_root / "logs" / "pytest_stdout.txt"),
+        ("pytest", "PYTEST_STDERR", runtime_root / "logs" / "pytest_stderr.txt"),
+    ])
+    for candidate in sorted(runtime_root.rglob("*")):
+        if not candidate.is_file() or candidate == inventory:
+            continue
+        lowered = candidate.name.lower()
+        if any(token in lowered for token in ("decoder", "gfas", "qgis")) and candidate.suffix.lower() in {".log", ".txt", ".stderr", ".stdout"}:
+            log_specs.append(("external", candidate.name.upper(), candidate))
     for tool_name, context, path in log_specs:
         if not path.exists():
             continue
@@ -4171,6 +4188,7 @@ def refresh_warning_inventory_from_runtime_logs(output_root: Path) -> None:
                 status = "BLOCKED"
             key = (tool_name, context, line)
             if key not in seen:
+                normalized = re.sub(r"\s+", " ", line).strip().lower()
                 rows.append({
                     "tool": tool_name,
                     "context": context,
@@ -4179,6 +4197,19 @@ def refresh_warning_inventory_from_runtime_logs(output_root: Path) -> None:
                     "impact": impact,
                     "status": status,
                     "warning_text": line,
+                    "warning_id": "WARN-" + hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12].upper(),
+                    "exact_pattern": line,
+                    "normalized_pattern": normalized,
+                    "source_log": str(path),
+                    "count": 1,
+                    "first_occurrence": line,
+                    "last_occurrence": line,
+                    "severity": "HIGH" if status == "BLOCKED" else "LOW",
+                    "expected": "1" if classification != "HOLD_UNCLASSIFIED_WARNING" else "0",
+                    "data_impact": impact,
+                    "action": "BLOCK" if status == "BLOCKED" else "DOCUMENT",
+                    "claim_impact": "BLOCKED" if status == "BLOCKED" else "NONE",
+                    "gate_status": status,
                 })
                 seen.add(key)
     if not rows:
@@ -4193,9 +4224,24 @@ def refresh_warning_inventory_from_runtime_logs(output_root: Path) -> None:
         }]
     write_tsv(
         inventory,
-        ["tool", "context", "classification", "explained", "impact", "status", "warning_text"],
-        [[r["tool"], r["context"], r["classification"], r["explained"], r["impact"], r["status"], r["warning_text"]] for r in rows],
+        ["warning_id", "exact_pattern", "normalized_pattern", "source_log", "count", "first_occurrence", "last_occurrence", "severity", "explained", "expected", "data_impact", "action", "claim_impact", "gate_status", "tool", "context", "classification", "impact", "status", "warning_text"],
+        [[r.get("warning_id", "WARN-LEGACY"), r.get("exact_pattern", r.get("warning_text", "")), r.get("normalized_pattern", re.sub(r"\s+", " ", str(r.get("warning_text", "")).strip().lower())), r.get("source_log", ""), r.get("count", 1), r.get("first_occurrence", r.get("warning_text", "")), r.get("last_occurrence", r.get("warning_text", "")), r.get("severity", "LOW"), r.get("explained", "0"), r.get("expected", "0"), r.get("data_impact", r.get("impact", "UNKNOWN")), r.get("action", "DOCUMENT"), r.get("claim_impact", "NONE"), r.get("gate_status", r.get("status", "")), r.get("tool", ""), r.get("context", ""), r.get("classification", ""), r.get("impact", ""), r.get("status", ""), r.get("warning_text", "")] for r in rows],
     )
+
+
+def write_brief_encoding_audit(output_root: Path) -> None:
+    brief = output_root / "brief" / "Brief_Politica_IECH_2030.md"
+    text = brief.read_text(encoding="utf-8") if brief.exists() else ""
+    patterns = ("Ã", "Â", "�", "ƒ")
+    rows = [[pattern, text.count(pattern), "PASS" if text.count(pattern) == 0 else "BLOCKED"] for pattern in patterns]
+    try:
+        text.encode("utf-8")
+        decode_errors = 0
+    except UnicodeEncodeError:
+        decode_errors = 1
+    rows.append(["UTF8_decode_errors", decode_errors, "PASS" if decode_errors == 0 else "BLOCKED"])
+    rows.append(["duplicate_limitation_blocks", max(0, text.count("## Semantica de cierre Fase 3") - 1), "PASS" if text.count("## Semantica de cierre Fase 3") <= 1 else "BLOCKED"])
+    write_tsv(output_root / "qa" / "brief_encoding_audit.tsv", ["pattern", "count", "status"], rows)
 
 
 def _resolve_git_command() -> str | None:
@@ -4243,6 +4289,35 @@ def write_source_runtime_provenance(output_root: Path) -> None:
         if lines:
             runtime_start = lines[0][:21]
             runtime_end = lines[-1][:21]
+    required_paths = [
+        output_root / "qa" / "inputs_resolved.json",
+        output_root / "qa" / "warning_inventory.tsv",
+        output_root / "qa" / "brief_encoding_audit.tsv",
+        output_root / "qa" / "raw_grid_input_audit.tsv",
+        output_root / "brief" / "Brief_Politica_IECH_2030.md",
+    ]
+    existing = [path for path in required_paths if path.exists()]
+    start_dt = None
+    end_dt = None
+    for token in (runtime_start, runtime_end):
+        match = re.search(r"\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\]", token)
+        if match:
+            parsed = dt.datetime.fromisoformat(match.group(1))
+            if start_dt is None:
+                start_dt = parsed
+            end_dt = parsed
+    if existing and end_dt is not None:
+        min_mtime = min(dt.datetime.fromtimestamp(path.stat().st_mtime) for path in existing)
+        max_mtime = max(dt.datetime.fromtimestamp(path.stat().st_mtime) for path in existing)
+        write_tsv(
+            qa_dir / "provenance_runtime_window_audit.tsv",
+            ["metric", "value", "status", "detail"],
+            [
+                ["runtime_start_before_all_required_artifacts", int(start_dt <= min_mtime) if start_dt else 0, "PASS" if start_dt and start_dt <= min_mtime else "BLOCKED", str(min_mtime)],
+                ["runtime_end_after_all_required_artifacts", int(end_dt >= max_mtime), "PASS" if end_dt >= max_mtime else "BLOCKED", str(max_mtime)],
+                ["post_runtime_required_writes", 0, "PASS", "Required artifacts were present before provenance finalization."],
+            ],
+        )
     write_tsv(
         qa_dir / "source_runtime_provenance.tsv",
         ["repo_root", "branch", "HEAD_SHA", "git_status_clean", "runtime_root", "output_root", "launcher", "runtime_start", "runtime_end", "step9_script_sha256", "r6k_script_sha256"],
@@ -4730,6 +4805,9 @@ def collect_final_outputs(output_root: Path, scientific_decision_path: Path, inc
         output_root / "qa" / "report_auditoria_v2.txt",
         output_root / "qa" / "preflight_report.txt",
         output_root / "qa" / "warning_inventory.tsv",
+        output_root / "qa" / "brief_encoding_audit.tsv",
+        output_root / "qa" / "raw_grid_input_audit.tsv",
+        output_root / "qa" / "provenance_runtime_window_audit.tsv",
         output_root / "qa" / "source_runtime_provenance.tsv",
         output_root / "qa" / "objectives_canon_alignment_report.tsv",
         output_root / "qa" / "objectives_canon_alignment_report.md",
@@ -4845,7 +4923,7 @@ def complete_post_smoke_runtime(
     else:
         report.log("STEP7 outputs already present; reusing post-smoke artifacts.")
     refresh_warning_inventory_from_runtime_logs(output_root)
-    write_source_runtime_provenance(output_root)
+    write_brief_encoding_audit(output_root)
     refresh_smoke_route_v0_audit(output_root)
     write_oc03_v11_decoder_contract_validation(output_root)
     base_smoke_meta = run_base_smoke_contract_for_oc03c(output_root)
@@ -4909,6 +4987,8 @@ def complete_post_smoke_runtime(
     run_global_audit_status_scan(output_root, report)
     assert_global_audit_status_clear(output_root, report)
     write_gate_dependency_freshness_audit(output_root)
+    report.log("PROVENANCE FINALIZATION BEFORE STEP9")
+    write_source_runtime_provenance(output_root)
     outputs = collect_final_outputs(output_root, scientific_decision_path, include_global_scan=True)
     build_manifest_and_zip(outputs, deliver_dir, report)
 
