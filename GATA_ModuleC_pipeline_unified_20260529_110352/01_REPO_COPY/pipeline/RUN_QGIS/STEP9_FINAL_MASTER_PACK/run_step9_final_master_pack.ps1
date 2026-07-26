@@ -168,7 +168,15 @@ $requiredRel = @(
   "qa\era5_wind_portugal_xyz.csv",
   "qa\smoke_route_v0_audit.tsv",
   "qa\warning_inventory.tsv",
+  "qa\warning_completeness_audit.tsv",
+  "qa\brief_encoding_audit.tsv",
+  "qa\raw_grid_input_audit.tsv",
+  "qa\municipal_smoke_resolution_feasibility.tsv",
+  "qa\municipal_smoke_resolution_feasibility.md",
+  "qa\provenance_runtime_window_audit.tsv",
   "qa\source_runtime_provenance.tsv",
+  "qa\phase3c_vs_phase3b_comparison.tsv",
+  "qa\phase3c_vs_phase3b_comparison.md",
   "qa\iech_aggregate_consistency_audit.tsv",
   "qa\scenario_aggregate_consistency_audit.tsv",
   "qa\wrb_method_consistency_audit.tsv",  "qa\scientific_claim_gate.tsv",
@@ -219,7 +227,10 @@ $requiredRel = @(
   "brief\causal_matrix\causal_matrix_sha256_checkpoints.txt",
   "brief\deliverables_step8\ModuleC_STEP8_BRIEF_CAUSAL_deliverables.zip",
   "maps\IECH_ModuleC_master.gpkg",
-  "deliverables_step9\runtime_scientific_closure_decision.md"
+  "deliverables_step9\runtime_scientific_closure_decision.md",
+  "provenance\launcher_command.txt",
+  "provenance\launcher_roots.tsv",
+  "provenance\launcher_exit_code.txt"
 )
 
 $missing = @()

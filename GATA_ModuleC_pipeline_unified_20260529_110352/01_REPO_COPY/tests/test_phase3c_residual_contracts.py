@@ -53,3 +53,13 @@ def test_phase3c_brief_encoding_audit(tmp_path):
     text = (tmp_path / "qa" / "brief_encoding_audit.tsv").read_text(encoding="utf-8")
     assert "mojibake" not in text.lower()
     assert "UTF8_decode_errors\t0\tPASS" in text
+
+
+def test_phase3c_brief_encoding_audit_blocks_contractual_mojibake(tmp_path):
+    brief = tmp_path / "brief" / "Brief_Politica_IECH_2030.md"
+    brief.parent.mkdir(parents=True)
+    brief.write_text("HistÃƒÆ’Ã‚Â³rico\n", encoding="utf-8")
+    pipeline.write_brief_encoding_audit(tmp_path)
+    text = (tmp_path / "qa" / "brief_encoding_audit.tsv").read_text(encoding="utf-8")
+    assert "Ãƒ\t1\tBLOCKED" in text
+    assert "Æ’\t1\tBLOCKED" in text

@@ -2794,7 +2794,7 @@ def generate_brief(output_root: Path, inputs: Dict[str, object]) -> Path:
     lines.append("- No equivale a concentracion contaminante, no es IECH normalizado y no valida por si solo una afirmacion sanitaria o epidemiologica.")
     lines.append("")
     lines.append("## Cobertura temporal")
-    lines.append("- HistÃƒÆ’Ã‚Â³rico: 2015-2024.")
+    lines.append("- Histórico: 2015-2024.")
     lines.append("- Escenarios: 2026-2030 (S0 y S1).")
     lines.append("")
     lines.append("## Cobertura espacial")
@@ -2808,7 +2808,7 @@ def generate_brief(output_root: Path, inputs: Dict[str, object]) -> Path:
     lines.append("")
     lines.append("## Resultados humo")
     lines.append(f"- Filas smoke NUTS3: {_table_rowcount(smoke_unit)}.")
-    lines.append("- Serie anual reconstruida/derivada segÃƒÆ’Ã‚Âºn ruta de humo seleccionada.")
+    lines.append("- Serie anual reconstruida/derivada según ruta de humo seleccionada.")
     route_selected = str(meta.get("smoke_route_selected", "")) if isinstance(meta, dict) else ""
     route_decision = str(meta.get("smoke_route_decision", "")) if isinstance(meta, dict) else ""
     route_status = str(meta.get("smoke_route_status", "")) if isinstance(meta, dict) else ""
@@ -2817,13 +2817,13 @@ def generate_brief(output_root: Path, inputs: Dict[str, object]) -> Path:
     if route_reason:
         lines.append(f"- Motivo ruta: {route_reason}.")
     lines.append("")
-    lines.append("## Resultados poblaciÃƒÆ’Ã‚Â³n")
-    lines.append(f"- Filas poblaciÃƒÆ’Ã‚Â³n NUTS3: {_table_rowcount(pop_unit)}.")
-    lines.append("- PoblaciÃƒÆ’Ã‚Â³n GHSL integrada para 2015/2020/2025/2030.")
+    lines.append("## Resultados población")
+    lines.append(f"- Filas población NUTS3: {_table_rowcount(pop_unit)}.")
+    lines.append("- Población GHSL integrada para 2015/2020/2025/2030.")
     lines.append("")
     lines.append("## Resultados recurrencia")
     lines.append(f"- Filas recurrencia NUTS3: {_table_rowcount(rec_unit)}.")
-    lines.append("- MÃƒÆ’Ã‚Â©tricas: total_burn_ha, years_area_gt_p75, n_events_gt_1000ha y clase de recurrencia.")
+    lines.append("- Métricas: total_burn_ha, years_area_gt_p75, n_events_gt_1000ha y clase de recurrencia.")
     lines.append("")
     lines.append("## Resultados municipales")
     if iech_muni.exists():
@@ -2832,7 +2832,7 @@ def generate_brief(output_root: Path, inputs: Dict[str, object]) -> Path:
         lines.append("- population_smoke_burden_proxy municipal no disponible (HOLD MUNICIPAL).")
     lines.append("")
     lines.append("## Resultados WRB")
-    lines.append(f"- Tabla WRB NUTS3: {'sÃƒÆ’Ã‚Â­' if wrb_nuts.exists() else 'no'}.")
+    lines.append(f"- Tabla WRB NUTS3: {'sí' if wrb_nuts.exists() else 'no'}.")
     if wrb_top:
         lines.append("- Clases dominantes WRB (conteo unidades):")
         for cls, cnt in wrb_top:
@@ -2841,7 +2841,7 @@ def generate_brief(output_root: Path, inputs: Dict[str, object]) -> Path:
         lines.append("- Sin resumen WRB por unidad.")
     lines.append("")
     lines.append("## Resultados WUI / territorio")
-    lines.append(f"- Tabla territorial NUTS3: {'sÃƒÆ’Ã‚Â­' if terr_nuts.exists() else 'no'}.")
+    lines.append(f"- Tabla territorial NUTS3: {'sí' if terr_nuts.exists() else 'no'}.")
     lines.append(f"- Unidades con wui_proxy > 0: {wui_positive}.")
     lines.append("")
     lines.append("## Matriz causal")
@@ -2861,11 +2861,11 @@ def generate_brief(output_root: Path, inputs: Dict[str, object]) -> Path:
     lines.append("")
     lines.append("## Recomendaciones")
     if missing_summary:
-        lines.append("- Mantener priorizaciÃƒÆ’Ã‚Â³n provisional; evitar ranking territorial fuerte mientras existan componentes en HOLD.")
+        lines.append("- Mantener priorización provisional; evitar ranking territorial fuerte mientras existan componentes en HOLD.")
     else:
-        lines.append("- Priorizar intervenciÃƒÆ’Ã‚Â³n en unidades HIGH_PRIORITY con recurrencia alta y soporte completo de componentes.")
-    lines.append("- Mantener WRB como contexto edÃƒÆ’Ã‚Â¡fico interpretativo, no como causal directo.")
-    lines.append("- Consolidar proxy WUI con datos formales de combustible/landcover cuando estÃƒÆ’Ã‚Â©n disponibles.")
+        lines.append("- Priorizar intervención en unidades HIGH_PRIORITY con recurrencia alta y soporte completo de componentes.")
+    lines.append("- Mantener WRB como contexto edáfico interpretativo, no como causal directo.")
+    lines.append("- Consolidar proxy WUI con datos formales de combustible/landcover cuando estén disponibles.")
     lines.append("")
     lines.append("## Evidencia de QA")
     lines.append(f"- `{output_root / 'qa' / 'inputs_resolved.json'}`")

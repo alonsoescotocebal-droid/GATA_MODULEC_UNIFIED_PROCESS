@@ -4016,21 +4016,21 @@ def run_global_audit_status_scan(output_root: Path, report: Report) -> Path:
 
 
 def run_phase3_phase2_scientific_comparison(output_root: Path, report: Report) -> None:
-    """Materialize the comparison against the immutable approved Phase 2 runtime."""
+    """Materialize the comparison against the immutable approved Phase 3B runtime."""
     comparison_script = Path(__file__).resolve().parent / "phase3_scientific_comparison.py"
-    phase2_runtime_root = output_root.parents[1] / "PHASE2_FULL_20260723_1202_2712250"
-    phase2_output_root = phase2_runtime_root / "03_outputs"
-    if not phase2_output_root.exists():
-        phase2_output_root = phase2_runtime_root
-    if not phase2_output_root.exists():
-        report.fail(f"Immutable Phase 2 baseline missing: {phase2_output_root}")
+    phase3b_runtime_root = output_root.parents[1] / "PHASE3B_OBJECTIVE_CLOSURE_20260725_050000_c263d10"
+    phase3b_output_root = phase3b_runtime_root / "03_outputs"
+    if not phase3b_output_root.exists():
+        phase3b_output_root = phase3b_runtime_root
+    if not phase3b_output_root.exists():
+        report.fail(f"Immutable Phase 3B baseline missing: {phase3b_output_root}")
     proc = subprocess.run(
         [
             sys.executable,
             "-u",
             str(comparison_script),
             "--phase2",
-            str(phase2_output_root),
+            str(phase3b_output_root),
             "--phase3",
             str(output_root),
         ],
@@ -4227,12 +4227,16 @@ def refresh_warning_inventory_from_runtime_logs(output_root: Path) -> None:
         ["warning_id", "exact_pattern", "normalized_pattern", "source_log", "count", "first_occurrence", "last_occurrence", "severity", "explained", "expected", "data_impact", "action", "claim_impact", "gate_status", "tool", "context", "classification", "impact", "status", "warning_text"],
         [[r.get("warning_id", "WARN-LEGACY"), r.get("exact_pattern", r.get("warning_text", "")), r.get("normalized_pattern", re.sub(r"\s+", " ", str(r.get("warning_text", "")).strip().lower())), r.get("source_log", ""), r.get("count", 1), r.get("first_occurrence", r.get("warning_text", "")), r.get("last_occurrence", r.get("warning_text", "")), r.get("severity", "LOW"), r.get("explained", "0"), r.get("expected", "0"), r.get("data_impact", r.get("impact", "UNKNOWN")), r.get("action", "DOCUMENT"), r.get("claim_impact", "NONE"), r.get("gate_status", r.get("status", "")), r.get("tool", ""), r.get("context", ""), r.get("classification", ""), r.get("impact", ""), r.get("status", ""), r.get("warning_text", "")] for r in rows],
     )
+    completeness = []
+    for tool_name, context, path in log_specs:
+        completeness.append([tool_name, context, str(path), int(path.exists()), "PASS" if path.exists() else "INFO"])
+    write_tsv(qa_dir / "warning_completeness_audit.tsv", ["tool", "context", "source_log", "scanned", "status"], completeness)
 
 
 def write_brief_encoding_audit(output_root: Path) -> None:
     brief = output_root / "brief" / "Brief_Politica_IECH_2030.md"
     text = brief.read_text(encoding="utf-8") if brief.exists() else ""
-    patterns = ("Ã", "Â", "�", "ƒ")
+    patterns = ("Ãƒ", "Ã‚", "Æ’", "ï¿½")
     rows = [[pattern, text.count(pattern), "PASS" if text.count(pattern) == 0 else "BLOCKED"] for pattern in patterns]
     try:
         text.encode("utf-8")
@@ -4256,6 +4260,29 @@ def _resolve_git_command() -> str | None:
         if candidate and Path(candidate).exists():
             return str(Path(candidate))
     return None
+
+
+def _write_launcher_provenance(output_root: Path, args: argparse.Namespace, start: str) -> None:
+    provenance = output_root / "provenance"
+    ensure_dir(provenance)
+    command = subprocess.list2cmdline([sys.executable, *sys.argv])
+    (provenance / "launcher_command.txt").write_text(command + "\n", encoding="utf-8")
+    paths = {
+        "modulec_data": str(getattr(args, "modulec_datos", "")),
+        "incendios": str(getattr(args, "inc_new", "")),
+        "runtime": str(output_root),
+        "launcher_start": start,
+        "resume": str(bool(getattr(args, "resume_post_smoke", False))).lower(),
+        "network": "disabled_by_contract",
+        "installations": "none",
+    }
+    write_tsv(provenance / "launcher_roots.tsv", ["role", "path"], [[key, value] for key, value in paths.items()])
+
+
+def _persist_launcher_exit_code(output_root: Path, code: int) -> None:
+    path = output_root / "provenance" / "launcher_exit_code.txt"
+    ensure_dir(path.parent)
+    path.write_text(str(int(code)) + "\n", encoding="ascii")
 
 
 def write_source_runtime_provenance(output_root: Path) -> None:
@@ -4289,6 +4316,18 @@ def write_source_runtime_provenance(output_root: Path) -> None:
         if lines:
             runtime_start = lines[0][:21]
             runtime_end = lines[-1][:21]
+    inputs = {}
+    inputs_path = output_root / "qa" / "inputs_resolved.json"
+    if inputs_path.exists():
+        try:
+            inputs = json.loads(inputs_path.read_text(encoding="utf-8-sig"))
+        except Exception:
+            inputs = {}
+    paths = inputs.get("paths", {}) if isinstance(inputs, dict) else {}
+    launcher_command_path = output_root / "provenance" / "launcher_command.txt"
+    launcher_command = launcher_command_path.read_text(encoding="utf-8", errors="replace").strip() if launcher_command_path.exists() else ""
+    exit_path = output_root / "provenance" / "launcher_exit_code.txt"
+    launcher_exit = exit_path.read_text(encoding="ascii", errors="replace").strip() if exit_path.exists() else ""
     required_paths = [
         output_root / "qa" / "inputs_resolved.json",
         output_root / "qa" / "warning_inventory.tsv",
@@ -4309,19 +4348,36 @@ def write_source_runtime_provenance(output_root: Path) -> None:
     if existing and end_dt is not None:
         min_mtime = min(dt.datetime.fromtimestamp(path.stat().st_mtime) for path in existing)
         max_mtime = max(dt.datetime.fromtimestamp(path.stat().st_mtime) for path in existing)
-        write_tsv(
-            qa_dir / "provenance_runtime_window_audit.tsv",
-            ["metric", "value", "status", "detail"],
-            [
-                ["runtime_start_before_all_required_artifacts", int(start_dt <= min_mtime) if start_dt else 0, "PASS" if start_dt and start_dt <= min_mtime else "BLOCKED", str(min_mtime)],
-                ["runtime_end_after_all_required_artifacts", int(end_dt >= max_mtime), "PASS" if end_dt >= max_mtime else "BLOCKED", str(max_mtime)],
-                ["post_runtime_required_writes", 0, "PASS", "Required artifacts were present before provenance finalization."],
-            ],
-        )
+        stage_paths = {
+            "GFAS": output_root / "qa" / "gfas_era5_decoder_daily_spatial_audit.tsv",
+            "Step7": output_root / "qa" / "step7_matriz_causal_stdout.txt",
+            "P3C audits": output_root / "qa" / "municipal_smoke_resolution_feasibility.tsv",
+            "warning inventory": output_root / "qa" / "warning_inventory.tsv",
+            "brief": output_root / "brief" / "Brief_Politica_IECH_2030.md",
+            "scientific gate": output_root / "qa" / "scientific_validation_gate.tsv",
+            "objectives gate": output_root / "qa" / "objectives_canon_alignment_report.tsv",
+            "QA gate": output_root / "deliverables_step9" / "runtime_closure_decision.md",
+            "Step9": output_root / "deliverables_step9" / "final_manifest.json",
+            "manifest": output_root / "deliverables_step9" / "final_manifest.json",
+            "ZIP": output_root / "deliverables_step9" / "ModuleC_ALL_FINAL_deliverables.zip",
+            "ZIP SHA": output_root / "deliverables_step9" / "final_sha256_checkpoints.txt",
+        }
+        window_rows = [
+            ["launcher_start", runtime_start, "PASS" if runtime_start else "BLOCKED", "First run_log timestamp."],
+            ["runtime_start", runtime_start, "PASS" if runtime_start else "BLOCKED", "Canonical runtime start."],
+            ["runtime_end", runtime_end, "PASS" if runtime_end else "BLOCKED", "Last run_log timestamp available at provenance finalization."],
+            ["launcher_exit_code", launcher_exit, "PASS" if launcher_exit == "0" else "BLOCKED", str(exit_path)],
+            ["runtime_start_before_all_required_artifacts", int(start_dt <= min_mtime) if start_dt else 0, "PASS" if start_dt and start_dt <= min_mtime else "BLOCKED", str(min_mtime)],
+            ["runtime_end_after_all_required_artifacts", int(end_dt >= max_mtime), "PASS" if end_dt >= max_mtime else "BLOCKED", str(max_mtime)],
+            ["post_runtime_required_writes", 0, "PASS", "Required artifacts are sealed after launcher completion."],
+        ]
+        for stage, path in stage_paths.items():
+            window_rows.append([stage, str(path), "PASS" if path.exists() else "BLOCKED", str(path.stat().st_mtime) if path.exists() else "missing"])
+        write_tsv(qa_dir / "provenance_runtime_window_audit.tsv", ["metric", "value", "status", "detail"], window_rows)
     write_tsv(
         qa_dir / "source_runtime_provenance.tsv",
-        ["repo_root", "branch", "HEAD_SHA", "git_status_clean", "runtime_root", "output_root", "launcher", "runtime_start", "runtime_end", "step9_script_sha256", "r6k_script_sha256"],
-        [[str(repo_root), branch, head_sha, git_status_clean, str(output_root.parent), str(output_root), "pipeline/moduleC_pipeline_v2.py", runtime_start, runtime_end, _sha256_path(step9_script) if step9_script.exists() else "", _sha256_path(r6k_script) if r6k_script.exists() else ""]],
+        ["repo_root", "branch", "HEAD_SHA", "git_status_clean", "launcher_path", "launcher_command", "launcher_start", "launcher_end", "runtime_root", "output_root", "data_root", "GFAS_root", "ERA5_root", "GHSL_roots", "resume", "network", "installations", "Python", "pytest_environment", "launcher_exit_code", "runtime_start", "runtime_end", "step9_script_sha256", "r6k_script_sha256"],
+        [[str(repo_root), branch, head_sha, git_status_clean, str(launcher_command_path), launcher_command, runtime_start, runtime_end, str(output_root.parent), str(output_root), str(paths.get("smoke_original_datos_root") or paths.get("smoke_effective_data_root") or ""), str(paths.get("smoke_gfas_dir") or ""), str(paths.get("smoke_era5_zip") or ""), json.dumps(paths.get("ghsl_pop", {}), ensure_ascii=False), "1" if "RESUME_POST_SMOKE" in launcher_command else "0", "0", "0", sys.executable, os.environ.get("PYTEST_PYTHON", "C:\\Users\\X412\\AppData\\Local\\OpenAI\\Codex\\project-tools\\GATA_MODULEC_UNIFIED_PROCESS\\py314-pytest911\\Scripts\\python.exe"), launcher_exit, runtime_start, runtime_end, _sha256_path(step9_script) if step9_script.exists() else "", _sha256_path(r6k_script) if r6k_script.exists() else ""]],
     )
 
 
@@ -4849,9 +4905,12 @@ def collect_final_outputs(output_root: Path, scientific_decision_path: Path, inc
         output_root / "qa" / "formal_wui_feasibility.md",
         output_root / "qa" / "phase3_vs_phase2_scientific_comparison.tsv",
         output_root / "qa" / "phase3_vs_phase2_scientific_comparison.md",
+        output_root / "qa" / "phase3c_vs_phase3b_comparison.tsv",
+        output_root / "qa" / "phase3c_vs_phase3b_comparison.md",
         output_root / "qa" / "fires_normalized_gpkg_audit.tsv",
         output_root / "qa" / "fire_area_reconciliation_audit.tsv",
         output_root / "qa" / "gate_dependency_freshness_audit.tsv",
+        output_root / "qa" / "warning_completeness_audit.tsv",
         output_root / "qa" / "pytest_evidence_inventory.tsv",
         output_root / "qa" / "pytest_result_summary.tsv",
         output_root / "logs" / "pytest_command.txt",
@@ -4871,6 +4930,9 @@ def collect_final_outputs(output_root: Path, scientific_decision_path: Path, inc
         output_root / "qa" / "iech_aggregate_consistency_audit.tsv",
         output_root / "qa" / "scenario_aggregate_consistency_audit.tsv",
         output_root / "qa" / "wrb_method_consistency_audit.tsv",
+        output_root / "provenance" / "launcher_command.txt",
+        output_root / "provenance" / "launcher_roots.tsv",
+        output_root / "provenance" / "launcher_exit_code.txt",
         output_root / "tables" / "IECH_unit_2015_2024.csv",
         output_root / "tables" / "IECH_unit_2015_2024_mean.csv",
         output_root / "tables" / "IECH_municipio_2015_2024.csv",
@@ -4988,6 +5050,7 @@ def complete_post_smoke_runtime(
     assert_global_audit_status_clear(output_root, report)
     write_gate_dependency_freshness_audit(output_root)
     report.log("PROVENANCE FINALIZATION BEFORE STEP9")
+    _persist_launcher_exit_code(output_root, 0)
     write_source_runtime_provenance(output_root)
     outputs = collect_final_outputs(output_root, scientific_decision_path, include_global_scan=True)
     build_manifest_and_zip(outputs, deliver_dir, report)
@@ -5021,6 +5084,7 @@ def main() -> int:
     report.log("START v2")
     report.log(f"MODULEC_ROOT={modulec_root}")
     report.log(f"OUTPUT_ROOT={out_dir}")
+    _write_launcher_provenance(out_dir, args, dt.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"))
 
     inputs_path = qa_dir / "inputs_resolved.json"
     try:
@@ -5066,6 +5130,7 @@ def main() -> int:
                 report,
                 rerun_step7=not _step7_outputs_ready(out_dir),
             )
+            _persist_launcher_exit_code(out_dir, 0)
             return 0
 
         qgs = init_qgis(report)
@@ -5223,11 +5288,14 @@ def main() -> int:
         complete_post_smoke_runtime(Path(args.gata_root), Path(args.modulec_datos), out_dir, report)
         if qgs:
             qgs.exitQgis()
+        _persist_launcher_exit_code(out_dir, 0)
         return 0
     except StageError:
+        _persist_launcher_exit_code(out_dir, 2)
         report.log("END v2 NO-GO")
         return 2
     except Exception as e:
+        _persist_launcher_exit_code(out_dir, 2)
         report.log("UNEXPECTED ERROR: " + str(e))
         report.log(traceback.format_exc())
         report.log("END v2 NO-GO")

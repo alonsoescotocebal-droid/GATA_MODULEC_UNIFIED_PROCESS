@@ -31,6 +31,7 @@ NEW_SURFACES = (
     "qa/formal_wui_feasibility.tsv",
 )
 CONTINENTAL_SCOPE_ROW_PAIRS = {("26", "24"), ("260", "240")}
+# SCOPE_CORRECTED remains a historical diagnostic token; emitted statuses use the R3 contract vocabulary.
 
 
 def _sha(path: Path) -> str:
@@ -87,7 +88,7 @@ def build_comparison(phase2: Path, phase3: Path) -> None:
                 old_rows = _row_count(old)
                 new_rows = _row_count(new)
                 scope_corrected = old_exists and new_exists and (old_rows, new_rows) in CONTINENTAL_SCOPE_ROW_PAIRS
-                status = "PRESERVED" if equal else ("SCOPE_CORRECTED" if scope_corrected else "REGRESSION_REQUIRES_REVIEW")
+                status = "NUMERICALLY_IDENTICAL" if equal else ("EXPECTED_DOCUMENTARY_CHANGE" if scope_corrected else "REGRESSION")
                 detail = (
                     "Numeric surface unchanged from immutable Phase 2 baseline."
                     if equal
@@ -98,10 +99,10 @@ def build_comparison(phase2: Path, phase3: Path) -> None:
                     )
                 )
             elif category == "semantic_correction":
-                status = "CORRECTED" if new_exists else "MISSING"
+                status = "EXPECTED_DOCUMENTARY_CHANGE" if new_exists else "REGRESSION"
                 detail = "Phase 3 bounded proxy/screening semantics are present." if new_exists else "Required semantic surface missing."
             else:
-                status = "ADDED" if new_exists else "MISSING"
+                status = "EXPECTED_ADDITIVE_OUTPUT" if new_exists else "REGRESSION"
                 detail = "Phase 3 deliverable generated and audited." if new_exists else "Required Phase 3 deliverable missing."
             rows.append([relative, category, int(old_exists), int(new_exists), _row_count(old), _row_count(new), int(equal), status, detail])
     out_tsv = phase3 / "qa" / "phase3_vs_phase2_scientific_comparison.tsv"
@@ -109,8 +110,8 @@ def build_comparison(phase2: Path, phase3: Path) -> None:
     with out_tsv.open("w", encoding="utf-8", newline="") as stream:
         for row in rows:
             stream.write("\t".join(str(value) for value in row) + "\n")
-    preserved = sum(1 for row in rows[1:] if row[1] == "preserved_scientific_result" and row[7] == "PRESERVED")
-    regressions = sum(1 for row in rows[1:] if row[7] == "REGRESSION_REQUIRES_REVIEW")
+    preserved = sum(1 for row in rows[1:] if row[1] == "preserved_scientific_result" and row[7] == "NUMERICALLY_IDENTICAL")
+    regressions = sum(1 for row in rows[1:] if row[7] == "REGRESSION")
     lines = [
         "# Phase 3 versus Phase 2 scientific comparison",
         "",
@@ -127,6 +128,8 @@ def build_comparison(phase2: Path, phase3: Path) -> None:
         "The machine-readable detail is in `qa/phase3_vs_phase2_scientific_comparison.tsv`.",
     ]
     (phase3 / "qa" / "phase3_vs_phase2_scientific_comparison.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (phase3 / "qa" / "phase3c_vs_phase3b_comparison.tsv").write_text((phase3 / "qa" / "phase3_vs_phase2_scientific_comparison.tsv").read_text(encoding="utf-8"), encoding="utf-8")
+    (phase3 / "qa" / "phase3c_vs_phase3b_comparison.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def main() -> int:

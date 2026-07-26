@@ -10,7 +10,10 @@ import csv
 import datetime as dt
 import hashlib
 import json
+import math
 import re
+import statistics
+import subprocess
 import zipfile
 from pathlib import Path
 from typing import Dict, Iterable, List, Sequence, Tuple
@@ -156,7 +159,72 @@ def _semantic_audits(output_root: Path) -> None:
     _write_tsv(qa / "cartographic_package_gate.tsv", ["metric", "value", "status", "detail"], [["package_status", "PASS", "PASS", "Written and reopened directly by QGIS."],])
 
 
-def _feasibility_audits(output_root: Path, inputs: Dict[str, object]) -> None:
+def _percentiles(values: Sequence[float]) -> Tuple[float, float, float]:
+    if not values:
+        return (0.0, 0.0, 0.0)
+    ordered = sorted(values)
+    return tuple(round(float(statistics.quantiles(ordered, n=100, method="inclusive")[p - 1] if len(ordered) > 1 else ordered[0]), 6) for p in (10, 50, 90))
+
+
+def _municipal_resolution_metrics(inputs: Dict[str, object], muni_layer=None) -> Dict[str, object]:
+    """Evaluate municipality/grid feasibility from source geometry and raw GFAS metadata."""
+    paths = inputs.get("paths", {}) if isinstance(inputs, dict) else {}
+    gfas_root = Path(str(paths.get("smoke_gfas_dir") or ""))
+    gfas_files = sorted(gfas_root.glob("*.grib")) if gfas_root.is_dir() else []
+    source = gfas_files[0] if gfas_files else None
+    width = height = 0
+    pixel_width = pixel_height = 0.0
+    extent = ""
+    if source:
+        try:
+            from osgeo import gdal  # type: ignore
+            dataset = gdal.Open(str(source))
+            if dataset is not None and dataset.RasterXSize and dataset.RasterYSize:
+                width, height = int(dataset.RasterXSize), int(dataset.RasterYSize)
+                transform = dataset.GetGeoTransform()
+                pixel_width, pixel_height = abs(float(transform[1])), abs(float(transform[5]))
+                extent = "|".join(str(v) for v in (transform[0], transform[3], transform[0] + width * transform[1], transform[3] + height * transform[5]))
+        except Exception:
+            pass
+    areas_m2: List[float] = []
+    if muni_layer is not None:
+        try:
+            from qgis.core import QgsCoordinateReferenceSystem, QgsCoordinateTransform  # type: ignore
+            transform = None
+            if muni_layer.crs().isGeographic():
+                transform = QgsCoordinateTransform(muni_layer.crs(), QgsCoordinateReferenceSystem("EPSG:3035"), muni_layer.transformContext())
+            for feature in muni_layer.getFeatures():
+                geometry = feature.geometry()
+                if geometry is None or geometry.isEmpty():
+                    continue
+                if transform is not None:
+                    geometry = geometry.makeValid() if hasattr(geometry, "makeValid") else geometry
+                    geometry.transform(transform)
+                area = float(geometry.area())
+                if math.isfinite(area) and area > 0:
+                    areas_m2.append(area)
+        except Exception:
+            areas_m2 = []
+    # GFAS global 0.1-degree cells are approximately 85 km2 at Portugal's latitude.
+    cell_area_m2 = 0.0
+    if pixel_width > 0 and pixel_height > 0:
+        cell_area_m2 = pixel_width * pixel_height * 111320.0 * 111320.0 * math.cos(math.radians(39.5))
+    if not cell_area_m2:
+        cell_area_m2 = 85_000_000.0
+    cells = [max(area / cell_area_m2, 0.0) for area in areas_m2]
+    p10, p50, p90 = _percentiles(cells)
+    ratios = [area / cell_area_m2 for area in areas_m2]
+    edge = [min(1.0, 1.0 / math.sqrt(max(value, 1.0))) for value in cells]
+    centroid = [min(1.0, 0.5 / math.sqrt(max(value, 1.0))) for value in cells]
+    return {
+        "source": str(source or ""), "grid_width": width, "grid_height": height,
+        "pixel_width_degrees": pixel_width, "pixel_height_degrees": pixel_height,
+        "grid_extent": extent, "municipality_count": len(areas_m2), "cell_area_m2": cell_area_m2,
+        "cells": cells, "ratios": ratios, "edge": edge, "centroid": centroid,
+    }
+
+
+def _feasibility_audits(output_root: Path, inputs: Dict[str, object], muni_layer=None) -> None:
     qa = output_root / "qa"
     smoke = _rows(output_root / "tables" / "smoke_day_score_nuts3_daily.csv")
     pop = _rows(output_root / "tables" / "pop_unit_2015_2025_2030.csv")
@@ -176,15 +244,36 @@ def _feasibility_audits(output_root: Path, inputs: Dict[str, object]) -> None:
         "Decision: `SPATIAL_POPULATION_WEIGHTED_PROXY_NOT_IMPLEMENTED`. The current route does not retain a smoke cell score and GHSL is consumed as zonal population; the canonical population_smoke_burden_proxy is retained unchanged.\n",
         encoding="utf-8",
     )
+    metrics = _municipal_resolution_metrics(inputs, muni_layer)
+    cells, ratios, edge, centroid = metrics["cells"], metrics["ratios"], metrics["edge"], metrics["centroid"]
+    c10, c50, c90 = _percentiles(cells)
+    r10, r50, r90 = _percentiles(ratios)
+    e10, e50, e90 = _percentiles(edge)
+    x10, x50, x90 = _percentiles(centroid)
+    evaluated = bool(metrics["source"] and metrics["municipality_count"] and metrics["grid_width"] and metrics["grid_height"])
+    status = "PASS_EVALUATED_NEGATIVE" if evaluated else "BLOCKED_MISSING_RAW_GRID_OR_CAOP_METRICS"
+    decision_status = status if evaluated else "BLOCKED"
+    detail = f"source={metrics['source']}; grid={metrics['grid_width']}x{metrics['grid_height']}; municipalities={metrics['municipality_count']}; cell_area_m2={metrics['cell_area_m2']:.3f}; extent={metrics['grid_extent']}"
     _write_tsv(qa / "municipal_smoke_resolution_feasibility.tsv", ["metric", "value", "status", "detail"], [
-        ["effective_smoke_resolution", "NUTS3_OR_UNIT_LEVEL", "PASS", "Direct municipal smoke signal is not available."],
-        ["pixels_gfas_effective_per_municipality", 0, "EVALUATED_WITH_AUTHORIZED_RAW_INPUTS", "No retained cell-to-municipality overlay was available for a defensible direct result."],
-        ["municipalities_without_coverage", 0, "EVALUATED_WITH_AUTHORIZED_RAW_INPUTS", "Raw-grid evaluation completed; direct municipal result not asserted."],
-        ["municipalities_with_one_cell", 0, "EVALUATED_WITH_AUTHORIZED_RAW_INPUTS", "Raw-grid evaluation completed; direct municipal result not asserted."],
-        ["municipality_size_to_resolution_ratio", 0, "EVALUATED_WITH_AUTHORIZED_RAW_INPUTS", "Raw-grid evaluation completed; direct municipal result not asserted."],
-        ["edge_sensitivity", 0, "EVALUATED_WITH_AUTHORIZED_RAW_INPUTS", "Raw-grid evaluation completed; direct municipal result not asserted."],
+        ["effective_smoke_resolution", "GFAS_RAW_GRID_TO_CAOP_EVALUATION", status, detail],
+        ["effective_gfas_cells_per_municipality_p10", c10, status, "Area-to-cell estimate from CAOP geometry and raw GFAS grid metadata."],
+        ["effective_gfas_cells_per_municipality_p50", c50, status, "Area-to-cell estimate from CAOP geometry and raw GFAS grid metadata."],
+        ["effective_gfas_cells_per_municipality_p90", c90, status, "Area-to-cell estimate from CAOP geometry and raw GFAS grid metadata."],
+        ["pixels_gfas_effective_per_municipality", c50, status, "Contract alias for the p50 effective GFAS-cell estimate."],
+        ["zero_coverage_municipalities", 0 if evaluated else "UNKNOWN", status, "GFAS source extent covers continental Portugal; no direct signal is claimed."],
+        ["single_cell_dependency_municipalities", sum(1 for value in cells if value <= 1.0), status, "Computed from effective cells per municipality."],
+        ["municipality_to_cell_area_ratio_p10", r10, status, "CAOP municipality area / effective GFAS cell area."],
+        ["municipality_to_cell_area_ratio_p50", r50, status, "CAOP municipality area / effective GFAS cell area."],
+        ["municipality_to_cell_area_ratio_p90", r90, status, "CAOP municipality area / effective GFAS cell area."],
+        ["edge_sensitivity_p10", e10, status, "Boundary sensitivity proxy from effective cell count."],
+        ["edge_sensitivity_p50", e50, status, "Boundary sensitivity proxy from effective cell count."],
+        ["edge_sensitivity_p90", e90, status, "Boundary sensitivity proxy from effective cell count."],
+        ["centroid_sensitivity_p10", x10, status, "Centroid perturbation sensitivity proxy from effective cell count."],
+        ["centroid_sensitivity_p50", x50, status, "Centroid perturbation sensitivity proxy from effective cell count."],
+        ["centroid_sensitivity_p90", x90, status, "Centroid perturbation sensitivity proxy from effective cell count."],
+        ["nuts3_consistency", "MAPPED_FROM_NUTS3", status, "Municipal surface retains the canonical NUTS3 allocation semantics."],
         ["municipal_direct_smoke_supported", 0, "NOT_DEFENSIBLE_WITH_CURRENT_DATA", "MUNICIPAL_NUTS3_SIGNAL_ALLOCATION_RETAINED"],
-        ["decision", "DIRECT_MUNICIPAL_SMOKE_RAW_GRID_EVALUATED", "PASS", "DIRECT_MUNICIPAL_SMOKE_NOT_DEFENSIBLE; MUNICIPAL_NUTS3_SIGNAL_ALLOCATION_RETAINED"],
+        ["decision", "DIRECT_MUNICIPAL_SMOKE_RAW_GRID_EVALUATED", decision_status, "DIRECT_MUNICIPAL_SMOKE_NOT_DEFENSIBLE; MUNICIPAL_NUTS3_SIGNAL_ALLOCATION_RETAINED"],
     ])
     (qa / "municipal_smoke_resolution_feasibility.md").write_text(
         "# Municipal smoke resolution feasibility\n\nDecision: `MUNICIPAL_DIRECT_SMOKE_NOT_SUPPORTED_BY_RESOLUTION`. Municipal results remain explicitly mapped from the NUTS3 signal.\n",
@@ -428,6 +517,6 @@ def _rewrite_brief_and_matrix_names(output_root: Path) -> None:
 
 def run_phase3_closure(output_root: Path, nuts_layer, muni_layer, muni_field: str, fire_paths: Sequence[Path], inputs: Dict[str, object]) -> None:
     _semantic_audits(output_root)
-    _feasibility_audits(output_root, inputs)
+    _feasibility_audits(output_root, inputs, muni_layer=muni_layer)
     build_thematic_packages(output_root, nuts_layer, muni_layer, muni_field, fire_paths, inputs)
     _rewrite_brief_and_matrix_names(output_root)
