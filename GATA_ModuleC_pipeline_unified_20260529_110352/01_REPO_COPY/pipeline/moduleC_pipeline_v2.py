@@ -4018,7 +4018,9 @@ def run_global_audit_status_scan(output_root: Path, report: Report) -> Path:
 def run_phase3_phase2_scientific_comparison(output_root: Path, report: Report) -> None:
     """Materialize the comparison against the immutable approved Phase 3B runtime."""
     comparison_script = Path(__file__).resolve().parent / "phase3_scientific_comparison.py"
-    phase3b_runtime_root = output_root.parents[1] / "PHASE3B_OBJECTIVE_CLOSURE_20260725_050000_c263d10"
+    # Runtimes live below ``03_RUNTIMES``; keep the immutable baseline lookup
+    # in that sibling directory rather than one level above the runtime tree.
+    phase3b_runtime_root = output_root.parent / "PHASE3B_OBJECTIVE_CLOSURE_20260725_050000_c263d10"
     phase3b_output_root = phase3b_runtime_root / "03_outputs"
     if not phase3b_output_root.exists():
         phase3b_output_root = phase3b_runtime_root
