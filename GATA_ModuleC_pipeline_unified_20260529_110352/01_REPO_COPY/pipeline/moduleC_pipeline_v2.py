@@ -5056,6 +5056,11 @@ def complete_post_smoke_runtime(
     write_source_runtime_provenance(output_root)
     outputs = collect_final_outputs(output_root, scientific_decision_path, include_global_scan=True)
     build_manifest_and_zip(outputs, deliver_dir, report)
+    # Refresh the closure window after the first package exists, then rebuild
+    # once so the final manifest/ZIP contain the stable provenance surface.
+    write_source_runtime_provenance(output_root)
+    outputs = collect_final_outputs(output_root, scientific_decision_path, include_global_scan=True)
+    build_manifest_and_zip(outputs, deliver_dir, report)
 
 
 def main() -> int:
