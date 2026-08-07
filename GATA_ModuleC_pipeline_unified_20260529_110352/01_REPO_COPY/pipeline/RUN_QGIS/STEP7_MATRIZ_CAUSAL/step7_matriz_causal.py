@@ -2434,13 +2434,13 @@ def write_aggregate_consistency_audits(
         detail_by_unit: Dict[str, List[float]] = defaultdict(list)
         for row in detail_rows:
             uid = (row.get("unit_id") or "").strip()
-            proxy = _first_present_float(row, "population_smoke_burden_proxy", "IECH")
+            proxy = _first_present_float(row, "population_smoke_day_burden_proxy", "population_smoke_burden_proxy", "IECH")
             if uid and proxy is not None:
                 detail_by_unit[uid].append(proxy)
         mean_by_unit = {(row.get("unit_id") or "").strip(): row for row in mean_rows if (row.get("unit_id") or "").strip()}
         for uid in sorted(set(detail_by_unit) | set(mean_by_unit)):
             expected = sum(detail_by_unit.get(uid, [])) / len(detail_by_unit.get(uid, [])) if detail_by_unit.get(uid) else None
-            observed = _first_present_float(mean_by_unit.get(uid, {}), "population_smoke_burden_proxy_mean_2015_2024", "IECH_mean_2015_2024")
+            observed = _first_present_float(mean_by_unit.get(uid, {}), "population_smoke_day_burden_proxy_mean_2015_2024", "population_smoke_burden_proxy_mean_2015_2024", "IECH_mean_2015_2024")
             diff = abs(expected - observed) if expected is not None and observed is not None else None
             hist_rows.append([
                 uid,
@@ -2469,7 +2469,7 @@ def write_aggregate_consistency_audits(
         for row in detail_rows:
             uid = (row.get("unit_id") or "").strip()
             scenario = (row.get("scenario") or "").strip().upper()
-            proxy = _first_present_float(row, "population_smoke_burden_proxy", "IECH")
+            proxy = _first_present_float(row, "population_smoke_day_burden_proxy", "population_smoke_burden_proxy", "IECH")
             delta = _first_present_float(row, "delta_population_smoke_burden_proxy_vs_S0", "delta_vs_S0")
             if uid and scenario and proxy is not None:
                 detail_by_unit[uid][scenario].append(proxy)
@@ -2483,9 +2483,9 @@ def write_aggregate_consistency_audits(
             expected_s1 = sum(s1_vals) / len(s1_vals) if s1_vals else None
             expected_delta = (expected_s1 - expected_s0) if expected_s0 is not None and expected_s1 is not None else None
             observed_row = mean_by_unit.get(uid, {})
-            observed_s0 = _first_present_float(observed_row, "population_smoke_burden_proxy_S0_mean_2026_2030", "IECH_S0_mean_2026_2030")
-            observed_s1 = _first_present_float(observed_row, "population_smoke_burden_proxy_S1_mean_2026_2030", "IECH_S1_mean_2026_2030")
-            observed_delta = _first_present_float(observed_row, "delta_population_smoke_burden_proxy_S1_minus_S0", "delta_S1_minus_S0")
+            observed_s0 = _first_present_float(observed_row, "population_smoke_day_burden_proxy_S0_mean_2026_2030", "population_smoke_burden_proxy_S0_mean_2026_2030", "IECH_S0_mean_2026_2030")
+            observed_s1 = _first_present_float(observed_row, "population_smoke_day_burden_proxy_S1_mean_2026_2030", "population_smoke_burden_proxy_S1_mean_2026_2030", "IECH_S1_mean_2026_2030")
+            observed_delta = _first_present_float(observed_row, "delta_population_smoke_day_burden_proxy_S1_minus_S0", "delta_population_smoke_burden_proxy_S1_minus_S0", "delta_S1_minus_S0")
             diffs = [
                 abs(expected_s0 - observed_s0) if expected_s0 is not None and observed_s0 is not None else None,
                 abs(expected_s1 - observed_s1) if expected_s1 is not None and observed_s1 is not None else None,
@@ -2733,12 +2733,12 @@ def generate_brief(output_root: Path, inputs: Dict[str, object]) -> Path:
     terr_rows = read_csv_rows(terr_nuts)[1] if terr_nuts.exists() else []
     causal_rows = read_csv_rows(causal_csv)[1] if causal_csv.exists() else []
 
-    iech_vals = [_first_present_float(r, "population_smoke_burden_proxy_mean_2015_2024", "IECH_mean_2015_2024") for r in iech_mean_rows.values()]
+    iech_vals = [_first_present_float(r, "population_smoke_day_burden_proxy_mean_2015_2024", "population_smoke_burden_proxy_mean_2015_2024", "IECH_mean_2015_2024") for r in iech_mean_rows.values()]
     iech_vals = [v for v in iech_vals if v is not None]
     iech_min = min(iech_vals) if iech_vals else None
     iech_max = max(iech_vals) if iech_vals else None
 
-    delta_vals = [_first_present_float(r, "delta_population_smoke_burden_proxy_S1_minus_S0", "delta_S1_minus_S0") for r in scen_mean_rows.values()]
+    delta_vals = [_first_present_float(r, "delta_population_smoke_day_burden_proxy_S1_minus_S0", "delta_population_smoke_burden_proxy_S1_minus_S0", "delta_S1_minus_S0") for r in scen_mean_rows.values()]
     delta_vals = [v for v in delta_vals if v is not None]
     delta_mean = (sum(delta_vals) / len(delta_vals)) if delta_vals else None
 

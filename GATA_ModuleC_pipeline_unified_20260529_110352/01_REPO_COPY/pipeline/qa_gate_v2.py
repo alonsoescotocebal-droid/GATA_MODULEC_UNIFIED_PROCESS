@@ -353,14 +353,11 @@ def evaluate_output_root(output_root: Path) -> Tuple[str, str, List[str], List[D
 
                 required_pass = [
                     "IECH_REPORTING_REFRAME_STATUS",
-                    "population_smoke_burden_proxy_column_present",
+                    "population_smoke_day_burden_proxy_column_present",
                     "population_total_column_present",
-                    "population_exposed_assumed_column_present",
-                    "exposure_fraction_assumption_all_1",
                     "claim_status_proxy_not_normalized",
-                    "legacy_IECH_deprecated_if_present",
-                    "population_smoke_burden_proxy_equals_expo_person_hours",
-                    "population_smoke_burden_proxy_equals_smoke_hours_times_population_total",
+                    "legacy_physical_burden_columns_empty",
+                    "population_smoke_day_burden_proxy_equals_smoke_days_times_population_total",
                 ]
                 failed_metrics = [metric for metric in required_pass if reframe_status(metric).upper() != "PASS"]
                 if failed_metrics:

@@ -772,6 +772,7 @@ def _v10b_iech_non_degenerate(output_root: Path) -> Tuple[bool, str]:
     ]
     findings = []
     preferred_cols = [
+        "population_smoke_day_burden_proxy_mean_2015_2024",
         "population_smoke_burden_proxy_mean_2015_2024",
         "IECH_mean_2015_2024",
         "population_smoke_burden_proxy_mean",
