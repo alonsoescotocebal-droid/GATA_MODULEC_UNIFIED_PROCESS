@@ -128,6 +128,22 @@ def test_canonical_smoke_days_respect_normal_and_leap_year_calendar_limits():
         assert annual["U1"][year]["smoke_days"] <= day_count
 
 
+def test_smoke_score_p80_is_not_an_upstream_control_for_canonical_outputs():
+    mod = _load_module()
+    base_rows = [
+        {"unit_id": "U1", "year": 2020, "smoke_day_score": 10.0, "smoke_score_p80": 0.0},
+        {"unit_id": "U1", "year": 2020, "smoke_day_score": 100.0, "smoke_score_p80": 999999.0},
+    ]
+    changed_rows = [dict(row, smoke_score_p80=123456789.0) for row in base_rows]
+    _base_daily, base_annual, _base_threshold = mod._finalize_unit_daily_scores(base_rows, _Report(), "r10-a1")
+    _changed_daily, changed_annual, _changed_threshold = mod._finalize_unit_daily_scores(changed_rows, _Report(), "r10-a1")
+    assert changed_annual["U1"][2020]["smoke_days"] == base_annual["U1"][2020]["smoke_days"]
+    assert changed_annual["U1"][2020]["cumulative_normalized_smoke_intensity_proxy"] == base_annual["U1"][2020]["cumulative_normalized_smoke_intensity_proxy"]
+    source = (Path(__file__).resolve().parents[1] / "pipeline" / "moduleC_pipeline_v2.py").read_text(encoding="utf-8")
+    assert "population_smoke_day_burden_proxy=smoke_days*population_total" in source
+    assert "smoke_score_p80 * 24" not in source
+
+
 def test_era5_weighted_route_claim_is_blocked_when_score_does_not_use_era5():
     gate = _load_gate()
     assert gate.evaluate_era5_claims(False, "v0_gfas_era5_real")[0] == "BLOCKED_ERA5_MECHANISTIC_CLAIM"

@@ -3003,11 +3003,12 @@ def smoke_prepare(
             if sd is None:
                 report.fail(f"Primary smoke series missing required year: {y}")
             cumulative_intensity = ""
+            smoke_days_binary = sd
             if use_unit_series and uid in annual_by_unit:
-                cumulative_intensity = annual_by_unit.get(uid, {}).get(y, {}).get(
-                    "cumulative_normalized_smoke_intensity_proxy", ""
-                )
-            rows_out.append([uid, y, sd, score_mean, score_p80, cumulative_intensity, smoke_method, 0])
+                annual = annual_by_unit.get(uid, {}).get(y, {})
+                cumulative_intensity = annual.get("cumulative_normalized_smoke_intensity_proxy", "")
+                smoke_days_binary = annual.get("smoke_days_binary", sd)
+            rows_out.append([uid, y, sd, smoke_days_binary, score_mean, score_p80, cumulative_intensity, smoke_method, 0])
 
     write_csv(
         out_path,
@@ -3015,6 +3016,7 @@ def smoke_prepare(
             "unit_id",
             "year",
             "smoke_days",
+            "smoke_days_binary",
             "smoke_score_mean",
             "smoke_score_p80",
             "cumulative_normalized_smoke_intensity_proxy",
@@ -3033,6 +3035,7 @@ def smoke_prepare(
             "unit_id",
             "year",
             "smoke_days",
+            "smoke_days_binary",
             "smoke_score_mean",
             "smoke_score_p80",
             "cumulative_normalized_smoke_intensity_proxy",
@@ -3591,17 +3594,18 @@ def brief_generate(tables_dir: Path, brief_dir: Path, report: Report) -> Path:
         smoke_unique_by_year.setdefault(int(y), set()).add(round(v, 8))
     smoke_homogeneous = bool(smoke_unique_by_year) and all(len(vals) <= 1 for vals in smoke_unique_by_year.values())
 
-    iech_comp = 0
-    iech_eq = 0
+    burden_comp = 0
+    burden_positive = 0
     for r in rows_hist:
-        iech = safe_float(r.get("IECH"))
-        hours = safe_float(r.get("smoke_hours_equiv"))
-        if iech is None or hours is None:
+        burden = safe_float(r.get(IECH_PROXY_INDICATOR_NAME))
+        days = safe_float(r.get("smoke_days"))
+        population = safe_float(r.get("population_total"))
+        if burden is None or days is None or population is None:
             continue
-        iech_comp += 1
-        if abs(iech - hours) <= 1e-9:
-            iech_eq += 1
-    iech_collapsed = iech_comp > 0 and iech_comp == iech_eq
+        burden_comp += 1
+        if burden > 0:
+            burden_positive += 1
+    burden_valid = burden_comp > 0 and burden_comp == burden_positive
 
     route_selected = ""
     route_status = ""
@@ -3626,10 +3630,10 @@ def brief_generate(tables_dir: Path, brief_dir: Path, report: Report) -> Path:
         blocked_claims.append("Spatial ranking from smoke proxy is blocked because every year has one value across units.")
     else:
         allowed_claims.append("Smoke proxy contains unit-level spread and can support internal prioritization.")
-    if iech_collapsed:
-        blocked_claims.append("IECH ranking is blocked because IECH collapses to smoke_hours_equiv in all comparable rows.")
+    if not burden_valid:
+        blocked_claims.append("Population smoke-day burden is unavailable or invalid in the historical table.")
     else:
-        allowed_claims.append("IECH differs from smoke_hours_equiv in at least one row.")
+        allowed_claims.append("Population smoke-day burden is a positive classified smoke-proxy person-day metric.")
     if health_claim:
         blocked_claims.append(f"Medical interpretation remains blocked by route contract: {health_claim}.")
     else:
@@ -3660,7 +3664,8 @@ def brief_generate(tables_dir: Path, brief_dir: Path, report: Report) -> Path:
     lines.append("- smoke unique values by year:")
     for y in sorted(smoke_unique_by_year.keys()):
         lines.append(f"  - {y}: {len(smoke_unique_by_year[y])} unique values")
-    lines.append(f"- iech_equals_smoke_hours_equiv_all_rows: {iech_collapsed} ({iech_eq}/{iech_comp})")
+    lines.append(f"- population_smoke_day_burden_proxy_valid_rows: {burden_comp} positive={burden_positive}")
+    lines.append("- continuous intensity is not converted to hours or person-hours.")
     lines.append("")
     lines.append("## Allowed interpretation in this run")
     if allowed_claims:
@@ -4907,16 +4912,16 @@ def write_r10_a1_smoke_construct_crosswalk(output_root: Path) -> Path:
     path = output_root / "qa" / "r10_a1_smoke_construct_crosswalk.tsv"
     path.parent.mkdir(parents=True, exist_ok=True)
     rows = [
-        ["legacy_variable", "old_semantics", "canonical_variable", "canonical_semantics", "formula", "unit_semantics", "role", "claim_status"],
-        ["smoke_day_score", "continuous daily score", "normalized_smoke_intensity_proxy_daily", "continuous daily intensity proxy", "smoke_day_score/threshold_value", "dimensionless index", "canonical intensity", "non-health proxy"],
-        ["smoke_day_proxy", "implicit threshold flag", "smoke_day_proxy", "binary classified smoke day", "1 if smoke_day_score>=threshold else 0", "day classification", "canonical duration input", "non-health proxy"],
-        ["smoke_day_equivalent", "continuous equivalent treated as duration", "smoke_day_proxy", "binary classified smoke day", "sum(smoke_day_proxy)", "legacy deprecated; not temporal duration", "legacy alias", "deprecated not canonical"],
-        ["smoke_days", "annual smoke duration", "smoke_days", "annual binary classified smoke-day count", "SUM(smoke_day_proxy)", "days; bounded by calendar days", "canonical frequency", "non-health proxy"],
-        ["smoke_days_binary", "binary annual count", "smoke_days_binary", "audit duplicate of canonical annual count", "SUM(smoke_day_proxy)", "days; bounded by calendar days", "QA audit", "non-health proxy"],
-        ["smoke_hours_equiv", "continuous intensity converted to hours", "cumulative_normalized_smoke_intensity_proxy", "annual cumulative continuous intensity", "SUM(normalized_smoke_intensity_proxy_daily)", "dimensionless cumulative proxy; not hours", "legacy alias", "deprecated not canonical"],
-        ["expo_person_hours", "population exposure hours", "population_smoke_day_burden_proxy", "classified smoke-proxy person-days", "smoke_days*population_total", "person-days proxy; not physical hours", "legacy alias", "blocked"],
-        ["population_smoke_burden_proxy", "smoke-hours*population", "population_smoke_day_burden_proxy", "classified smoke-proxy person-days", "smoke_days*population_total", "person-days proxy; not physical hours", "legacy alias", "deprecated not canonical"],
-        ["IECH", "exposure/health interpretation", "population_smoke_day_burden_proxy", "territorial classified smoke-day burden proxy", "smoke_days*population_total", "classified smoke-proxy person-days", "legacy label", "health and individual exposure blocked"],
+        ["old_variable", "old_semantics", "new_variable", "new_semantics", "formula", "unit_semantics", "canonical_or_legacy", "downstream_consumers", "claim_status"],
+        ["smoke_day_score", "continuous daily score", "normalized_smoke_intensity_proxy_daily", "continuous daily intensity proxy", "smoke_day_score/threshold_value", "dimensionless index", "canonical", "daily smoke table; annual intensity", "non-health proxy"],
+        ["smoke_day_proxy", "implicit threshold flag", "smoke_day_proxy", "binary classified smoke day", "1 if smoke_day_score>=threshold else 0", "day classification", "canonical", "annual smoke frequency; burden", "non-health proxy"],
+        ["smoke_day_equivalent", "continuous equivalent treated as duration", "smoke_day_proxy", "binary classified smoke day", "sum(smoke_day_proxy)", "legacy deprecated; not temporal duration", "legacy alias", "none; audit only", "deprecated not canonical"],
+        ["smoke_days", "annual smoke duration", "smoke_days", "annual binary classified smoke-day count", "SUM(smoke_day_proxy)", "days; bounded by calendar days", "canonical", "burden; scenarios; gates", "non-health proxy"],
+        ["smoke_days_binary", "binary annual count", "smoke_days_binary", "audit duplicate of canonical annual count", "SUM(smoke_day_proxy)", "days; bounded by calendar days", "QA audit", "temporal gate", "non-health proxy"],
+        ["smoke_hours_equiv", "continuous intensity converted to hours", "cumulative_normalized_smoke_intensity_proxy", "annual cumulative continuous intensity", "SUM(normalized_smoke_intensity_proxy_daily)", "dimensionless cumulative proxy; not hours", "legacy alias", "none; audit only", "deprecated not canonical"],
+        ["expo_person_hours", "population exposure hours", "population_smoke_day_burden_proxy", "classified smoke-proxy person-days", "smoke_days*population_total", "person-days proxy; not physical hours", "legacy alias", "none; blocked", "blocked"],
+        ["population_smoke_burden_proxy", "smoke-hours*population", "population_smoke_day_burden_proxy", "classified smoke-proxy person-days", "smoke_days*population_total", "person-days proxy; not physical hours", "legacy alias", "none; blocked", "deprecated not canonical"],
+        ["IECH", "exposure/health interpretation", "population_smoke_day_burden_proxy", "territorial classified smoke-day burden proxy", "smoke_days*population_total", "classified smoke-proxy person-days", "legacy label", "none as physical IECH", "health and individual exposure blocked"],
     ]
     path.write_text("\n".join("\t".join(str(v) for v in row) for row in rows) + "\n", encoding="utf-8")
     return path
@@ -5348,15 +5353,15 @@ def main() -> int:
         )
 
         iech_rows = read_csv_rows(iech_hist)[1]
-        n_iech, t_iech, r_iech = count_nan_ratio(iech_rows, "IECH")
+        n_iech, t_iech, r_iech = count_nan_ratio(iech_rows, IECH_PROXY_INDICATOR_NAME)
         if not iech_rows or r_iech > 0.05:
-            report.fail(f"IECH NaN ratio {r_iech:.2%} ({n_iech}/{t_iech}) exceeds 5%")
-        iech_vals = [safe_float(r.get("IECH")) for r in iech_rows]
+            report.fail(f"Population smoke-day burden NaN ratio {r_iech:.2%} ({n_iech}/{t_iech}) exceeds 5%")
+        iech_vals = [safe_float(r.get(IECH_PROXY_INDICATOR_NAME)) for r in iech_rows]
         iech_vals = [v for v in iech_vals if v is not None]
         if not iech_vals:
-            report.fail("IECH historical degenerate: all values are NaN.")
+            report.fail("Population smoke-day burden historical degenerate: all values are NaN.")
         if max(iech_vals) <= 0.0:
-            report.fail("IECH historical degenerate: max(IECH)==0.")
+            report.fail("Population smoke-day burden historical degenerate: max==0.")
         scen_rows = read_csv_rows(scen_csv)[1]
         if not scen_rows:
             report.fail("IECH_scenarios_2026_2030.csv has 0 rows")

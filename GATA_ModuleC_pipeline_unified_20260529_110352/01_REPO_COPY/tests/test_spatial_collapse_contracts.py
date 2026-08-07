@@ -233,7 +233,7 @@ def test_spatial_collapse_audit_and_brief_block_claims(tmp_path):
     assert "spatially differentiated smoke exposure" not in text
     assert "most exposed by smoke" not in text
     assert "spatial ranking from smoke proxy is blocked" in text
-    assert "iech ranking is blocked" in text
+    assert "population smoke-day burden is unavailable or invalid" in text
 
 
 def test_probe_gfas_pm_message_pattern_prefers_min_date_hint_when_valid_time_is_one_day_late(tmp_path, monkeypatch):
