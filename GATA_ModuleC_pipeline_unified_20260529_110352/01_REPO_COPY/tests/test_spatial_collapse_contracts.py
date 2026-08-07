@@ -115,9 +115,11 @@ def test_finalize_unit_daily_scores_assigns_threshold_and_annual_counts(tmp_path
     assert annual["PT112"][2022]["score_mean"] == 300.0
     assert annual["PT111"][2022]["smoke_days_binary"] == 1.0
     assert annual["PT112"][2022]["smoke_days_binary"] == 1.0
-    assert round(annual["PT111"][2022]["smoke_days"], 6) == round((100.0 / 300.0) + (300.0 / 300.0), 6)
-    assert round(annual["PT112"][2022]["smoke_days"], 6) == round((200.0 / 300.0) + (400.0 / 300.0), 6)
-    assert annual["PT111"][2022]["smoke_days"] != annual["PT112"][2022]["smoke_days"]
+    assert annual["PT111"][2022]["smoke_days"] == 1.0
+    assert annual["PT112"][2022]["smoke_days"] == 1.0
+    assert round(annual["PT111"][2022]["cumulative_normalized_smoke_intensity_proxy"], 6) == round((100.0 / 300.0) + (300.0 / 300.0), 6)
+    assert round(annual["PT112"][2022]["cumulative_normalized_smoke_intensity_proxy"], 6) == round((200.0 / 300.0) + (400.0 / 300.0), 6)
+    assert annual["PT111"][2022]["cumulative_normalized_smoke_intensity_proxy"] != annual["PT112"][2022]["cumulative_normalized_smoke_intensity_proxy"]
 
 
 def test_direct_decoder_helpers_expand_coverage_and_preserve_multi_point_variation():

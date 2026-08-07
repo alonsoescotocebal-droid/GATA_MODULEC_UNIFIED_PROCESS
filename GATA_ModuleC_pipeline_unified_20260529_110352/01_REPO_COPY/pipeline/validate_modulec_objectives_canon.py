@@ -436,8 +436,8 @@ def _check_oc03_v13_direct_contract(output_root: Path, inputs: Dict[str, object]
 
     iech_unit_rows = _v10b_read_rows_if_exists(output_root / "tables" / "IECH_unit_2015_2024_mean.csv")
     iech_muni_rows = _v10b_read_rows_if_exists(output_root / "tables" / "IECH_municipio_2015_2024_mean.csv")
-    unit_unique = _count_unique_numeric(iech_unit_rows, ["population_smoke_burden_proxy_mean_2015_2024", "IECH_mean_2015_2024", "population_smoke_burden_proxy_mean", "IECH_mean"])
-    muni_unique = _count_unique_numeric(iech_muni_rows, ["population_smoke_burden_proxy_mean_2015_2024", "IECH_mean_2015_2024", "population_smoke_burden_proxy_mean", "IECH_mean"])
+    unit_unique = _count_unique_numeric(iech_unit_rows, ["population_smoke_day_burden_proxy_mean_2015_2024", "population_smoke_burden_proxy_mean_2015_2024", "IECH_mean_2015_2024", "population_smoke_burden_proxy_mean", "IECH_mean"])
+    muni_unique = _count_unique_numeric(iech_muni_rows, ["population_smoke_day_burden_proxy_mean_2015_2024", "population_smoke_burden_proxy_mean_2015_2024", "IECH_mean_2015_2024", "population_smoke_burden_proxy_mean", "IECH_mean"])
     if unit_unique < 23:
         return False, f"IECH_unit_2015_2024_mean unique numeric values={unit_unique} < 23"
     if muni_unique < 278:
@@ -816,11 +816,10 @@ def _v10b_iech_non_degenerate(output_root: Path) -> Tuple[bool, str]:
             reframe_map[key] = str(row.get("status") or row.get("value") or row.get("observed") or "").strip()
     required_pass = [
         "IECH_REPORTING_REFRAME_STATUS",
-        "population_smoke_burden_proxy_column_present",
+        "population_smoke_day_burden_proxy_column_present",
         "claim_status_proxy_not_normalized",
-        "population_smoke_burden_proxy_equals_expo_person_hours",
-        "population_smoke_burden_proxy_equals_smoke_hours_times_population_total",
-        "legacy_IECH_deprecated_if_present",
+        "population_smoke_day_burden_proxy_equals_smoke_days_times_population_total",
+        "legacy_physical_burden_columns_empty",
     ]
     failing = [metric for metric in required_pass if reframe_map.get(metric, "").strip().upper() != "PASS"]
     if failing:

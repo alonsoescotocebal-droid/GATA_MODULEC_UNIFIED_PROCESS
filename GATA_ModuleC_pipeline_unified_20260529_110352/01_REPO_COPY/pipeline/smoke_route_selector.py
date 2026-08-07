@@ -13,6 +13,7 @@ ROUTE_PRIORITY = [
     "v0_parquet_proxy_degraded",
     "NO-GO_SMOKE_ROUTE",
 ]
+R10_A1_ROUTE_NAME = "v0_gfas_direct_emission_proxy_era5_qa_only"
 
 MODULEA_HINT_KEYS: Sequence[str] = (
     "smoke_v1_modulea",
@@ -313,6 +314,7 @@ def select_smoke_route(sources: Dict[str, object], decoder_available: bool = Fal
     result = {
         "route_priority_order": ">".join(ROUTE_PRIORITY),
         "route_selected": "",
+        "route_name": "",
         "smoke_route_status": "",
         "smoke_route_decision": "",
         "health_exposure_claim": "",
@@ -370,6 +372,7 @@ def select_smoke_route(sources: Dict[str, object], decoder_available: bool = Fal
             result.update(
                 {
                     "route_selected": "v0_gfas_era5_real",
+                    "route_name": R10_A1_ROUTE_NAME,
                     "smoke_route_status": "SCIENTIFIC_PRIMARY_REAL",
                     "smoke_route_decision": "THRESHOLD_DEFINED_AS_INDEXED_METHOD",
                     "health_exposure_claim": "BLOCKED_HEALTH_EXPOSURE_CLAIM",
@@ -378,8 +381,8 @@ def select_smoke_route(sources: Dict[str, object], decoder_available: bool = Fal
                     "brief_decision": "PENDING_DOWNSTREAM_VALIDATION",
                     "final_scientific_decision": "PENDING_DOWNSTREAM_GATES",
                     "reason": f"Recovered GFAS + ERA5 detected under {source_root} and decoder is available.",
-                    "allowed_use": "scientific_route",
-                    "forbidden_use": "",
+                    "allowed_use": "GFAS direct emission proxy with ERA5 QA only",
+                    "forbidden_use": "ERA5-weighted, upwind, transport, dispersion, health exposure, GO",
                 }
             )
             return result
@@ -474,6 +477,7 @@ def apply_route_meta(inputs: Dict[str, object], sources: Dict[str, object], deci
 
     meta["smoke_route_mode"] = str(decision.get("route_selected", ""))
     meta["smoke_route_selected"] = str(decision.get("route_selected", ""))
+    meta["smoke_route_name"] = str(decision.get("route_name", ""))
     meta["smoke_route_status"] = str(decision.get("smoke_route_status", ""))
     meta["smoke_route_decision"] = str(decision.get("smoke_route_decision", ""))
     meta["health_exposure_claim"] = str(decision.get("health_exposure_claim", ""))

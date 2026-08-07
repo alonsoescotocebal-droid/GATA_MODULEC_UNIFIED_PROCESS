@@ -31,9 +31,9 @@ def test_modulec_runtime_scenario_mean_preserves_proxy_delta(tmp_path):
     scen_rows = mod.read_csv_rows(scen_csv)[1]
     mean_rows = mod.read_csv_rows(mean_csv)[1]
 
-    s0 = [float(r['population_smoke_burden_proxy']) for r in scen_rows if r['scenario'] == 'S0']
-    s1 = [float(r['population_smoke_burden_proxy']) for r in scen_rows if r['scenario'] == 'S1']
+    s0 = [float(r['population_smoke_day_burden_proxy']) for r in scen_rows if r['scenario'] == 'S0']
+    s1 = [float(r['population_smoke_day_burden_proxy']) for r in scen_rows if r['scenario'] == 'S1']
     observed = mean_rows[0]
-    assert float(observed['population_smoke_burden_proxy_S0_mean_2026_2030']) == sum(s0) / len(s0)
-    assert float(observed['population_smoke_burden_proxy_S1_mean_2026_2030']) == sum(s1) / len(s1)
-    assert float(observed['delta_population_smoke_burden_proxy_S1_minus_S0']) < 0
+    assert float(observed['population_smoke_day_burden_proxy_S0_mean_2026_2030']) == sum(s0) / len(s0)
+    assert float(observed['population_smoke_day_burden_proxy_S1_mean_2026_2030']) == sum(s1) / len(s1)
+    assert float(observed['delta_population_smoke_day_burden_proxy_S1_minus_S0']) < 0

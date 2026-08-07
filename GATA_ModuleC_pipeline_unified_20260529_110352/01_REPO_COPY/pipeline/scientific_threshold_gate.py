@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import calendar
 import csv
 import datetime as dt
 import hashlib
@@ -26,9 +27,9 @@ FORBIDDEN_PRIMARY_SOURCE_TOKENS = (
 )
 IECH_PROXY_FINAL_DECISION = "GO_WITH_PORTUGUESE_AQ_ANCHORED_PROXY_AND_POPULATION_BURDEN_SEMANTICS"
 IECH_PROXY_AQ_PROTOCOL = "GO_WITH_PORTUGUESE_AQ_ANCHORED_PROXY_PROTOCOL"
-IECH_PROXY_INDICATOR_NAME = "population_smoke_burden_proxy"
-IECH_PROXY_INDICATOR_UNIT = "proxy person-hours"
-IECH_PROXY_CLAIM_STATUS = "OPERATIONAL_POPULATION_BURDEN_PROXY_NOT_NORMALIZED_IECH"
+IECH_PROXY_INDICATOR_NAME = "population_smoke_day_burden_proxy"
+IECH_PROXY_INDICATOR_UNIT = "classified smoke-proxy person-days"
+IECH_PROXY_CLAIM_STATUS = "OPERATIONAL_TERRITORIAL_SMOKE_DAY_BURDEN_PROXY"
 
 
 def now_iso() -> str:
@@ -160,6 +161,69 @@ def evaluate_smoke_spatial(smoke_csv: Path) -> Tuple[str, str, Dict[int, int]]:
     return "THRESHOLD_DEFINED_AS_INTERNAL_STATISTICAL_CLASSIFICATION", "Direct-signal smoke spatial differentiation detected.", unique_counts
 
 
+def evaluate_r10_a1_smoke_temporal_contract(smoke_daily_csv: Path, smoke_annual_csv: Path) -> Tuple[str, str]:
+    if not smoke_daily_csv.exists() or not smoke_annual_csv.exists():
+        return "BLOCKED_FOR_REQUIRED_VARIABLE", "R10-A1 daily or annual smoke table missing"
+    daily = read_csv_rows(smoke_daily_csv)
+    annual = read_csv_rows(smoke_annual_csv)
+    daily_counts: Dict[Tuple[str, int], float] = {}
+    for row in daily:
+        uid = str(row.get("unit_id") or "").strip()
+        year = safe_float(row.get("year"))
+        proxy = safe_float(row.get("smoke_day_proxy"))
+        if not uid or year is None or proxy is None:
+            continue
+        key = (uid, int(year))
+        daily_counts[key] = daily_counts.get(key, 0.0) + proxy
+    bad_limit = 0
+    bad_alias = 0
+    checked = 0
+    for row in annual:
+        uid = str(row.get("unit_id") or "").strip()
+        year = safe_float(row.get("year"))
+        days = safe_float(row.get("smoke_days"))
+        binary = safe_float(row.get("smoke_days_binary"))
+        if not uid or year is None or days is None:
+            continue
+        checked += 1
+        max_days = 366 if calendar.isleap(int(year)) else 365
+        if days < 0 or days > max_days:
+            bad_limit += 1
+        if binary is not None and abs(days - binary) > 1e-9:
+            bad_alias += 1
+        expected = daily_counts.get((uid, int(year)))
+        if expected is not None and abs(days - expected) > 1e-9:
+            bad_alias += 1
+    if bad_limit or bad_alias:
+        return "BLOCKED_R10_A1_SMOKE_TEMPORAL", f"checked={checked}; limit_failures={bad_limit}; binary_or_daily_mismatches={bad_alias}"
+    return "THRESHOLD_DEFINED_AS_INTERNAL_STATISTICAL_CLASSIFICATION", f"checked={checked}; smoke_days binary calendar contract passed"
+
+
+def evaluate_r10_a1_burden_contract(iech_hist_csv: Path) -> Tuple[str, str]:
+    if not iech_hist_csv.exists():
+        return "BLOCKED_FOR_REQUIRED_VARIABLE", "R10-A1 IECH table missing"
+    rows = read_csv_rows(iech_hist_csv)
+    checked = 0
+    failures = 0
+    physical_claims = 0
+    for row in rows:
+        burden = safe_float(row.get("population_smoke_day_burden_proxy"))
+        days = safe_float(row.get("smoke_days"))
+        population = _first_present_float(row, "population_total", "pop")
+        if burden is None or days is None or population is None:
+            continue
+        checked += 1
+        if abs(burden - (days * population)) > 1e-9:
+            failures += 1
+        if "person-hour" in str(row.get("indicator_unit") or "").lower() or row.get("expo_person_hours"):
+            physical_claims += 1
+    if checked == 0:
+        return "BLOCKED_FOR_REQUIRED_VARIABLE", "No canonical population smoke-day burden rows"
+    if failures or physical_claims:
+        return "BLOCKED_R10_A1_BURDEN_DIMENSION", f"checked={checked}; formula_failures={failures}; physical_claims={physical_claims}"
+    return "OPERATIONAL_POPULATION_SMOKE_DAY_BURDEN_PROXY", f"checked={checked}; burden=smoke_days*population_total; no person-hours"
+
+
 def evaluate_iech_ranking(iech_mean_csv: Path) -> Tuple[str, str, int]:
     if not iech_mean_csv.exists():
         return "BLOCKED_FOR_REQUIRED_VARIABLE", "IECH_unit_2015_2024_mean.csv missing", 0
@@ -168,6 +232,7 @@ def evaluate_iech_ranking(iech_mean_csv: Path) -> Tuple[str, str, int]:
         return "BLOCKED_FOR_REQUIRED_VARIABLE", "IECH_unit_2015_2024_mean.csv empty", 0
     column = ""
     for candidate in (
+        "population_smoke_day_burden_proxy_mean_2015_2024",
         "population_smoke_burden_proxy_mean_2015_2024",
         "IECH_mean_2015_2024",
         "population_smoke_burden_proxy_mean",
@@ -417,50 +482,41 @@ def evaluate_population_cancellation(iech_hist_csv: Path) -> Tuple[str, str]:
     if not rows:
         return "BLOCKED_FOR_REQUIRED_VARIABLE", "IECH_unit_2015_2024.csv empty"
 
-    comparable_proxy_vs_expo = 0
-    equal_proxy_vs_expo = 0
-    comparable_proxy_vs_hours = 0
-    equal_proxy_vs_hours = 0
-    proxy_claim_rows = 0
+    comparable = 0
+    equal_formula = 0
+    legacy_physical_rows = 0
     for r in rows:
-        proxy_value = _first_present_float(r, IECH_PROXY_INDICATOR_NAME, "IECH")
-        expo_value = _first_present_float(r, "expo_person_hours")
-        hours_value = _first_present_float(r, "smoke_hours_equiv")
-        claim_status = _first_present_text(r, "claim_status")
-        if claim_status == IECH_PROXY_CLAIM_STATUS:
-            proxy_claim_rows += 1
-        if proxy_value is not None and expo_value is not None:
-            comparable_proxy_vs_expo += 1
-            if abs(proxy_value - expo_value) <= 1e-9:
-                equal_proxy_vs_expo += 1
-        if proxy_value is not None and hours_value is not None:
-            comparable_proxy_vs_hours += 1
-            if abs(proxy_value - hours_value) <= 1e-9:
-                equal_proxy_vs_hours += 1
-    if comparable_proxy_vs_expo == 0 and comparable_proxy_vs_hours == 0:
+        burden = _first_present_float(r, IECH_PROXY_INDICATOR_NAME)
+        smoke_days = safe_float(r.get("smoke_days"))
+        population = _first_present_float(r, "population_total", "pop")
+        if _first_present_float(r, "expo_person_hours", "legacy_expo_person_hours") is not None:
+            legacy_physical_rows += 1
+        if burden is None or smoke_days is None or population is None:
+            continue
+        comparable += 1
+        if abs(burden - (smoke_days * population)) <= 1e-9:
+            equal_formula += 1
+    if comparable == 0:
         return "BLOCKED_FOR_REQUIRED_VARIABLE", "No comparable IECH proxy-burden rows"
-    if comparable_proxy_vs_hours > 0 and equal_proxy_vs_hours == comparable_proxy_vs_hours:
-        return (
-            "BLOCKED_POPULATION_EXPOSURE_CLAIM",
-            f"{IECH_PROXY_INDICATOR_NAME} equals smoke_hours_equiv in {equal_proxy_vs_hours}/{comparable_proxy_vs_hours} rows",
-        )
-    if comparable_proxy_vs_expo > 0 and equal_proxy_vs_expo == comparable_proxy_vs_expo:
-        claim_note = IECH_PROXY_CLAIM_STATUS if proxy_claim_rows > 0 else "claim_status not declared"
-        return (
-            "OPERATIONAL_POPULATION_SMOKE_BURDEN_PROXY",
-            f"{IECH_PROXY_INDICATOR_NAME} equals expo_person_hours in {equal_proxy_vs_expo}/{comparable_proxy_vs_expo} rows; {claim_note}",
-        )
-    if comparable_proxy_vs_expo > 0:
-        unequal_rows = comparable_proxy_vs_expo - equal_proxy_vs_expo
-        return (
-            "THRESHOLD_DEFINED_AS_INDEXED_METHOD",
-            f"{IECH_PROXY_INDICATOR_NAME} differs from expo_person_hours in {unequal_rows}/{comparable_proxy_vs_expo} rows",
-        )
-    unequal_rows = comparable_proxy_vs_hours - equal_proxy_vs_hours
+    if legacy_physical_rows:
+        return "BLOCKED_LEGACY_PHYSICAL_BURDEN", f"Legacy person-hour columns present in {legacy_physical_rows} rows"
+    if equal_formula == comparable:
+        return "OPERATIONAL_POPULATION_SMOKE_DAY_BURDEN_PROXY", f"{IECH_PROXY_INDICATOR_NAME}=smoke_days*population_total in {comparable}/{comparable} rows"
+    unequal_rows = comparable - equal_formula
     return (
         "THRESHOLD_DEFINED_AS_INDEXED_METHOD",
-        f"{IECH_PROXY_INDICATOR_NAME} differs from smoke_hours_equiv in {unequal_rows}/{comparable_proxy_vs_hours} rows",
+        f"{IECH_PROXY_INDICATOR_NAME} differs from smoke_days*population_total in {unequal_rows}/{comparable} rows",
     )
+
+
+def evaluate_era5_claims(era5_used_in_score: bool, route_name: str) -> Tuple[str, str]:
+    """Block meteorological transport claims until R10-A2 wires ERA5 into the score."""
+    route = str(route_name or "").strip().lower()
+    if not era5_used_in_score and any(token in route for token in ("weighted", "upwind", "transport", "dispersion", "gfas_era5_real")):
+        return "BLOCKED_ERA5_MECHANISTIC_CLAIM", "ERA5 is QA-only and does not modify smoke_day_score."
+    if not era5_used_in_score:
+        return "ERA5_QA_ONLY", "ERA5 is read and validated but remains outside smoke_day_score."
+    return "THRESHOLD_DEFINED_AS_INDEXED_METHOD", "ERA5 score integration is not evaluated by R10-A1."
 
 
 def evaluate_iech_proxy_semantics(reframe_audit_tsv: Path) -> Tuple[str, str]:
@@ -486,14 +542,11 @@ def evaluate_iech_proxy_semantics(reframe_audit_tsv: Path) -> Tuple[str, str]:
 
     required_pass = [
         "IECH_REPORTING_REFRAME_STATUS",
-        "population_smoke_burden_proxy_column_present",
+        "population_smoke_day_burden_proxy_column_present",
         "population_total_column_present",
-        "population_exposed_assumed_column_present",
-        "exposure_fraction_assumption_all_1",
         "claim_status_proxy_not_normalized",
-        "legacy_IECH_deprecated_if_present",
-        "population_smoke_burden_proxy_equals_expo_person_hours",
-        "population_smoke_burden_proxy_equals_smoke_hours_times_population_total",
+        "legacy_physical_burden_columns_empty",
+        "population_smoke_day_burden_proxy_equals_smoke_days_times_population_total",
     ]
     failed = [key for key in required_pass if metric_status(key).upper() != "PASS"]
     forbidden_normalized = int(safe_float(metric_text("forbidden_normalized_IECH_claims")) or 0)
@@ -508,7 +561,7 @@ def evaluate_iech_proxy_semantics(reframe_audit_tsv: Path) -> Tuple[str, str]:
     claim_status = metric_text("claim_status_proxy_not_normalized") or IECH_PROXY_CLAIM_STATUS
     return (
         "THRESHOLD_DEFINED_AS_INDEXED_METHOD",
-        f"{IECH_PROXY_INDICATOR_NAME} semantics verified; claim_status={claim_status}; exposure_fraction=1.0; population_exposed=population_total",
+        f"{IECH_PROXY_INDICATOR_NAME} semantics verified; claim_status={claim_status}; unit=classified smoke-proxy person-days; health exposure blocked",
     )
 
 
@@ -703,6 +756,28 @@ def main() -> int:
         "NO-GO_SCIENTIFIC_THRESHOLD" if route_status.startswith("BLOCKED") else "NONE",
     )
 
+    route_meta = {}
+    try:
+        route_meta = json.loads(inputs_json.read_text(encoding="utf-8-sig")).get("meta", {})
+    except Exception:
+        route_meta = {}
+    era5_route_name = str(route_meta.get("smoke_route_name") or route_selected)
+    era5_claim_status, era5_claim_obs = evaluate_era5_claims(False, era5_route_name)
+    add_gate(
+        "ERA5_CLAIM_001",
+        "ERA5 meteorological claim scope",
+        str(inputs_json),
+        "ERA5_READ/ERA5_USED_IN_SMOKE_SCORE/route_name",
+        era5_claim_obs,
+        "ERA5-weighted, upwind, transport and dispersion claims remain blocked while ERA5 is QA-only.",
+        "SRC-GATE-ERA5-CLAIM-SCOPE",
+        "CLAIM_GOVERNANCE",
+        era5_claim_status,
+        "GFAS direct emission proxy with ERA5 QA-only semantics.",
+        "ERA5-weighted or upwind smoke claims before R10-A2.",
+        "NO-GO_SCIENTIFIC_THRESHOLD" if era5_claim_status.startswith("BLOCKED") else "NONE",
+    )
+
     smoke_status, smoke_obs, smoke_unique = evaluate_smoke_spatial(smoke_csv)
     add_gate(
         "SMOKE-011",
@@ -717,6 +792,39 @@ def main() -> int:
         "Smoke proxy can be used as common baseline when blocked.",
         "Spatially differentiated smoke exposure claim when n_unique<=1.",
         "NO-GO_SCIENTIFIC_THRESHOLD" if smoke_status.startswith("BLOCKED") else "NONE",
+    )
+
+    temporal_status, temporal_obs = evaluate_r10_a1_smoke_temporal_contract(
+        output_root / "tables" / "smoke_day_score_nuts3_daily.csv",
+        smoke_csv,
+    )
+    add_gate(
+        "SMOKE_TEMPORAL_001",
+        "Canonical smoke-day calendar bound",
+        str(smoke_csv),
+        "smoke_days <= calendar days and equals binary daily sum",
+        temporal_obs,
+        "Canonical smoke_days cannot exceed calendar days and must equal sum(smoke_day_proxy).",
+        "SRC-GATE-R10-A1-SMOKE-TEMPORAL",
+        "SCIENTIFIC_CONSTRUCT",
+        temporal_status,
+        "Smoke frequency is a binary classified-day count; continuous intensity is separate.",
+        "Using cumulative normalized intensity as duration.",
+        "NO-GO_SCIENTIFIC_THRESHOLD" if temporal_status.startswith("BLOCKED") else "NONE",
+    )
+    add_gate(
+        "SMOKE_TEMPORAL_002",
+        "Annual smoke frequency versus continuous intensity",
+        str(output_root / "tables" / "smoke_day_score_nuts3_daily.csv"),
+        "smoke_days=SUM(smoke_day_proxy); cumulative_normalized_smoke_intensity_proxy separate",
+        temporal_obs,
+        "Sub-threshold positive score may increase cumulative intensity but cannot increment smoke_days.",
+        "SRC-GATE-R10-A1-SMOKE-SEPARATION",
+        "SCIENTIFIC_CONSTRUCT",
+        temporal_status,
+        "Binary classified smoke-day frequency plus separate continuous intensity proxy.",
+        "Continuous intensity labelled as days, hours or person-hours.",
+        "NO-GO_SCIENTIFIC_THRESHOLD" if temporal_status.startswith("BLOCKED") else "NONE",
     )
 
     direct_contract_status, direct_contract_obs = evaluate_direct_decoder_contract(output_root)
@@ -788,15 +896,45 @@ def main() -> int:
         "IECH-POP-001",
         "Population exposure cancellation check",
         str(iech_hist_csv),
-        f"{IECH_PROXY_INDICATOR_NAME} vs expo_person_hours/smoke_hours_equiv",
+        f"{IECH_PROXY_INDICATOR_NAME} vs smoke_days/population_total",
         pop_cancel_obs,
-        f"{IECH_PROXY_INDICATOR_NAME} may equal expo_person_hours but must not collapse to smoke_hours_equiv when used as a population burden proxy.",
+        f"{IECH_PROXY_INDICATOR_NAME} must equal smoke_days*population_total and must not be interpreted as physical person-hours.",
         "SRC-GATE-IECH-POP-CANCEL",
         "METHODOLOGICAL_GATE",
         pop_cancel_status,
         "Operational proxy interpretation with explicit limitation.",
-        "Population exposure differentiation claim when the proxy collapses to smoke_hours_equiv or is normalized as individual IECH.",
+        "Physical person-hours, individual exposure, health exposure or epidemiological claims.",
         "NONE",
+    )
+
+    burden_status, burden_obs = evaluate_r10_a1_burden_contract(iech_hist_csv)
+    add_gate(
+        "BURDEN_DIMENSION_001",
+        "Canonical population smoke-day burden",
+        str(iech_hist_csv),
+        "population_smoke_day_burden_proxy=smoke_days*population_total",
+        burden_obs,
+        "Canonical population burden cannot derive person-hours from cumulative intensity or multiply by 24.",
+        "SRC-GATE-R10-A1-BURDEN",
+        "SCIENTIFIC_CONSTRUCT",
+        burden_status,
+        "Classified smoke-proxy person-days; health and individual exposure remain blocked.",
+        "Physical person-hours, dose, health exposure or individual exposure claims.",
+        "NO-GO_SCIENTIFIC_THRESHOLD" if burden_status.startswith("BLOCKED") else "NONE",
+    )
+    add_gate(
+        "BURDEN_DIMENSION_002",
+        "Population burden unit semantics",
+        str(iech_hist_csv),
+        "classified smoke-proxy person-days; no *24 conversion",
+        burden_obs,
+        "Canonical burden is smoke_days*population_total and cannot be physical person-hours or health exposure.",
+        "SRC-GATE-R10-A1-BURDEN-UNIT",
+        "SCIENTIFIC_CONSTRUCT",
+        burden_status,
+        "Classified smoke-proxy person-days only.",
+        "Automatic *24 conversion, physical person-hours, dose or health exposure.",
+        "NO-GO_SCIENTIFIC_THRESHOLD" if burden_status.startswith("BLOCKED") else "NONE",
     )
 
     iech_semantics_tsv = qa_dir / "iech_reporting_semantics_audit.tsv"
@@ -809,12 +947,26 @@ def main() -> int:
         str(iech_semantics_tsv),
         "indicator_name, claim_status, population_exposed, exposure_fraction, forbidden normalized/health claims",
         iech_semantic_obs,
-        "IECH reporting must remain a population_smoke_burden_proxy with population_exposed=population_total and exposure_fraction=1.0, while normalized/individual/health claims remain blocked.",
+        "IECH reporting must remain population_smoke_day_burden_proxy=smoke_days*population_total with classified smoke-proxy person-days semantics; normalized/individual/health claims remain blocked.",
         "SRC-GATE-IECH-PROXY-BURDEN",
         "METHODOLOGICAL_GATE",
         iech_semantic_status,
         "Population smoke burden proxy semantics with explicit non-health limitation.",
         "Normalized IECH, individual exposure, differential exposed population, or health exposure claims.",
+        "NO-GO_SCIENTIFIC_THRESHOLD" if iech_semantic_status.startswith("BLOCKED") else "NONE",
+    )
+    add_gate(
+        "SMOKE_SEMANTIC_001",
+        "Smoke intensity semantic separation",
+        str(iech_semantics_tsv),
+        "normalized_smoke_intensity_proxy_daily/cumulative_normalized_smoke_intensity_proxy",
+        iech_semantic_obs,
+        "Continuous intensity remains separate from binary smoke-day frequency and population burden.",
+        "SRC-GATE-R10-A1-SMOKE-SEMANTICS",
+        "SCIENTIFIC_CONSTRUCT",
+        iech_semantic_status,
+        "Continuous intensity is a dimensionless proxy and not temporal exposure.",
+        "Intensity labelled as days, hours or person-hours.",
         "NO-GO_SCIENTIFIC_THRESHOLD" if iech_semantic_status.startswith("BLOCKED") else "NONE",
     )
 
@@ -839,9 +991,9 @@ def main() -> int:
         "IECH-003",
         "IECH ranking validity",
         str(iech_mean_csv),
-        "population_smoke_burden_proxy_mean_2015_2024 / IECH_mean_2015_2024",
+        "population_smoke_day_burden_proxy_mean_2015_2024",
         iech_obs,
-        "count_unique(population_smoke_burden_proxy_mean_2015_2024 across units) must be > 1 for ranking claims.",
+        "count_unique(population_smoke_day_burden_proxy_mean_2015_2024 across units) must be > 1 for ranking claims.",
         "SRC-GATE-IECH-RANKING",
         "METHODOLOGICAL_GATE",
         iech_status,
@@ -1017,9 +1169,9 @@ def main() -> int:
         f"- indicator_name: {IECH_PROXY_INDICATOR_NAME}",
         f"- indicator_unit: {IECH_PROXY_INDICATOR_UNIT}",
         f"- claim_status: {IECH_PROXY_CLAIM_STATUS}",
-        "- population_smoke_burden_proxy_formula: smoke_hours_equiv * population_total",
-        "- population_exposed_assumed: population_total",
-        "- exposure_fraction_assumption: 1.0",
+        "- population_smoke_day_burden_proxy_formula: smoke_days * population_total",
+        "- population_smoke_day_burden_proxy_unit: classified smoke-proxy person-days",
+        "- physical person-hours and health exposure claims: BLOCKED",
         "- normalized_IECH_individual_claim: BLOCKED",
         "- population_exposed_differential_claim: BLOCKED",
         "- proxy_population_burden_claim: ALLOWED",

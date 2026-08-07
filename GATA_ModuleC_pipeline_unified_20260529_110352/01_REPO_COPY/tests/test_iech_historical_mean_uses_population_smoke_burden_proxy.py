@@ -15,5 +15,5 @@ def test_iech_historical_mean_uses_population_smoke_burden_proxy(tmp_path):
     smoke.write_text('unit_id;year;smoke_days\n' + '\n'.join(f'U1;{y};2' for y in range(2015, 2025)) + '\n', encoding='utf-8')
     step7.compute_iech(pop, smoke, hist, mean)
     rows = step7.read_csv_rows(mean)[1]
-    assert float(rows[0]['population_smoke_burden_proxy_mean_2015_2024']) == 480.0
-    assert float(rows[0]['IECH_mean_2015_2024']) == 480.0
+    assert float(rows[0]['population_smoke_day_burden_proxy_mean_2015_2024']) == 20.0
+    assert rows[0]['legacy_population_smoke_burden_proxy_mean_2015_2024'] == ''

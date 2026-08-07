@@ -32,7 +32,7 @@ def test_modulec_runtime_unit_mean_uses_population_smoke_burden_proxy(tmp_path):
     hist_rows = mod.read_csv_rows(hist_csv)[1]
     mean_rows = mod.read_csv_rows(mean_csv)[1]
 
-    expected = sum(float(r['population_smoke_burden_proxy']) for r in hist_rows) / len(hist_rows)
-    observed = float(mean_rows[0]['population_smoke_burden_proxy_mean_2015_2024'])
+    expected = sum(float(r['population_smoke_day_burden_proxy']) for r in hist_rows) / len(hist_rows)
+    observed = float(mean_rows[0]['population_smoke_day_burden_proxy_mean_2015_2024'])
     assert observed == expected
     assert observed != float(mean_rows[0]['unit_id'] == 'U1')

@@ -35,14 +35,11 @@ def test_semantic_audit_blocks_forbidden_normalized_claim_counts(tmp_path):
     audit_tsv.write_text(
         "metric\tvalue\tstatus\tdetail\n"
         "IECH_REPORTING_REFRAME_STATUS\tPASS\tPASS\t\n"
-        "population_smoke_burden_proxy_column_present\t1\tPASS\t\n"
+        "population_smoke_day_burden_proxy_column_present\t1\tPASS\t\n"
         "population_total_column_present\t1\tPASS\t\n"
-        "population_exposed_assumed_column_present\t1\tPASS\t\n"
-        "exposure_fraction_assumption_all_1\t1\tPASS\t\n"
-        "claim_status_proxy_not_normalized\tOPERATIONAL_POPULATION_BURDEN_PROXY_NOT_NORMALIZED_IECH\tPASS\t\n"
-        "legacy_IECH_deprecated_if_present\t1\tPASS\t\n"
-        "population_smoke_burden_proxy_equals_expo_person_hours\t1\tPASS\t\n"
-        "population_smoke_burden_proxy_equals_smoke_hours_times_population_total\t1\tPASS\t\n"
+        "claim_status_proxy_not_normalized\tOPERATIONAL_TERRITORIAL_SMOKE_DAY_BURDEN_PROXY\tPASS\t\n"
+        "legacy_physical_burden_columns_empty\t1\tPASS\t\n"
+        "population_smoke_day_burden_proxy_equals_smoke_days_times_population_total\t1\tPASS\t\n"
         "forbidden_normalized_IECH_claims\t1\tPASS\t\n"
         "forbidden_health_exposure_claims\t0\tPASS\t\n",
         encoding="utf-8",

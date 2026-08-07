@@ -15,6 +15,6 @@ def test_iech_scenario_mean_preserves_s1_delta(tmp_path):
     smoke.write_text('unit_id;year;smoke_days\n' + '\n'.join(f'U1;{y};5' for y in range(2015, 2025)) + '\n', encoding='utf-8')
     step7.compute_scenarios(smoke, pop, scen, mean)
     rows = step7.read_csv_rows(mean)[1]
-    assert float(rows[0]['population_smoke_burden_proxy_S0_mean_2026_2030']) == 1200.0
-    assert float(rows[0]['population_smoke_burden_proxy_S1_mean_2026_2030']) == 960.0
-    assert float(rows[0]['delta_population_smoke_burden_proxy_S1_minus_S0']) == -240.0
+    assert float(rows[0]['population_smoke_day_burden_proxy_S0_mean_2026_2030']) == 50.0
+    assert float(rows[0]['population_smoke_day_burden_proxy_S1_mean_2026_2030']) == 40.0
+    assert float(rows[0]['delta_population_smoke_day_burden_proxy_S1_minus_S0']) == -10.0

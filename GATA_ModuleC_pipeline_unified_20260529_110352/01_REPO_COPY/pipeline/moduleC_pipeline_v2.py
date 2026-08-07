@@ -39,9 +39,12 @@ YEARS_HIST = list(range(2015, 2025))
 YEARS_SCEN = list(range(2026, 2031))
 OBJECTIVE_IDS = ["OC-01", "OC-02", "OC-03", "OC-03C"] + [f"OC-{i:02d}" for i in range(4, 13)]
 
-IECH_PROXY_INDICATOR_NAME = "population_smoke_burden_proxy"
-IECH_PROXY_INDICATOR_UNIT = "proxy person-hours"
-IECH_PROXY_CLAIM_STATUS = "OPERATIONAL_POPULATION_BURDEN_PROXY_NOT_NORMALIZED_IECH"
+IECH_PROXY_INDICATOR_NAME = "population_smoke_day_burden_proxy"
+IECH_PROXY_INDICATOR_UNIT = "classified smoke-proxy person-days"
+IECH_PROXY_CLAIM_STATUS = "OPERATIONAL_TERRITORIAL_SMOKE_DAY_BURDEN_PROXY"
+LEGACY_IECH_INDICATOR_NAME = "population_smoke_burden_proxy"
+LEGACY_IECH_UNIT = "legacy proxy person-hours; deprecated"
+LEGACY_IECH_CLAIM_STATUS = "LEGACY_DEPRECATED_NOT_CANONICAL"
 IECH_PROXY_ASSUMPTION = (
     "population_exposed_equals_population_total_due_to_no_independent_exposed_population_layer"
 )
@@ -98,12 +101,10 @@ def _first_present_float(row: Dict[str, str], *keys: str) -> Optional[float]:
 
 def _iech_hist_method_flag() -> str:
     return (
-        "IECH=smoke_days*24*pop_interp(2015,2020,2025);proxy_person_hours;"
-        "population_smoke_burden_proxy=smoke_days*24*population_total;"
-        "legacy_IECH=population_smoke_burden_proxy;"
-        "population_exposed_assumed=population_total;"
-        "exposure_fraction_assumption=1.0;"
-        "no_independent_exposed_population_layer"
+        "population_smoke_day_burden_proxy=smoke_days*population_total;classified_smoke_proxy_person_days;"
+        "legacy_IECH=deprecated_smoke_hours_equiv*24*population_total;not_canonical;"
+        "legacy_population_smoke_burden_proxy=deprecated;"
+        "physical_person_hours=blocked;health_exposure=blocked"
     )
 
 
@@ -111,12 +112,10 @@ def _iech_scen_method_flag() -> str:
     return (
         "S0=mean(2015-2024);"
         "S1=-20% top_quintile;"
-        "IECH=smoke_days*24*pop_interp(2025,2030);proxy_person_hours;"
-        "population_smoke_burden_proxy=smoke_days*24*population_total;"
-        "legacy_IECH=population_smoke_burden_proxy;"
-        "population_exposed_assumed=population_total;"
-        "exposure_fraction_assumption=1.0;"
-        "no_independent_exposed_population_layer"
+        "population_smoke_day_burden_proxy=smoke_days*population_total;classified_smoke_proxy_person_days;"
+        "legacy_IECH=deprecated_smoke_hours_equiv*24*population_total;not_canonical;"
+        "legacy_population_smoke_burden_proxy=deprecated;"
+        "physical_person_hours=blocked;health_exposure=blocked"
     )
 
 
@@ -938,10 +937,20 @@ def _finalize_unit_daily_scores(
         year = int(row["year"])
         annual = annual_by_unit.setdefault(uid, {}).setdefault(
             year,
-            {"smoke_days": 0.0, "smoke_days_binary": 0.0, "score_values": [], "score_mean": 0.0, "score_p80": 0.0},
+            {
+                "smoke_days": 0.0,
+                "smoke_days_binary": 0.0,
+                "cumulative_normalized_smoke_intensity_proxy": 0.0,
+                "score_values": [],
+                "score_mean": 0.0,
+                "score_p80": 0.0,
+            },
         )
-        annual["smoke_days"] += float(equivalent)
+        normalized_intensity = float(equivalent)
+        row["normalized_smoke_intensity_proxy_daily"] = normalized_intensity
+        annual["smoke_days"] += float(proxy)
         annual["smoke_days_binary"] += float(proxy)
+        annual["cumulative_normalized_smoke_intensity_proxy"] += normalized_intensity
         annual["score_values"].append(score)
 
     for year_map in annual_by_unit.values():
@@ -2993,11 +3002,25 @@ def smoke_prepare(
                 smoke_method = by_year_method.get(y, "primary_parquet_unknown")
             if sd is None:
                 report.fail(f"Primary smoke series missing required year: {y}")
-            rows_out.append([uid, y, sd, score_mean, score_p80, smoke_method, 0])
+            cumulative_intensity = ""
+            if use_unit_series and uid in annual_by_unit:
+                cumulative_intensity = annual_by_unit.get(uid, {}).get(y, {}).get(
+                    "cumulative_normalized_smoke_intensity_proxy", ""
+                )
+            rows_out.append([uid, y, sd, score_mean, score_p80, cumulative_intensity, smoke_method, 0])
 
     write_csv(
         out_path,
-        ["unit_id", "year", "smoke_days", "smoke_score_mean", "smoke_score_p80", "smoke_method", "smoke_missing_flag"],
+        [
+            "unit_id",
+            "year",
+            "smoke_days",
+            "smoke_score_mean",
+            "smoke_score_p80",
+            "cumulative_normalized_smoke_intensity_proxy",
+            "smoke_method",
+            "smoke_missing_flag",
+        ],
         rows_out,
         delim=";",
     )
@@ -3006,7 +3029,16 @@ def smoke_prepare(
     alias_path = tables_dir / "smoke_days_nuts3_annual_2015_2024.csv"
     write_csv(
         alias_path,
-        ["unit_id", "year", "smoke_days", "smoke_score_mean", "smoke_score_p80", "smoke_method", "smoke_missing_flag"],
+        [
+            "unit_id",
+            "year",
+            "smoke_days",
+            "smoke_score_mean",
+            "smoke_score_p80",
+            "cumulative_normalized_smoke_intensity_proxy",
+            "smoke_method",
+            "smoke_missing_flag",
+        ],
         rows_out,
         delim=";",
     )
@@ -3035,6 +3067,7 @@ def smoke_prepare(
                         d.get("threshold_value", threshold_value),
                         d.get("smoke_day_proxy", ""),
                         d.get("smoke_day_equivalent", ""),
+                        d.get("normalized_smoke_intensity_proxy_daily", ""),
                         d.get("spatial_assignment_method", unit_assignment or "UNKNOWN_ASSIGNMENT"),
                         d.get("qa_flag", 0),
                     ]
@@ -3058,6 +3091,7 @@ def smoke_prepare(
                     "threshold_value",
                     "smoke_day_proxy",
                     "smoke_day_equivalent",
+                    "normalized_smoke_intensity_proxy_daily",
                     "spatial_assignment_method",
                     "qa_flag",
                 ],
@@ -3372,22 +3406,34 @@ def iech_compute(tables_dir: Path, report: Report) -> Tuple[Path, Path]:
             sd = smoke.get(uid, {}).get(y, None)
             if sd is None:
                 report.fail(f"Missing smoke_days for {uid} {y}")
-            hours = sd * 24.0
             p = interpolate_pop(p2015, p2020, p2025, y)
-            expo = hours * p if p > 0 else None
-            iech = expo
+            burden = sd * p if p > 0 else None
             rows_out.append([
-                uid, y, sd, hours, p, p, p, 1.0, IECH_PROXY_ASSUMPTION, expo, expo, iech,
-                IECH_PROXY_INDICATOR_NAME, IECH_PROXY_INDICATOR_UNIT, IECH_PROXY_CLAIM_STATUS, IECH_PROXY_LEGACY_LABEL, _iech_hist_method_flag(),
+                uid,
+                y,
+                sd,
+                p,
+                burden,
+                IECH_PROXY_INDICATOR_UNIT,
+                IECH_PROXY_INDICATOR_NAME,
+                IECH_PROXY_INDICATOR_UNIT,
+                IECH_PROXY_CLAIM_STATUS,
+                "",
+                "",
+                "",
+                "",
+                LEGACY_IECH_CLAIM_STATUS,
+                _iech_hist_method_flag(),
             ])
 
     write_csv(
         iech_hist_csv,
         [
-            "unit_id", "year", "smoke_days", "smoke_hours_equiv", "pop", "population_total",
-            "population_exposed_assumed", "exposure_fraction_assumption", "population_exposure_assumption",
-            "expo_person_hours", "population_smoke_burden_proxy", "IECH", "indicator_name", "indicator_unit",
-            "claim_status", "legacy_IECH_label_deprecated", "method_flags",
+            "unit_id", "year", "smoke_days", "population_total",
+            "population_smoke_day_burden_proxy", "population_smoke_day_burden_proxy_unit",
+            "indicator_name", "indicator_unit", "claim_status",
+            "legacy_smoke_hours_equiv", "legacy_expo_person_hours", "legacy_population_smoke_burden_proxy",
+            "legacy_IECH", "legacy_status", "method_flags",
         ],
         rows_out,
         delim=";",
@@ -3397,16 +3443,20 @@ def iech_compute(tables_dir: Path, report: Report) -> Tuple[Path, Path]:
     acc: Dict[str, List[float]] = {}
     for r in rows_out:
         uid = r[0]
-        proxy_val = safe_float(r[10]) if len(r) > 10 else None
+        proxy_val = safe_float(r[4]) if len(r) > 4 else None
         if proxy_val is not None:
             acc.setdefault(uid, []).append(proxy_val)
     rows_mean = []
     for uid, vals in sorted(acc.items()):
         mean_val = sum(vals) / len(vals) if vals else 0.0
-        rows_mean.append([uid, mean_val, mean_val])
+        rows_mean.append([uid, mean_val, ""])
     write_csv(
         iech_mean_csv,
-        ["unit_id", "population_smoke_burden_proxy_mean_2015_2024", "IECH_mean_2015_2024"],
+        [
+            "unit_id",
+            "population_smoke_day_burden_proxy_mean_2015_2024",
+            "legacy_population_smoke_burden_proxy_mean_2015_2024",
+        ],
         rows_mean,
         delim=";",
     )
@@ -3459,32 +3509,27 @@ def scenarios_compute(tables_dir: Path, report: Report) -> Tuple[Path, Path]:
         for y in YEARS_SCEN:
             p = interpolate_pop_scen(p2025, p2030, y)
             sd0 = base
-            h0 = sd0 * 24.0
-            expo0 = h0 * p if p > 0 else None
-            iech0 = expo0
+            burden0 = sd0 * p if p > 0 else None
             sd1 = base * (0.8 if uid in target else 1.0)
-            h1 = sd1 * 24.0
-            expo1 = h1 * p if p > 0 else None
-            iech1 = expo1
-            delta = (iech1 - iech0) if (iech1 is not None and iech0 is not None) else None
+            burden1 = sd1 * p if p > 0 else None
+            delta = (burden1 - burden0) if (burden1 is not None and burden0 is not None) else None
             flags = _iech_scen_method_flag()
             rows_out.append([
-                uid, y, "S0", sd0, h0, p, p, p, 1.0, IECH_PROXY_ASSUMPTION, expo0, iech0, iech0, 0.0, 0.0,
-                IECH_PROXY_INDICATOR_NAME, IECH_PROXY_INDICATOR_UNIT, IECH_PROXY_CLAIM_STATUS, IECH_PROXY_LEGACY_LABEL, flags,
+                uid, y, "S0", sd0, p, burden0, IECH_PROXY_INDICATOR_NAME, IECH_PROXY_INDICATOR_UNIT,
+                IECH_PROXY_CLAIM_STATUS, "", "", "", 0.0, 0.0, flags,
             ])
             rows_out.append([
-                uid, y, "S1", sd1, h1, p, p, p, 1.0, IECH_PROXY_ASSUMPTION, expo1, iech1, iech1, delta, delta,
-                IECH_PROXY_INDICATOR_NAME, IECH_PROXY_INDICATOR_UNIT, IECH_PROXY_CLAIM_STATUS, IECH_PROXY_LEGACY_LABEL, flags,
+                uid, y, "S1", sd1, p, burden1, IECH_PROXY_INDICATOR_NAME, IECH_PROXY_INDICATOR_UNIT,
+                IECH_PROXY_CLAIM_STATUS, "", "", "", delta, delta, flags,
             ])
 
     write_csv(
         scen_csv,
         [
-            "unit_id", "year", "scenario", "smoke_days", "smoke_hours_equiv", "pop", "population_total",
-            "population_exposed_assumed", "exposure_fraction_assumption", "population_exposure_assumption",
-            "expo_person_hours", "population_smoke_burden_proxy", "IECH",
-            "delta_population_smoke_burden_proxy_vs_S0", "delta_vs_S0", "indicator_name", "indicator_unit",
-            "claim_status", "legacy_IECH_label_deprecated", "method_flags",
+            "unit_id", "year", "scenario", "smoke_days", "population_total",
+            "population_smoke_day_burden_proxy", "indicator_name", "indicator_unit", "claim_status",
+            "legacy_smoke_hours_equiv", "legacy_expo_person_hours", "legacy_population_smoke_burden_proxy",
+            "delta_population_smoke_day_burden_proxy_vs_S0", "delta_smoke_day_burden_vs_S0", "method_flags",
         ],
         rows_out,
         delim=";",
@@ -3495,7 +3540,7 @@ def scenarios_compute(tables_dir: Path, report: Report) -> Tuple[Path, Path]:
     for r in rows_out:
         uid = r[0]
         sc = r[2]
-        proxy_val = safe_float(r[11]) if len(r) > 11 else None
+        proxy_val = safe_float(r[5]) if len(r) > 5 else None
         if proxy_val is not None:
             acc.setdefault(uid, {}).setdefault(sc, []).append(proxy_val)
 
@@ -3504,17 +3549,17 @@ def scenarios_compute(tables_dir: Path, report: Report) -> Tuple[Path, Path]:
         m0 = sum(a.get("S0", [])) / len(a.get("S0", [])) if a.get("S0") else None
         m1 = sum(a.get("S1", [])) / len(a.get("S1", [])) if a.get("S1") else None
         delta = (m1 - m0) if (m0 is not None and m1 is not None) else None
-        rows_mean.append([uid, m0, m1, delta, m0, m1, delta])
+        rows_mean.append([uid, m0, m1, delta, "", "", ""])
     write_csv(
         scen_mean_csv,
         [
             "unit_id",
-            "population_smoke_burden_proxy_S0_mean_2026_2030",
-            "population_smoke_burden_proxy_S1_mean_2026_2030",
-            "delta_population_smoke_burden_proxy_S1_minus_S0",
-            "IECH_S0_mean_2026_2030",
-            "IECH_S1_mean_2026_2030",
-            "delta_S1_minus_S0",
+            "population_smoke_day_burden_proxy_S0_mean_2026_2030",
+            "population_smoke_day_burden_proxy_S1_mean_2026_2030",
+            "delta_population_smoke_day_burden_proxy_S1_minus_S0",
+            "legacy_population_smoke_burden_proxy_S0_mean_2026_2030",
+            "legacy_population_smoke_burden_proxy_S1_mean_2026_2030",
+            "legacy_delta_S1_minus_S0",
         ],
         rows_mean,
         delim=";",
@@ -4074,6 +4119,7 @@ def _route_decision_from_inputs(inputs: Dict[str, object]) -> Dict[str, object]:
         return {}
     keys = [
         "smoke_route_selected",
+        "smoke_route_name",
         "smoke_route_status",
         "smoke_route_decision",
         "health_exposure_claim",
@@ -4094,6 +4140,7 @@ def _route_decision_from_inputs(inputs: Dict[str, object]) -> Dict[str, object]:
             continue
         route_decision[key.replace("smoke_route_", "") if key.startswith("smoke_route_") else key] = meta.get(key, "")
     route_decision["route_selected"] = route_selected
+    route_decision["route_name"] = meta.get("smoke_route_name", "")
     route_decision["smoke_route_status"] = meta.get("smoke_route_status", "")
     route_decision["smoke_route_decision"] = meta.get("smoke_route_decision", "")
     route_decision["reason"] = meta.get("smoke_route_reason", "")
@@ -4855,7 +4902,28 @@ def run_base_smoke_contract_for_oc03c(output_root: Path) -> Dict[str, object]:
     }
 
 
+def write_r10_a1_smoke_construct_crosswalk(output_root: Path) -> Path:
+    """Persist the R10-A1 semantic boundary so legacy fields cannot be mistaken for canon."""
+    path = output_root / "qa" / "r10_a1_smoke_construct_crosswalk.tsv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rows = [
+        ["legacy_variable", "old_semantics", "canonical_variable", "canonical_semantics", "formula", "unit_semantics", "role", "claim_status"],
+        ["smoke_day_score", "continuous daily score", "normalized_smoke_intensity_proxy_daily", "continuous daily intensity proxy", "smoke_day_score/threshold_value", "dimensionless index", "canonical intensity", "non-health proxy"],
+        ["smoke_day_proxy", "implicit threshold flag", "smoke_day_proxy", "binary classified smoke day", "1 if smoke_day_score>=threshold else 0", "day classification", "canonical duration input", "non-health proxy"],
+        ["smoke_day_equivalent", "continuous equivalent treated as duration", "smoke_day_proxy", "binary classified smoke day", "sum(smoke_day_proxy)", "legacy deprecated; not temporal duration", "legacy alias", "deprecated not canonical"],
+        ["smoke_days", "annual smoke duration", "smoke_days", "annual binary classified smoke-day count", "SUM(smoke_day_proxy)", "days; bounded by calendar days", "canonical frequency", "non-health proxy"],
+        ["smoke_days_binary", "binary annual count", "smoke_days_binary", "audit duplicate of canonical annual count", "SUM(smoke_day_proxy)", "days; bounded by calendar days", "QA audit", "non-health proxy"],
+        ["smoke_hours_equiv", "continuous intensity converted to hours", "cumulative_normalized_smoke_intensity_proxy", "annual cumulative continuous intensity", "SUM(normalized_smoke_intensity_proxy_daily)", "dimensionless cumulative proxy; not hours", "legacy alias", "deprecated not canonical"],
+        ["expo_person_hours", "population exposure hours", "population_smoke_day_burden_proxy", "classified smoke-proxy person-days", "smoke_days*population_total", "person-days proxy; not physical hours", "legacy alias", "blocked"],
+        ["population_smoke_burden_proxy", "smoke-hours*population", "population_smoke_day_burden_proxy", "classified smoke-proxy person-days", "smoke_days*population_total", "person-days proxy; not physical hours", "legacy alias", "deprecated not canonical"],
+        ["IECH", "exposure/health interpretation", "population_smoke_day_burden_proxy", "territorial classified smoke-day burden proxy", "smoke_days*population_total", "classified smoke-proxy person-days", "legacy label", "health and individual exposure blocked"],
+    ]
+    path.write_text("\n".join("\t".join(str(v) for v in row) for row in rows) + "\n", encoding="utf-8")
+    return path
+
+
 def collect_final_outputs(output_root: Path, scientific_decision_path: Path, include_global_scan: bool = True) -> List[Path]:
+    write_r10_a1_smoke_construct_crosswalk(output_root)
     outputs = [
         output_root / "qa" / "inputs_resolved.json",
         output_root / "qa" / "run_log.txt",
@@ -4913,6 +4981,7 @@ def collect_final_outputs(output_root: Path, scientific_decision_path: Path, inc
         output_root / "qa" / "fire_area_reconciliation_audit.tsv",
         output_root / "qa" / "gate_dependency_freshness_audit.tsv",
         output_root / "qa" / "warning_completeness_audit.tsv",
+        output_root / "qa" / "r10_a1_smoke_construct_crosswalk.tsv",
         output_root / "qa" / "pytest_evidence_inventory.tsv",
         output_root / "qa" / "pytest_result_summary.tsv",
         output_root / "logs" / "pytest_command.txt",

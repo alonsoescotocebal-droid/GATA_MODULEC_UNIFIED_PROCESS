@@ -48,9 +48,9 @@ def test_step7_iech_cancellation_helper_blocks(tmp_path):
     mod = _load_step7_module()
     iech = tmp_path / "IECH_unit_2015_2024.csv"
     iech.write_text(
-        "unit_id;year;smoke_days;smoke_hours_equiv;pop;expo_person_hours;IECH\n"
-        "U1;2015;10;240;100;24000;240\n"
-        "U2;2015;20;480;200;96000;480\n",
+        "unit_id;year;smoke_days;population_total;population_smoke_day_burden_proxy\n"
+        "U1;2015;10;100;1000\n"
+        "U2;2015;20;200;4000\n",
         encoding="utf-8",
     )
     assert mod._iech_population_cancellation(iech) is True
