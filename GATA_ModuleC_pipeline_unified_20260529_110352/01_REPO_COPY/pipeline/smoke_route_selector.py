@@ -39,6 +39,7 @@ RECOVERY_ROOT_NAMES: Sequence[str] = (
     "Datos_RECOVERY_2015_2024_PIPELINE_GRIB",
     "Datos_RECOVERY_PORTUGUESE_AGENCIES_2015_2024",
     "Datos_RECOVERY_2015_2024",
+    "Datos_RECOVERY_ERA5_2015_2024_R10A2",
 )
 
 FORBIDDEN_PRIMARY_SOURCE_TOKENS: Sequence[str] = (
@@ -186,7 +187,13 @@ def _detect_era5_zip(root: Path) -> Optional[Path]:
     if matches:
         return matches[0]
     nested_matches = sorted(root.rglob("*ERA5*.zip"))
-    return nested_matches[0] if nested_matches else None
+    if nested_matches:
+        return nested_matches[0]
+    grib_dirs = sorted(
+        {path.parent for path in root.rglob("*ERA5*.grib") if path.is_file()},
+        key=lambda path: (0 if path.name.lower() == "validated" else 1, str(path).lower()),
+    )
+    return grib_dirs[0] if grib_dirs else None
 
 
 def detect_smoke_sources(modulec_datos: Path, inputs: Dict[str, object]) -> Dict[str, object]:
@@ -256,6 +263,42 @@ def detect_smoke_sources(modulec_datos: Path, inputs: Dict[str, object]) -> Dict
                 effective_gfas_dir = Path(str(row["gfas_dir"])) if str(row["gfas_dir"]).strip() else None
                 effective_era5_zip = Path(str(row["era5_zip"])) if str(row["era5_zip"]).strip() else None
                 break
+
+    # R10-A2B stores recovered ERA5 separately from the existing recovered GFAS root.
+    # Pair only those two recovered roots; never mix a non-recovery source into this route.
+    if effective_root is None:
+        recovery_gfas_row = next(
+            (row for row in root_rows if row["recovery_root"] and str(row["gfas_dir"]).strip()),
+            None,
+        )
+        recovery_era5_row = next(
+            (row for row in root_rows if row["recovery_root"] and str(row["era5_zip"]).strip()),
+            None,
+        )
+        if recovery_gfas_row is not None and recovery_era5_row is not None:
+            effective_root = Path(str(recovery_gfas_row["root"]))
+            effective_gfas_dir = Path(str(recovery_gfas_row["gfas_dir"]))
+            effective_era5_zip = Path(str(recovery_era5_row["era5_zip"]))
+
+    preferred_r10_a2_era5 = next(
+        (
+            row
+            for row in root_rows
+            if row["recovery_root"]
+            and Path(str(row["root"])).name.lower() == "datos_recovery_era5_2015_2024_r10a2"
+            and str(row["era5_zip"]).strip()
+        ),
+        None,
+    )
+    if preferred_r10_a2_era5 is not None:
+        recovery_gfas_row = next(
+            (row for row in root_rows if row["recovery_root"] and str(row["gfas_dir"]).strip()),
+            None,
+        )
+        if recovery_gfas_row is not None:
+            effective_root = Path(str(recovery_gfas_row["root"]))
+            effective_gfas_dir = Path(str(recovery_gfas_row["gfas_dir"]))
+            effective_era5_zip = Path(str(preferred_r10_a2_era5["era5_zip"]))
 
     gfas_gribs = sorted(effective_gfas_dir.rglob("*.grib")) if effective_gfas_dir is not None and effective_gfas_dir.exists() else []
     gfas_total_bytes = sum(int(p.stat().st_size) for p in gfas_gribs) if gfas_gribs else 0

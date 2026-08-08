@@ -70,3 +70,26 @@ def test_smoke_route_selector_blocks_legacy_direct_sources_even_if_decoder_avail
     assert sources["effective_source_is_recovery"] is False
     assert decision["route_selected"] == "NO-GO_SMOKE_ROUTE"
     assert decision["smoke_route_decision"] == "BLOCKED_FORBIDDEN_PRIMARY_SMOKE_SOURCE"
+
+
+def test_recovered_era5_validated_directory_pairs_with_recovered_gfas(tmp_path):
+    repo_root = Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(repo_root / "pipeline"))
+    import smoke_route_selector as selector  # type: ignore
+
+    modulec_root = tmp_path / "Module C"
+    data = modulec_root / "Datos"
+    gfas_root = modulec_root / "Datos_RECOVERY_2015_2024_PIPELINE_GRIB"
+    gfas_root.mkdir(parents=True)
+    (gfas_root / "pm2p5fire_2015.grib").write_bytes(b"gfas")
+    era5_root = modulec_root / "Datos_RECOVERY_ERA5_2015_2024_R10A2" / "validated"
+    era5_root.mkdir(parents=True)
+    (era5_root / "ERA5_UV_2015.grib").write_bytes(b"era5")
+    (gfas_root / "ERA5_000_2015_2024.zip").write_bytes(b"legacy")
+
+    sources = selector.detect_smoke_sources(data, {"paths": {}})
+
+    assert sources["gfas_exists"] is True
+    assert sources["era5_exists"] is True
+    assert Path(sources["era5_zip"]) == era5_root
+    assert sources["effective_source_is_recovery"] is True

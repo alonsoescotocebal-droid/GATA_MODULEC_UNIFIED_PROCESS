@@ -2046,38 +2046,58 @@ def _load_era5_daily_wind_by_unit(
     import numpy as np  # type: ignore
 
     if not era5_zip.exists():
-        raise RuntimeError(f"{R10_A2_COVERAGE_BLOCKER}: ERA5 zip missing: {era5_zip}")
-    with zipfile.ZipFile(era5_zip) as archive:
-        members = [name for name in archive.namelist() if str(name).lower().endswith(".grib")]
-    if not members:
-        raise RuntimeError(f"{R10_A2_COVERAGE_BLOCKER}: ERA5 zip has no GRIB member")
-    vsi_path = f"/vsizip/{era5_zip.as_posix()}/{members[0]}"
-    ds = gdal.Open(vsi_path)
-    if ds is None:
-        raise RuntimeError(f"{R10_A2_COVERAGE_BLOCKER}: ERA5 GRIB could not be opened")
-    geotransform = ds.GetGeoTransform(can_return_null=True)
-    if not geotransform:
-        raise RuntimeError(f"{R10_A2_COVERAGE_BLOCKER}: ERA5 geotransform missing")
+        raise RuntimeError(f"{R10_A2_COVERAGE_BLOCKER}: ERA5 source missing: {era5_zip}")
+
+    era5_sources: List[str] = []
+    if era5_zip.is_dir():
+        era5_sources = [str(path) for path in sorted(era5_zip.rglob("*.grib")) if path.is_file()]
+    elif era5_zip.suffix.lower() == ".zip":
+        with zipfile.ZipFile(era5_zip) as era5_archive:
+            members = [name for name in era5_archive.namelist() if str(name).lower().endswith(".grib")]
+        era5_sources = [f"/vsizip/{era5_zip.as_posix()}/{member}" for member in members]
+    elif era5_zip.suffix.lower() == ".grib":
+        era5_sources = [str(era5_zip)]
+    if not era5_sources:
+        raise RuntimeError(f"{R10_A2_COVERAGE_BLOCKER}: ERA5 source has no GRIB files: {era5_zip}")
+
     by_date: Dict[str, Dict[str, List[object]]] = defaultdict(lambda: {"10U": [], "10V": []})
-    for band_index in range(1, int(ds.RasterCount) + 1):
-        band = ds.GetRasterBand(band_index)
-        if band is None:
-            continue
-        md = band.GetMetadata() or {}
-        element = str(md.get("GRIB_ELEMENT") or "").upper()
-        comment = str(md.get("GRIB_COMMENT") or "").lower()
-        if element not in ("10U", "10V"):
-            element = "10U" if "u wind component" in comment else ("10V" if "v wind component" in comment else "")
-        epoch = safe_float(md.get("GRIB_VALID_TIME") or md.get("GRIB_REF_TIME"))
-        if not element or epoch is None:
-            continue
-        date_iso = dt.datetime.fromtimestamp(float(epoch), tz=dt.timezone.utc).date().isoformat()
-        if date_iso not in expected_dates:
-            continue
-        array = band.ReadAsArray()
-        if array is not None:
-            by_date[date_iso][element].append(np.asarray(array, dtype=float))
-    ds = None
+    geotransform = None
+    grid_shape: Optional[Tuple[int, int]] = None
+    for source in era5_sources:
+        ds = gdal.Open(source)
+        if ds is None:
+            raise RuntimeError(f"{R10_A2_COVERAGE_BLOCKER}: ERA5 GRIB could not be opened: {source}")
+        source_geotransform = ds.GetGeoTransform(can_return_null=True)
+        if not source_geotransform:
+            raise RuntimeError(f"{R10_A2_COVERAGE_BLOCKER}: ERA5 geotransform missing: {source}")
+        source_shape = (int(ds.RasterXSize), int(ds.RasterYSize))
+        if geotransform is None:
+            geotransform = source_geotransform
+            grid_shape = source_shape
+        elif source_geotransform != geotransform or source_shape != grid_shape:
+            raise RuntimeError(f"{R10_A2_COVERAGE_BLOCKER}: ERA5 grids are inconsistent: {source}")
+        for band_index in range(1, int(ds.RasterCount) + 1):
+            band = ds.GetRasterBand(band_index)
+            if band is None:
+                continue
+            md = band.GetMetadata() or {}
+            element = str(md.get("GRIB_ELEMENT") or "").upper()
+            comment = str(md.get("GRIB_COMMENT") or "").lower()
+            if element not in ("10U", "10V"):
+                element = "10U" if "u wind component" in comment else ("10V" if "v wind component" in comment else "")
+            epoch = safe_float(md.get("GRIB_VALID_TIME") or md.get("GRIB_REF_TIME"))
+            if not element or epoch is None:
+                continue
+            date_iso = dt.datetime.fromtimestamp(float(epoch), tz=dt.timezone.utc).date().isoformat()
+            if date_iso not in expected_dates:
+                continue
+            array = band.ReadAsArray()
+            if array is not None:
+                values = np.asarray(array, dtype=float)
+                if not np.isfinite(values).all():
+                    raise RuntimeError(f"{R10_A2_COVERAGE_BLOCKER}: non-finite ERA5 values on {date_iso} {element}")
+                by_date[date_iso][element].append(values)
+        ds = None
 
     available_dates = sorted(
         date_iso
@@ -2086,7 +2106,12 @@ def _load_era5_daily_wind_by_unit(
     )
     expected_set = set(expected_dates)
     missing_dates = sorted(expected_set.difference(available_dates))
-    coverage_status = "PASS" if not missing_dates else R10_A2_COVERAGE_BLOCKER
+    incomplete_6hour_days = sorted(
+        date_iso
+        for date_iso in available_dates
+        if len(by_date[date_iso]["10U"]) != 4 or len(by_date[date_iso]["10V"]) != 4
+    )
+    coverage_status = "PASS" if not missing_dates and not incomplete_6hour_days else R10_A2_COVERAGE_BLOCKER
     write_tsv(
         qa_dir / "r10_a2_era5_coverage_audit.tsv",
         ["metric", "value", "status", "detail"],
@@ -2094,14 +2119,16 @@ def _load_era5_daily_wind_by_unit(
             ["ERA5_EXPECTED_DATES", len(expected_dates), "PASS", f"{expected_dates[0]}..{expected_dates[-1]}"],
             ["ERA5_AVAILABLE_DATES", len(available_dates), "PASS" if available_dates else "BLOCKED", ",".join(available_dates[:5])],
             ["ERA5_MISSING_DATES", len(missing_dates), "PASS" if not missing_dates else "BLOCKED", ",".join(missing_dates[:20])],
+            ["ERA5_INCOMPLETE_6H_DATES", len(incomplete_6hour_days), "PASS" if not incomplete_6hour_days else "BLOCKED", ",".join(incomplete_6hour_days[:20])],
             ["ERA5_AVAILABLE_YEARS", ",".join(sorted({d[:4] for d in available_dates})), "PASS" if available_dates else "BLOCKED", "Observed from GRIB band metadata."],
             ["ERA5_COVERAGE_STATUS", coverage_status, "PASS" if coverage_status == "PASS" else "BLOCKED", "No silent temporal fallback is permitted."],
         ],
     )
-    if missing_dates:
+    if missing_dates or incomplete_6hour_days:
         raise RuntimeError(
             f"{R10_A2_COVERAGE_BLOCKER}: expected={len(expected_dates)} available={len(available_dates)} "
-            f"missing={len(missing_dates)} years={','.join(sorted({d[:4] for d in available_dates}))}"
+            f"missing={len(missing_dates)} incomplete_6h={len(incomplete_6hour_days)} "
+            f"years={','.join(sorted({d[:4] for d in available_dates}))}"
         )
 
     representative_by_unit: Dict[str, Dict[str, object]] = {}
@@ -3147,12 +3174,24 @@ def decode_gfas_era5_gdal_proxy(
         era5_zip = Path(era5_zip_raw) if era5_zip_raw else None
         if era5_zip is None or not era5_zip.exists():
             raise FileNotFoundError("Recovered ERA5 zip not found for decoder probe.")
-        with zipfile.ZipFile(era5_zip) as era5_archive:
-            era5_members = [name for name in era5_archive.namelist() if str(name).lower().endswith(".grib")]
-        if not era5_members:
-            raise RuntimeError(f"ERA5 zip has no internal .grib members: {era5_zip}")
+        era5_members: List[str] = []
+        if era5_zip.is_dir():
+            era5_paths = sorted(era5_zip.rglob("*.grib"))
+            era5_vsi = str(era5_paths[0]) if era5_paths else ""
+            era5_members = [path.name for path in era5_paths]
+        elif era5_zip.suffix.lower() == ".zip":
+            with zipfile.ZipFile(era5_zip) as era5_archive:
+                era5_members = [name for name in era5_archive.namelist() if str(name).lower().endswith(".grib")]
+            if not era5_members:
+                raise RuntimeError(f"ERA5 zip has no internal .grib members: {era5_zip}")
+            era5_member = era5_members[0]
+            era5_vsi = f"/vsizip/{era5_zip.as_posix()}/{era5_member}"
+        else:
+            era5_vsi = str(era5_zip)
+            era5_members = [era5_zip.name]
+        if not era5_vsi:
+            raise RuntimeError(f"ERA5 source has no GRIB files: {era5_zip}")
         era5_member = era5_members[0]
-        era5_vsi = f"/vsizip/{era5_zip.as_posix()}/{era5_member}"
         rc_i, out_i, err_i = _run_external([gdalinfo, era5_vsi], timeout_sec=180)
         warning_rows.extend(_capture_warning_rows("gdalinfo", "ERA5_INFO", out_i + "\n" + err_i))
         if rc_i != 0:
