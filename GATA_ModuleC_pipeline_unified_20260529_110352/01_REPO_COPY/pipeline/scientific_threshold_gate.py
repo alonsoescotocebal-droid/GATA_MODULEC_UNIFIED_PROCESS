@@ -519,6 +519,37 @@ def evaluate_era5_claims(era5_used_in_score: bool, route_name: str) -> Tuple[str
     return "THRESHOLD_DEFINED_AS_INDEXED_METHOD", "ERA5 score integration is not evaluated by R10-A1."
 
 
+def evaluate_r10_a2_contract(qa_dir: Path) -> Tuple[str, str]:
+    path = qa_dir / "r10_a2_transport_contract_audit.tsv"
+    if not path.exists():
+        return "BLOCKED_R10_A2_TRANSPORT_CONTRACT", f"{path.name} missing"
+    rows = read_csv_rows(path)
+    required = {
+        "ERA5_READ",
+        "ERA5_VALIDATED",
+        "ERA5_USED_IN_SMOKE_SCORE",
+        "UPWIND_WEIGHTING_IMPLEMENTED",
+        "DISTANCE_WEIGHTING_IMPLEMENTED",
+    }
+    observed = {str(row.get("metric") or "").strip(): str(row.get("status") or "").strip().upper() for row in rows}
+    missing = sorted(required.difference(observed))
+    failed = sorted(metric for metric in required if observed.get(metric) != "PASS")
+    if missing or failed:
+        return "BLOCKED_R10_A2_TRANSPORT_CONTRACT", f"missing={','.join(missing)} failed={','.join(failed)}"
+    return "PASS", "ERA5, upwind and distance implementation contract passed."
+
+
+def evaluate_r10_a2_era5_effect(qa_dir: Path) -> Tuple[str, str]:
+    path = qa_dir / "r10_a2_era5_effect_audit.tsv"
+    if not path.exists():
+        return "BLOCKED_ERA5_SCORE_INFLUENCE", f"{path.name} missing"
+    rows = {str(row.get("metric") or "").strip(): row for row in read_csv_rows(path)}
+    changed = safe_float(rows.get("fraction_unit_days_changed", {}).get("value"))
+    if changed is None or changed <= 0.0:
+        return "BLOCKED_ERA5_SCORE_INFLUENCE", f"fraction_unit_days_changed={changed}"
+    return "PASS", f"fraction_unit_days_changed={changed}"
+
+
 def evaluate_iech_proxy_semantics(reframe_audit_tsv: Path) -> Tuple[str, str]:
     if not reframe_audit_tsv.exists():
         return "BLOCKED_PROXY_BURDEN_SEMANTICS", f"{reframe_audit_tsv.name} missing"
@@ -762,7 +793,8 @@ def main() -> int:
     except Exception:
         route_meta = {}
     era5_route_name = str(route_meta.get("smoke_route_name") or route_selected)
-    era5_claim_status, era5_claim_obs = evaluate_era5_claims(False, era5_route_name)
+    era5_used_in_score = bool(route_meta.get("ERA5_USED_IN_SMOKE_SCORE", False))
+    era5_claim_status, era5_claim_obs = evaluate_era5_claims(era5_used_in_score, era5_route_name)
     add_gate(
         "ERA5_CLAIM_001",
         "ERA5 meteorological claim scope",
@@ -777,6 +809,57 @@ def main() -> int:
         "ERA5-weighted or upwind smoke claims before R10-A2.",
         "NO-GO_SCIENTIFIC_THRESHOLD" if era5_claim_status.startswith("BLOCKED") else "NONE",
     )
+    if era5_used_in_score:
+        transport_status, transport_obs = evaluate_r10_a2_contract(qa_dir)
+        add_gate(
+            "ERA5_SCORE_001",
+            "ERA5 numerically affects canonical smoke score",
+            str(qa_dir / "r10_a2_transport_contract_audit.tsv"),
+            "ERA5_USED_IN_SMOKE_SCORE",
+            transport_obs,
+            "ERA5 must be read, validated and mechanistically used in smoke_day_score.",
+            "SRC-GATE-R10-A2-ERA5-SCORE",
+            "SCIENTIFIC_CONSTRUCT",
+            transport_status,
+            "ERA5-informed operational smoke proxy.",
+            "ERA5 nominally present while score remains GFAS-only.",
+            "NO-GO_SCIENTIFIC_THRESHOLD" if transport_status.startswith("BLOCKED") else "NONE",
+        )
+        effect_status, effect_obs = evaluate_r10_a2_era5_effect(qa_dir)
+        add_gate(
+            "ERA5_SCORE_002",
+            "Real-data ERA5 score influence",
+            str(qa_dir / "r10_a2_era5_effect_audit.tsv"),
+            "fraction_unit_days_changed",
+            effect_obs,
+            "fraction_unit_days_changed must be greater than zero on real data.",
+            "SRC-GATE-R10-A2-ERA5-EFFECT",
+            "SCIENTIFIC_CONSTRUCT",
+            effect_status,
+            "Canonical score changes numerically under ERA5-informed transport.",
+            "Canonical score identical to GFAS-only reference for all unit-days.",
+            "NO-GO_SCIENTIFIC_THRESHOLD" if effect_status.startswith("BLOCKED") else "NONE",
+        )
+        for threshold_id, component, variable, detail, status in (
+            ("UPWIND_GEOMETRY_001", "source-receptor upwind geometry", "UPWIND_WEIGHTING_IMPLEMENTED", "Upwind alignment affects source contribution.", transport_status),
+            ("DISTANCE_TRANSPORT_001", "distance/travel-time attenuation", "DISTANCE_WEIGHTING_IMPLEMENTED", "Distance and transport time attenuate source contribution.", transport_status),
+            ("ERA5_CLAIM_002", "GFAS+ERA5 route claim governance", "route_name/ERA5_USED_IN_SMOKE_SCORE", "Mechanistic advection claim is allowed only when ERA5 is used in the score.", "PASS" if era5_used_in_score else "BLOCKED_ERA5_MECHANISTIC_CLAIM"),
+            ("TRANSPORT_SEMANTICS_001", "transport proxy semantic scope", "smoke_route_name", "Score remains an operational screening proxy, not concentration or dispersion output.", "PASS" if era5_used_in_score else "BLOCKED_TRANSPORT_SEMANTICS"),
+        ):
+            add_gate(
+                threshold_id,
+                component,
+                str(qa_dir / "r10_a2_transport_contract_audit.tsv"),
+                variable,
+                detail,
+                "R10-A2 transport construct must be implemented and explicitly scoped.",
+                f"SRC-GATE-R10-A2-{threshold_id}",
+                "SCIENTIFIC_CONSTRUCT",
+                status,
+                "Advection-informed operational smoke proxy with explicit limitations.",
+                "Nominal ERA5, unattenuated distance, concentration, dose, health exposure, or dispersion claims.",
+                "NO-GO_SCIENTIFIC_THRESHOLD" if str(status).startswith("BLOCKED") else "NONE",
+            )
 
     smoke_status, smoke_obs, smoke_unique = evaluate_smoke_spatial(smoke_csv)
     add_gate(
@@ -826,6 +909,21 @@ def main() -> int:
         "Continuous intensity labelled as days, hours or person-hours.",
         "NO-GO_SCIENTIFIC_THRESHOLD" if temporal_status.startswith("BLOCKED") else "NONE",
     )
+    if era5_used_in_score:
+        add_gate(
+            "SMOKE_TEMPORAL_R10A2_001",
+            "R10-A2 binary smoke-day semantics",
+            str(smoke_csv),
+            "smoke_days=SUM(smoke_day_proxy)",
+            temporal_obs,
+            "The new transport score may change classification but not the binary-day contract.",
+            "SRC-GATE-R10-A2-SMOKE-TEMPORAL",
+            "SCIENTIFIC_CONSTRUCT",
+            temporal_status,
+            "Binary classified smoke-day frequency remains canonical.",
+            "Continuous intensity used as days, hours or person-hours.",
+            "NO-GO_SCIENTIFIC_THRESHOLD" if temporal_status.startswith("BLOCKED") else "NONE",
+        )
 
     direct_contract_status, direct_contract_obs = evaluate_direct_decoder_contract(output_root)
     add_gate(
@@ -936,6 +1034,21 @@ def main() -> int:
         "Automatic *24 conversion, physical person-hours, dose or health exposure.",
         "NO-GO_SCIENTIFIC_THRESHOLD" if burden_status.startswith("BLOCKED") else "NONE",
     )
+    if era5_used_in_score:
+        add_gate(
+            "BURDEN_R10A2_001",
+            "R10-A2 population smoke-day burden contract",
+            str(iech_hist_csv),
+            "population_smoke_day_burden_proxy=smoke_days*population_total",
+            burden_obs,
+            "Transport score changes smoke classification only; burden remains smoke-days times population.",
+            "SRC-GATE-R10-A2-BURDEN",
+            "SCIENTIFIC_CONSTRUCT",
+            burden_status,
+            "Classified smoke-proxy person-days only.",
+            "Automatic *24 conversion, physical person-hours, dose or health exposure.",
+            "NO-GO_SCIENTIFIC_THRESHOLD" if burden_status.startswith("BLOCKED") else "NONE",
+        )
 
     iech_semantics_tsv = qa_dir / "iech_reporting_semantics_audit.tsv"
     if not iech_semantics_tsv.exists():

@@ -12,6 +12,7 @@ import csv
 import datetime as dt
 import hashlib
 import importlib
+import math
 import json
 import os
 import re
@@ -31,6 +32,16 @@ from portuguese_aq_validation import (
     PORTUGUESE_AQ_BASE_SMOKE_BLOCKED,
     run_portuguese_aq_validation,
     write_blocked_base_smoke_regression_outputs,
+)
+from r10_a2_transport import (
+    CALM_WIND_EPSILON_MPS,
+    OPERATIONAL_DAILY_ADVECTION_TIMESCALE_HOURS,
+    _r10_a2_route_claim,
+    _r10_a2_smoke_score,
+    _source_receptor_vector_km,
+    _transport_components,
+    _transport_kernel,
+    _transport_weighted_receptor_proxy,
 )
 from smoke_route_selector import apply_route_meta, detect_smoke_sources, select_smoke_route
 from wrb_source_route import find_wrb_annual_burned_area_paths, find_wrb_source_bundle
@@ -1986,6 +1997,246 @@ def _direct_unit_smoke_score(pm_mean: float, pm_max: float) -> float:
     return max(blended, 0.0) * 1.0e11
 
 
+R10_A2_ROUTE_NAME = "v0_gfas_era5_advection_screening_proxy"
+R10_A2_COVERAGE_BLOCKER = "BLOCKED_R10_A2_ERA5_COVERAGE_INSUFFICIENT"
+R10_A2_SOURCE_PADDING_DEG = 2.0
+
+
+def _write_r10_a2_transport_method_declaration(
+    qa_dir: Path,
+    era5_zip: Path,
+    unit_sample_count: int,
+    unit_count: int,
+    gfas_extent: str,
+) -> None:
+    ensure_dir(qa_dir)
+    lines = [
+        "# R10-A2 Transport Method Declaration",
+        "",
+        "- method: `ADVECTION_INFORMED_OPERATIONAL_SMOKE_PROXY`",
+        "- source representation: native GFAS PM2P5FIRE GRIB raster cell centers with non-missing flux values",
+        f"- receptor representation: deterministic representative point from existing unit_samples (first accepted point per unit); units={unit_count}; available_samples={unit_sample_count}",
+        "- ERA5 sampling: native 10U/10V GRIB bands, daily mean of available 6-hourly values, nearest grid cell at the representative receptor point",
+        "- wind convention: u10 is eastward and v10 is northward; the vector points toward transport",
+        "- source-receptor geometry: local east/north projected displacement from geographic coordinates, with geodesic-equivalent haversine distance in km",
+        "- upwind formula: `max(0, dot(wind_unit_vector, source_to_receptor_unit_vector))`, no absolute cosine",
+        "- transport-time formula: `distance_km / (wind_speed_mps * 3.6)` for non-calm wind",
+        "- distance kernel: `exp(-transport_time_hours / 24)`; 24 h is `OPERATIONAL_DAILY_ADVECTION_TIMESCALE` and is not a physical dispersion constant",
+        "- combined kernel: `alignment * distance_transport_weight`; calm non-local pairs receive zero; local pairs receive one",
+        f"- GFAS source extent: native raster intersection with receptor sample bounds expanded by {R10_A2_SOURCE_PADDING_DEG} degrees; observed={gfas_extent}",
+        "- source-to-receptor aggregation: sum(flux * transport_kernel) / N_valid_source_cells; no normalization by sum(kernel)",
+        "- receptor-to-unit aggregation: mean and max over the deterministic representative receptor set; canonical score is `(0.75 * mean + 0.25 * max) * 1e11`",
+        "- canonical temporal scale: 24 h for daily GFAS aggregation; diagnostic 12 h and 48 h sensitivity is separate",
+        f"- ERA5 input: `{era5_zip}`",
+        "- calm wind: no direction is invented; `wind_speed_mps <= 1e-9` yields zero for non-local pairs and one for local pairs",
+        "- limitations: GFAS and ERA5 spatial domains are not extended; boundary truncation and missing ERA5 dates are explicit QA blockers; this is not PM2.5 concentration, dose, health exposure, or a dispersion model",
+        "",
+    ]
+    (qa_dir / "r10_a2_transport_method_declaration.md").write_text("\n".join(lines), encoding="utf-8")
+
+
+def _load_era5_daily_wind_by_unit(
+    era5_zip: Path,
+    qa_dir: Path,
+    unit_samples: List[Dict[str, object]],
+    expected_dates: Sequence[str],
+) -> Dict[str, Dict[str, Dict[str, float]]]:
+    """Load daily ERA5 wind at deterministic receptor points and enforce coverage."""
+    from osgeo import gdal  # type: ignore
+    import numpy as np  # type: ignore
+
+    if not era5_zip.exists():
+        raise RuntimeError(f"{R10_A2_COVERAGE_BLOCKER}: ERA5 zip missing: {era5_zip}")
+    with zipfile.ZipFile(era5_zip) as archive:
+        members = [name for name in archive.namelist() if str(name).lower().endswith(".grib")]
+    if not members:
+        raise RuntimeError(f"{R10_A2_COVERAGE_BLOCKER}: ERA5 zip has no GRIB member")
+    vsi_path = f"/vsizip/{era5_zip.as_posix()}/{members[0]}"
+    ds = gdal.Open(vsi_path)
+    if ds is None:
+        raise RuntimeError(f"{R10_A2_COVERAGE_BLOCKER}: ERA5 GRIB could not be opened")
+    geotransform = ds.GetGeoTransform(can_return_null=True)
+    if not geotransform:
+        raise RuntimeError(f"{R10_A2_COVERAGE_BLOCKER}: ERA5 geotransform missing")
+    by_date: Dict[str, Dict[str, List[object]]] = defaultdict(lambda: {"10U": [], "10V": []})
+    for band_index in range(1, int(ds.RasterCount) + 1):
+        band = ds.GetRasterBand(band_index)
+        if band is None:
+            continue
+        md = band.GetMetadata() or {}
+        element = str(md.get("GRIB_ELEMENT") or "").upper()
+        comment = str(md.get("GRIB_COMMENT") or "").lower()
+        if element not in ("10U", "10V"):
+            element = "10U" if "u wind component" in comment else ("10V" if "v wind component" in comment else "")
+        epoch = safe_float(md.get("GRIB_VALID_TIME") or md.get("GRIB_REF_TIME"))
+        if not element or epoch is None:
+            continue
+        date_iso = dt.datetime.fromtimestamp(float(epoch), tz=dt.timezone.utc).date().isoformat()
+        if date_iso not in expected_dates:
+            continue
+        array = band.ReadAsArray()
+        if array is not None:
+            by_date[date_iso][element].append(np.asarray(array, dtype=float))
+    ds = None
+
+    available_dates = sorted(
+        date_iso
+        for date_iso, values in by_date.items()
+        if values["10U"] and values["10V"]
+    )
+    expected_set = set(expected_dates)
+    missing_dates = sorted(expected_set.difference(available_dates))
+    coverage_status = "PASS" if not missing_dates else R10_A2_COVERAGE_BLOCKER
+    write_tsv(
+        qa_dir / "r10_a2_era5_coverage_audit.tsv",
+        ["metric", "value", "status", "detail"],
+        [
+            ["ERA5_EXPECTED_DATES", len(expected_dates), "PASS", f"{expected_dates[0]}..{expected_dates[-1]}"],
+            ["ERA5_AVAILABLE_DATES", len(available_dates), "PASS" if available_dates else "BLOCKED", ",".join(available_dates[:5])],
+            ["ERA5_MISSING_DATES", len(missing_dates), "PASS" if not missing_dates else "BLOCKED", ",".join(missing_dates[:20])],
+            ["ERA5_AVAILABLE_YEARS", ",".join(sorted({d[:4] for d in available_dates})), "PASS" if available_dates else "BLOCKED", "Observed from GRIB band metadata."],
+            ["ERA5_COVERAGE_STATUS", coverage_status, "PASS" if coverage_status == "PASS" else "BLOCKED", "No silent temporal fallback is permitted."],
+        ],
+    )
+    if missing_dates:
+        raise RuntimeError(
+            f"{R10_A2_COVERAGE_BLOCKER}: expected={len(expected_dates)} available={len(available_dates)} "
+            f"missing={len(missing_dates)} years={','.join(sorted({d[:4] for d in available_dates}))}"
+        )
+
+    representative_by_unit: Dict[str, Dict[str, object]] = {}
+    for sample in unit_samples:
+        unit_id = str(sample.get("unit_id") or "")
+        if unit_id and unit_id not in representative_by_unit:
+            representative_by_unit[unit_id] = sample
+
+    def sample_value(array: object, lon: float, lat: float) -> Optional[float]:
+        values = np.asarray(array)
+        origin_x, pixel_w, _rot_x, origin_y, _rot_y, pixel_h = geotransform
+        if pixel_w == 0.0 or pixel_h == 0.0:
+            return None
+        px = int(math.floor((lon - origin_x) / pixel_w)) if pixel_w > 0 else int(math.floor((origin_x - lon) / abs(pixel_w)))
+        py = int(math.floor((lat - origin_y) / pixel_h)) if pixel_h > 0 else int(math.floor((origin_y - lat) / abs(pixel_h)))
+        if py < 0 or px < 0 or py >= values.shape[0] or px >= values.shape[1]:
+            return None
+        val = float(values[py, px])
+        return val if math.isfinite(val) else None
+
+    wind_by_date_unit: Dict[str, Dict[str, Dict[str, float]]] = {}
+    for date_iso in available_dates:
+        mean_u = np.nanmean(np.stack(by_date[date_iso]["10U"]), axis=0)
+        mean_v = np.nanmean(np.stack(by_date[date_iso]["10V"]), axis=0)
+        per_unit: Dict[str, Dict[str, float]] = {}
+        for unit_id, sample in representative_by_unit.items():
+            u_value = sample_value(mean_u, float(sample["lon"]), float(sample["lat"]))
+            v_value = sample_value(mean_v, float(sample["lon"]), float(sample["lat"]))
+            if u_value is None or v_value is None:
+                raise RuntimeError(f"{R10_A2_COVERAGE_BLOCKER}: ERA5 receptor sample missing for {unit_id} on {date_iso}")
+            per_unit[unit_id] = {"u10_mps": u_value, "v10_mps": v_value}
+        wind_by_date_unit[date_iso] = per_unit
+    return wind_by_date_unit
+
+
+def _rank_values(values: Sequence[float]) -> List[float]:
+    indexed = sorted(enumerate(values), key=lambda item: item[1])
+    ranks = [0.0] * len(values)
+    for rank, (index, _value) in enumerate(indexed, start=1):
+        ranks[index] = float(rank)
+    return ranks
+
+
+def _spearman_correlation(left: Sequence[float], right: Sequence[float]) -> float:
+    if len(left) != len(right) or len(left) < 2:
+        return 0.0
+    left_rank = _rank_values(left)
+    right_rank = _rank_values(right)
+    mean_left = sum(left_rank) / len(left_rank)
+    mean_right = sum(right_rank) / len(right_rank)
+    numerator = sum((a - mean_left) * (b - mean_right) for a, b in zip(left_rank, right_rank))
+    denom_left = math.sqrt(sum((a - mean_left) ** 2 for a in left_rank))
+    denom_right = math.sqrt(sum((b - mean_right) ** 2 for b in right_rank))
+    return numerator / (denom_left * denom_right) if denom_left and denom_right else 0.0
+
+
+def _write_r10_a2_contract_audit(qa_dir: Path, payload: Dict[str, object]) -> None:
+    metrics = [
+        ["ERA5_READ", int(bool(payload.get("era5_read"))), "PASS" if payload.get("era5_read") else "BLOCKED", "ERA5 10U/10V GRIB bands read."],
+        ["ERA5_VALIDATED", int(bool(payload.get("era5_validated"))), "PASS" if payload.get("era5_validated") else "BLOCKED", "ERA5 dates and receptor samples validated."],
+        ["ERA5_USED_IN_SMOKE_SCORE", int(bool(payload.get("era5_used_in_smoke_score"))), "PASS" if payload.get("era5_used_in_smoke_score") else "BLOCKED", "ERA5 wind changes the canonical smoke score."],
+        ["UPWIND_WEIGHTING_IMPLEMENTED", int(bool(payload.get("upwind_weighting_implemented"))), "PASS" if payload.get("upwind_weighting_implemented") else "BLOCKED", "Source-receptor dot-product alignment is applied."],
+        ["DISTANCE_WEIGHTING_IMPLEMENTED", int(bool(payload.get("distance_weighting_implemented"))), "PASS" if payload.get("distance_weighting_implemented") else "BLOCKED", "Distance/travel-time attenuation is applied."],
+        ["canonical_timescale_hours", OPERATIONAL_DAILY_ADVECTION_TIMESCALE_HOURS, "PASS", "Operational daily advection timescale; not a physical dispersion constant."],
+        ["canonical_mean_weight", 0.75, "PASS", "Existing 75/25 score mix preserved."],
+        ["canonical_max_weight", 0.25, "PASS", "Existing 75/25 score mix preserved."],
+        ["transport_semantic_class", _r10_a2_route_claim(bool(payload.get("era5_used_in_smoke_score"))), "PASS" if payload.get("era5_used_in_smoke_score") else "BLOCKED", "Operational proxy only; no concentration or health claim."],
+    ]
+    write_tsv(qa_dir / "r10_a2_transport_contract_audit.tsv", ["metric", "value", "status", "detail"], metrics)
+
+
+def _write_r10_a2_era5_effect_audit(
+    qa_dir: Path,
+    unit_daily_rows: Sequence[Dict[str, object]],
+    annual_by_unit: Dict[str, Dict[int, Dict[str, float]]],
+) -> None:
+    rows = [row for row in unit_daily_rows if safe_float(row.get("smoke_day_score")) is not None]
+    new_scores = [float(row.get("smoke_day_score") or 0.0) for row in rows]
+    old_scores = [float(row.get("gfas_only_score_reference") or 0.0) for row in rows]
+    differences = [abs(a - b) for a, b in zip(new_scores, old_scores)]
+    changed = sum(1 for value in differences if value > 1.0e-12)
+    old_threshold = _percentile([value for value in old_scores if value > 0.0], 0.60)
+    old_proxy_by_key: Dict[Tuple[str, int], int] = {}
+    new_proxy_by_key: Dict[Tuple[str, int], int] = {}
+    for row in rows:
+        key = (str(row.get("unit_id") or ""), int(safe_float(row.get("year")) or 0))
+        old_proxy_by_key[key] = int(old_threshold is not None and float(row.get("gfas_only_score_reference") or 0.0) >= old_threshold and float(row.get("gfas_only_score_reference") or 0.0) > 0.0)
+        new_proxy_by_key[key] = int(row.get("smoke_day_proxy") or 0)
+    changed_annual = sum(1 for key in old_proxy_by_key if old_proxy_by_key[key] != new_proxy_by_key.get(key, 0))
+    annual_diffs = [abs(float(new_proxy_by_key.get(key, 0)) - float(value)) for key, value in old_proxy_by_key.items()]
+    metrics = [
+        ["unit_days_total", len(rows), "PASS" if rows else "BLOCKED", "Canonical daily unit rows."],
+        ["unit_days_new_score_differs_from_gfas_only", changed, "PASS" if changed > 0 else "BLOCKED", "Absolute score difference > 1e-12."],
+        ["fraction_unit_days_changed", changed / float(len(rows)) if rows else 0.0, "PASS" if changed > 0 else "BLOCKED", "Real-data ERA5 influence fraction."],
+        ["mean_absolute_score_difference", sum(differences) / len(differences) if differences else 0.0, "PASS" if differences else "BLOCKED", "New score versus GFAS-only reference."],
+        ["median_absolute_score_difference", sorted(differences)[len(differences) // 2] if differences else 0.0, "PASS" if differences else "BLOCKED", "New score versus GFAS-only reference."],
+        ["rank_correlation_new_vs_gfas_only", _spearman_correlation(new_scores, old_scores), "PASS" if rows else "BLOCKED", "Spearman rank correlation over unit-days."],
+        ["annual_smoke_day_count_changed_units", changed_annual, "PASS", "Canonical threshold comparison; no recalibration."],
+        ["max_absolute_annual_smoke_day_difference", max(annual_diffs) if annual_diffs else 0.0, "PASS", "Canonical binary-day comparison."],
+    ]
+    write_tsv(qa_dir / "r10_a2_era5_effect_audit.tsv", ["metric", "value", "status", "detail"], metrics)
+
+
+def _write_r10_a2_weight_sensitivity(qa_dir: Path, unit_daily_rows: Sequence[Dict[str, object]]) -> None:
+    rows = [row for row in unit_daily_rows if safe_float(row.get("smoke_day_score")) is not None]
+    canonical_scores = [float(row.get("smoke_day_score") or 0.0) for row in rows]
+    out: List[List[object]] = []
+    for timescale in (12.0, 24.0, 48.0):
+        for mean_weight, max_weight in ((1.0, 0.0), (0.75, 0.25), (0.5, 0.5), (0.25, 0.75)):
+            scores: List[float] = []
+            for row in rows:
+                mean_proxy = float(row.get("transport_proxy_alignment_mean") or row.get("transport_proxy_mean") or 0.0)
+                mean_time = float(row.get("mean_transport_time_hours") or 0.0)
+                proxy = mean_proxy * math.exp(-mean_time / timescale)
+                max_proxy = float(row.get("transport_proxy_max") or proxy)
+                scores.append((mean_weight * proxy + max_weight * max_proxy) * 1.0e11)
+            top_n = max(1, min(5, len(scores)))
+            canonical_top = set(sorted(range(len(canonical_scores)), key=lambda i: canonical_scores[i], reverse=True)[:top_n])
+            alt_top = set(sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_n])
+            out.append([
+                timescale,
+                mean_weight,
+                max_weight,
+                _spearman_correlation(scores, canonical_scores),
+                len(canonical_top.intersection(alt_top)) / float(top_n) if top_n else 0.0,
+                "PASS" if rows else "BLOCKED",
+                "Diagnostic only; canonical remains 24 h and 75/25.",
+            ])
+    write_tsv(
+        qa_dir / "r10_a2_weight_sensitivity.tsv",
+        ["timescale_hours", "mean_weight", "max_weight", "spearman_to_canonical", "top_unit_overlap", "status", "detail"],
+        out,
+    )
+
+
 def _smoke_day_equivalent(score: float, threshold_value: Optional[float], proxy: int) -> float:
     if threshold_value is not None and threshold_value > 0.0 and score > 0.0:
         return max(score / threshold_value, 0.0)
@@ -2252,6 +2503,7 @@ def _decode_gfas_pm_dataset_to_unit_rows(
     fallback_date_iso: str,
     unit_samples: List[Dict[str, object]],
     payload_size: int,
+    era5_wind_by_date_unit: Optional[Dict[str, Dict[str, Dict[str, float]]]] = None,
 ) -> Dict[str, object]:
     band = ds.GetRasterBand(1)
     if band is None:
@@ -2282,6 +2534,12 @@ def _decode_gfas_pm_dataset_to_unit_rows(
         max_px = max(px for _sample, px, _py in sample_pixels)
         min_py = min(py for _sample, _px, py in sample_pixels)
         max_py = max(py for _sample, _px, py in sample_pixels)
+        padding_x = int(math.ceil(R10_A2_SOURCE_PADDING_DEG / abs(pixel_w)))
+        padding_y = int(math.ceil(R10_A2_SOURCE_PADDING_DEG / abs(pixel_h)))
+        min_px = max(0, min_px - padding_x)
+        max_px = min(ds.RasterXSize - 1, max_px + padding_x)
+        min_py = max(0, min_py - padding_y)
+        max_py = min(ds.RasterYSize - 1, max_py + padding_y)
         raster = band.ReadAsArray(min_px, min_py, (max_px - min_px) + 1, (max_py - min_py) + 1)
     else:
         min_px = 0
@@ -2289,9 +2547,25 @@ def _decode_gfas_pm_dataset_to_unit_rows(
         raster = band.ReadAsArray()
     if raster is None:
         raise RuntimeError(f"GFAS PM payload raster read failed: {file_name} message={msg_index}")
+    source_cells: List[Dict[str, float]] = []
+    for row_index in range(int(raster.shape[0])):
+        for col_index in range(int(raster.shape[1])):
+            val = safe_float(raster[row_index][col_index])
+            if val is None:
+                continue
+            if nodata is not None and abs(float(val) - float(nodata)) <= 1e-20:
+                continue
+            source_cells.append(
+                {
+                    "lon": float(origin_x + ((min_px + col_index) + 0.5) * pixel_w),
+                    "lat": float(origin_y + ((min_py + row_index) + 0.5) * pixel_h),
+                    "flux": max(float(val), 0.0),
+                }
+            )
     unit_rows: List[Dict[str, object]] = []
     sampled_values: List[float] = []
     per_unit_stats: Dict[str, Dict[str, object]] = {}
+    sample_by_unit: Dict[str, Dict[str, object]] = {}
     for sample, px, py in sample_pixels:
         val = safe_float(raster[py - min_py][px - min_px])
         if val is None:
@@ -2301,6 +2575,7 @@ def _decode_gfas_pm_dataset_to_unit_rows(
         value = max(float(val), 0.0)
         sampled_values.append(value)
         unit_id = str(sample["unit_id"])
+        sample_by_unit.setdefault(unit_id, sample)
         agg = per_unit_stats.setdefault(
             unit_id,
             {
@@ -2314,6 +2589,55 @@ def _decode_gfas_pm_dataset_to_unit_rows(
         agg["pm_sum"] = float(agg.get("pm_sum", 0.0)) + value
         agg["pm_max"] = max(float(agg.get("pm_max", 0.0)), value)
         agg["valid_pixel_count"] = int(agg.get("valid_pixel_count", 0)) + 1
+    transport_stats: Dict[str, Dict[str, float]] = {}
+    if era5_wind_by_date_unit is not None:
+        wind_by_unit = era5_wind_by_date_unit.get(date_iso, {})
+        for unit_id, sample in sample_by_unit.items():
+            wind = wind_by_unit.get(unit_id)
+            if not wind:
+                raise RuntimeError(f"{R10_A2_COVERAGE_BLOCKER}: ERA5 receptor wind missing for {unit_id} on {date_iso}")
+            total_proxy = 0.0
+            valid_source_count = 0
+            upwind_source_count = 0
+            calm_wind_count = 0
+            alignment_total = 0.0
+            transport_weight_total = 0.0
+            alignment_flux_total = 0.0
+            transport_time_total = 0.0
+            for source in source_cells:
+                components = _transport_components(
+                    source["lon"],
+                    source["lat"],
+                    float(sample["lon"]),
+                    float(sample["lat"]),
+                    float(wind["u10_mps"]),
+                    float(wind["v10_mps"]),
+                )
+                valid_source_count += 1
+                total_proxy += float(source["flux"]) * components["transport_kernel"]
+                alignment_total += components["alignment"]
+                transport_weight_total += components["distance_transport_weight"]
+                alignment_flux_total += float(source["flux"]) * components["alignment"]
+                if math.isfinite(components["transport_time_hours"]):
+                    transport_time_total += components["transport_time_hours"]
+                if components["alignment"] > 0.0:
+                    upwind_source_count += 1
+                if components["wind_speed_mps"] <= CALM_WIND_EPSILON_MPS:
+                    calm_wind_count += 1
+            proxy_mean = total_proxy / float(valid_source_count) if valid_source_count else 0.0
+            transport_stats[unit_id] = {
+                "transport_proxy_mean": proxy_mean,
+                "transport_proxy_max": proxy_mean,
+                "mean_wind_speed_mps": math.hypot(float(wind["u10_mps"]), float(wind["v10_mps"])),
+                "mean_upwind_alignment": alignment_total / float(valid_source_count) if valid_source_count else 0.0,
+                "mean_transport_weight": transport_weight_total / float(valid_source_count) if valid_source_count else 0.0,
+                "transport_proxy_alignment_mean": alignment_flux_total / float(valid_source_count) if valid_source_count else 0.0,
+                "mean_transport_time_hours": transport_time_total / float(valid_source_count) if valid_source_count else 0.0,
+                "valid_source_count": float(valid_source_count),
+                "upwind_source_count": float(upwind_source_count),
+                "calm_wind_count": float(calm_wind_count),
+            }
+
     for unit_id, agg in per_unit_stats.items():
         valid_pixel_count = int(agg.get("valid_pixel_count", 0) or 0)
         if valid_pixel_count <= 0:
@@ -2321,7 +2645,13 @@ def _decode_gfas_pm_dataset_to_unit_rows(
         pm_sum = float(agg.get("pm_sum", 0.0) or 0.0)
         pm_mean = pm_sum / float(valid_pixel_count)
         pm_max = float(agg.get("pm_max", 0.0) or 0.0)
-        score = _direct_unit_smoke_score(pm_mean, pm_max)
+        gfas_only_score = _direct_unit_smoke_score(pm_mean, pm_max)
+        transport = transport_stats.get(unit_id)
+        score = (
+            _r10_a2_smoke_score(transport["transport_proxy_mean"], transport["transport_proxy_max"])
+            if transport is not None
+            else gfas_only_score
+        )
         unit_rows.append(
             {
                 "unit_id": unit_id,
@@ -2337,7 +2667,18 @@ def _decode_gfas_pm_dataset_to_unit_rows(
                 "pm2p5fire_sum": pm_sum,
                 "valid_pixel_count": valid_pixel_count,
                 "smoke_day_score": score,
-                "method": "gfas_pm2p5fire_unit_multi_sample_proxy",
+                "gfas_only_score_reference": gfas_only_score,
+                "transport_proxy_mean": transport["transport_proxy_mean"] if transport else "",
+                "transport_proxy_max": transport["transport_proxy_max"] if transport else "",
+                "mean_wind_speed_mps": transport["mean_wind_speed_mps"] if transport else "",
+                "mean_upwind_alignment": transport["mean_upwind_alignment"] if transport else "",
+                "mean_transport_weight": transport["mean_transport_weight"] if transport else "",
+                "transport_proxy_alignment_mean": transport["transport_proxy_alignment_mean"] if transport else "",
+                "mean_transport_time_hours": transport["mean_transport_time_hours"] if transport else "",
+                "valid_source_count": transport["valid_source_count"] if transport else "",
+                "upwind_source_count": transport["upwind_source_count"] if transport else "",
+                "calm_wind_count": transport["calm_wind_count"] if transport else "",
+                "method": "gfas_era5_advection_screening_proxy" if transport else "gfas_pm2p5fire_unit_multi_sample_proxy",
                 "spatial_assignment_method": "MULTI_POINT_UNIT_FOOTPRINT_GFAS",
                 "qa_flag": 0,
             }
@@ -2406,6 +2747,7 @@ def _decode_gfas_pm_payload_to_unit_rows(
     msg_index: int,
     fallback_date_iso: str,
     unit_samples: List[Dict[str, object]],
+    era5_wind_by_date_unit: Optional[Dict[str, Dict[str, Dict[str, float]]]] = None,
 ) -> Dict[str, object]:
     from osgeo import gdal  # type: ignore
 
@@ -2419,7 +2761,15 @@ def _decode_gfas_pm_payload_to_unit_rows(
             ds = gdal.Open(vsi_path)
             if ds is None:
                 raise RuntimeError(f"GDAL could not open PM payload {file_name} message={msg_index}")
-            return _decode_gfas_pm_dataset_to_unit_rows(ds, file_name, msg_index, fallback_date_iso, unit_samples, payload_size=len(payload))
+            return _decode_gfas_pm_dataset_to_unit_rows(
+                ds,
+                file_name,
+                msg_index,
+                fallback_date_iso,
+                unit_samples,
+                payload_size=len(payload),
+                era5_wind_by_date_unit=era5_wind_by_date_unit,
+            )
         finally:
             try:
                 gdal.PopErrorHandler()
@@ -2441,6 +2791,7 @@ def _decode_gfas_pm_subfile_to_unit_rows(
     payload_bytes: int,
     fallback_date_iso: str,
     unit_samples: List[Dict[str, object]],
+    era5_wind_by_date_unit: Optional[Dict[str, Dict[str, Dict[str, float]]]] = None,
 ) -> Dict[str, object]:
     from osgeo import gdal  # type: ignore
 
@@ -2452,7 +2803,15 @@ def _decode_gfas_pm_subfile_to_unit_rows(
             ds = gdal.Open(subfile_path)
             if ds is None:
                 raise RuntimeError(f"GDAL could not open PM subfile {subfile_path}")
-            return _decode_gfas_pm_dataset_to_unit_rows(ds, file_name, msg_index, fallback_date_iso, unit_samples, payload_size=payload_bytes)
+            return _decode_gfas_pm_dataset_to_unit_rows(
+                ds,
+                file_name,
+                msg_index,
+                fallback_date_iso,
+                unit_samples,
+                payload_size=payload_bytes,
+                era5_wind_by_date_unit=era5_wind_by_date_unit,
+            )
         finally:
             try:
                 gdal.PopErrorHandler()
@@ -2467,6 +2826,7 @@ def _decode_gfas_pm_chunk_worker(
     file_name: str,
     scheduled_messages: Sequence[Tuple[int, int, int, str]],
     unit_samples: Sequence[Dict[str, object]],
+    era5_wind_by_date_unit: Optional[Dict[str, Dict[str, Dict[str, float]]]] = None,
 ) -> Dict[str, object]:
     src_grib = Path(src_grib_raw)
     inv_rows: List[List[object]] = []
@@ -2484,6 +2844,7 @@ def _decode_gfas_pm_chunk_worker(
             payload_bytes,
             fallback_date,
             list(unit_samples),
+            era5_wind_by_date_unit,
         )
         inv_rows.append(list(item["inventory_row"]))
         daily_summary_rows.append(list(item["daily_summary_row"]))
@@ -2544,6 +2905,11 @@ def decode_gfas_era5_gdal_proxy(
         "unit_daily_rows": [],
         "spatial_scope": "UNKNOWN",
         "unit_assignment": "UNKNOWN",
+        "era5_read": False,
+        "era5_validated": False,
+        "era5_used_in_smoke_score": False,
+        "upwind_weighting_implemented": False,
+        "distance_weighting_implemented": False,
         "warning_inventory_path": str(qa_dir / "warning_inventory.tsv"),
         "reason": "",
     }
@@ -2595,6 +2961,25 @@ def decode_gfas_era5_gdal_proxy(
         report.log(
             "GFAS decoder target direct years: "
             f"{','.join(str(y) for y in sorted(preferred_direct_years))}"
+        )
+        expected_dates = [
+            dt.date(year, 1, 1) + dt.timedelta(days=day_offset)
+            for year in YEARS_HIST
+            for day_offset in range(_days_in_year(year))
+        ]
+        expected_date_isos = [date_value.isoformat() for date_value in expected_dates]
+        _write_r10_a2_transport_method_declaration(
+            qa_dir,
+            Path(era5_zip_raw),
+            len(unit_samples),
+            len({str(s.get("unit_id") or "") for s in unit_samples}),
+            "native GFAS raster intersection with representative receptor bounds plus 2 degrees",
+        )
+        era5_wind_by_date_unit = _load_era5_daily_wind_by_unit(
+            Path(era5_zip_raw),
+            qa_dir,
+            unit_samples,
+            expected_date_isos,
         )
         inv_rows: List[List[object]] = []
         daily_summary_rows: List[List[object]] = []
@@ -2657,6 +3042,7 @@ def decode_gfas_era5_gdal_proxy(
                         file_name,
                         chunk,
                         unit_samples,
+                        era5_wind_by_date_unit,
                     ): chunk_index
                     for chunk_index, chunk in enumerate(chunks, start=1)
                 }
@@ -2862,6 +3248,12 @@ def decode_gfas_era5_gdal_proxy(
         result["unit_assignment"] = "UNIT_DAILY_SPATIAL_FROM_GFAS_MULTI_SAMPLE"
         result["threshold_id"] = "GFAS_ERA5_PROXY_SMOKE_DAY_P60"
         result["threshold_value"] = global_threshold if global_threshold is not None else ""
+        result["era5_read"] = True
+        result["era5_validated"] = True
+        result["era5_used_in_smoke_score"] = True
+        result["upwind_weighting_implemented"] = True
+        result["distance_weighting_implemented"] = True
+        result["route_name"] = R10_A2_ROUTE_NAME
         result["reason"] = (
             "GFAS/ERA5 GDAL-only decoder produced direct PM2P5FIRE unit-level daily coverage "
             f"for years {','.join(str(y) for y in sorted(preferred_direct_years))} from recovery root {effective_root}; "
@@ -2869,6 +3261,9 @@ def decode_gfas_era5_gdal_proxy(
             + ",".join(f"{y}:{processed_days_by_year.get(y, 0)}" for y in sorted(preferred_direct_years))
             + "."
         )
+        _write_r10_a2_contract_audit(qa_dir, result)
+        _write_r10_a2_era5_effect_audit(qa_dir, unit_daily_rows, annual_by_unit)
+        _write_r10_a2_weight_sensitivity(qa_dir, unit_daily_rows)
         report.log(
             "GFAS/ERA5 decoder probe complete: "
             f"decoder_available={result['decoder_available']} daily_rows={len(daily_rows)} years={','.join(str(y) for y in sorted(anchors.keys()))}"
@@ -2893,6 +3288,7 @@ def decode_gfas_era5_gdal_proxy(
             ["metric", "value", "status", "detail"],
             _smoke_route_v0_audit_rows(1, failed=True, detail=str(exc)),
         )
+        _write_r10_a2_contract_audit(qa_dir, result)
         report.log(f"GFAS/ERA5 decoder probe blocked: {exc}")
     return result
 
@@ -3071,12 +3467,23 @@ def smoke_prepare(
                         d.get("pm2p5fire_max", ""),
                         d.get("pm2p5fire_sum", ""),
                         d.get("valid_pixel_count", ""),
+                        d.get("gfas_only_score_reference", ""),
+                        d.get("transport_proxy_mean", ""),
+                        d.get("transport_proxy_max", ""),
                         d.get("smoke_day_score", ""),
                         d.get("threshold_id", "GFAS_ERA5_PROXY_SMOKE_DAY_P60"),
                         d.get("threshold_value", threshold_value),
                         d.get("smoke_day_proxy", ""),
                         d.get("smoke_day_equivalent", ""),
                         d.get("normalized_smoke_intensity_proxy_daily", ""),
+                        d.get("mean_wind_speed_mps", ""),
+                        d.get("mean_upwind_alignment", ""),
+                        d.get("mean_transport_weight", ""),
+                        d.get("transport_proxy_alignment_mean", ""),
+                        d.get("mean_transport_time_hours", ""),
+                        d.get("valid_source_count", ""),
+                        d.get("upwind_source_count", ""),
+                        d.get("calm_wind_count", ""),
                         d.get("spatial_assignment_method", unit_assignment or "UNKNOWN_ASSIGNMENT"),
                         d.get("qa_flag", 0),
                     ]
@@ -3095,12 +3502,23 @@ def smoke_prepare(
                     "pm2p5fire_max",
                     "pm2p5fire_sum",
                     "valid_pixel_count",
+                    "gfas_only_score_reference",
+                    "transport_proxy_mean",
+                    "transport_proxy_max",
                     "smoke_day_score",
                     "threshold_id",
                     "threshold_value",
                     "smoke_day_proxy",
                     "smoke_day_equivalent",
                     "normalized_smoke_intensity_proxy_daily",
+                    "mean_wind_speed_mps",
+                    "mean_upwind_alignment",
+                    "mean_transport_weight",
+                    "transport_proxy_alignment_mean",
+                    "mean_transport_time_hours",
+                    "valid_source_count",
+                    "upwind_source_count",
+                    "calm_wind_count",
                     "spatial_assignment_method",
                     "qa_flag",
                 ],
@@ -4144,6 +4562,11 @@ def _route_decision_from_inputs(inputs: Dict[str, object]) -> Dict[str, object]:
         "smoke_route_operational_fallback",
         "smoke_route_allowed_use",
         "smoke_route_forbidden_use",
+        "ERA5_READ",
+        "ERA5_VALIDATED",
+        "ERA5_USED_IN_SMOKE_SCORE",
+        "UPWIND_WEIGHTING_IMPLEMENTED",
+        "DISTANCE_WEIGHTING_IMPLEMENTED",
     ]
     route_decision: Dict[str, object] = {"route_selected": route_selected}
     for key in keys:
@@ -4157,6 +4580,14 @@ def _route_decision_from_inputs(inputs: Dict[str, object]) -> Dict[str, object]:
     route_decision["reason"] = meta.get("smoke_route_reason", "")
     route_decision["allowed_use"] = meta.get("smoke_route_allowed_use", "")
     route_decision["forbidden_use"] = meta.get("smoke_route_forbidden_use", "")
+    for key in (
+        "ERA5_READ",
+        "ERA5_VALIDATED",
+        "ERA5_USED_IN_SMOKE_SCORE",
+        "UPWIND_WEIGHTING_IMPLEMENTED",
+        "DISTANCE_WEIGHTING_IMPLEMENTED",
+    ):
+        route_decision[key] = meta.get(key, False)
     return route_decision
 
 
@@ -5239,11 +5670,19 @@ def main() -> int:
                 if decoder_reason:
                     route_decision = dict(route_decision)
                     route_decision["reason"] = decoder_reason
-                    route_decision["allowed_use"] = "scientific_route_with_proxy_limits"
+                    route_decision["route_name"] = R10_A2_ROUTE_NAME
+                    route_decision["allowed_use"] = _r10_a2_route_claim(True)
                     route_decision["forbidden_use"] = (
-                        "Health or epidemiological exposure claims; "
-                        "causal closure beyond bounded direct-observation proxy support."
+                        "Ambient PM2.5 concentration, dose, health exposure, epidemiological claims, "
+                        "validated dispersion model, or full atmospheric transport model."
                     )
+                    route_decision["ERA5_READ"] = True
+                    route_decision["ERA5_VALIDATED"] = True
+                    route_decision["ERA5_USED_IN_SMOKE_SCORE"] = True
+                    route_decision["UPWIND_WEIGHTING_IMPLEMENTED"] = True
+                    route_decision["DISTANCE_WEIGHTING_IMPLEMENTED"] = True
+            elif str(decoder_payload.get("reason") or "").startswith(R10_A2_COVERAGE_BLOCKER):
+                report.fail(str(decoder_payload.get("reason")))
         inputs = apply_route_meta(inputs, sources, route_decision)
         inputs = hydrate_inputs_contract_meta(inputs)
         ensure_dir(inputs_path.parent)

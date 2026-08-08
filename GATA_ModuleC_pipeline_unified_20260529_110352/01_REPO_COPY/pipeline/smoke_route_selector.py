@@ -491,6 +491,11 @@ def apply_route_meta(inputs: Dict[str, object], sources: Dict[str, object], deci
     meta["smoke_route_operational_fallback"] = str(decision.get("operational_fallback_route", ""))
     meta["smoke_route_allowed_use"] = str(decision.get("allowed_use", ""))
     meta["smoke_route_forbidden_use"] = str(decision.get("forbidden_use", ""))
+    meta["ERA5_READ"] = bool(decision.get("ERA5_READ", False))
+    meta["ERA5_VALIDATED"] = bool(decision.get("ERA5_VALIDATED", False))
+    meta["ERA5_USED_IN_SMOKE_SCORE"] = bool(decision.get("ERA5_USED_IN_SMOKE_SCORE", False))
+    meta["UPWIND_WEIGHTING_IMPLEMENTED"] = bool(decision.get("UPWIND_WEIGHTING_IMPLEMENTED", False))
+    meta["DISTANCE_WEIGHTING_IMPLEMENTED"] = bool(decision.get("DISTANCE_WEIGHTING_IMPLEMENTED", False))
     meta["smoke_route_detected_sources"] = {
         "modulea_validated": bool(sources.get("modulea_validated")),
         "modulea_catalog_path": str(sources.get("modulea_catalog_path", "")),
