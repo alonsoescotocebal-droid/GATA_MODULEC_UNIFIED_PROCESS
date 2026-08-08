@@ -1515,8 +1515,10 @@ def write_oc03_v11_decoder_contract_validation(output_root: Path) -> None:
     backend_rows = read_csv_rows(qa_dir / "gfas_era5_decoder_backend_audit.tsv")[1] if (qa_dir / "gfas_era5_decoder_backend_audit.tsv").exists() else []
     smoke_audit_rows = read_csv_rows(qa_dir / "smoke_route_audit.tsv")[1] if (qa_dir / "smoke_route_audit.tsv").exists() else []
     gfas_daily_rows = read_csv_rows(qa_dir / "gfas_pm2p5fire_portugal_daily_summary.csv")[1] if (qa_dir / "gfas_pm2p5fire_portugal_daily_summary.csv").exists() else []
-    iech_unit_rows = read_csv_rows(tables_dir / "IECH_unit_2015_2024_mean.csv")[1] if (tables_dir / "IECH_unit_2015_2024_mean.csv").exists() else []
-    iech_muni_rows = read_csv_rows(tables_dir / "IECH_municipio_2015_2024_mean.csv")[1] if (tables_dir / "IECH_municipio_2015_2024_mean.csv").exists() else []
+    smoke_unit_rows = read_csv_rows(tables_dir / "smoke_days_unit_2015_2024.csv")[1] if (tables_dir / "smoke_days_unit_2015_2024.csv").exists() else []
+    smoke_muni_rows = read_csv_rows(tables_dir / "smoke_days_municipio_2015_2024.csv")[1] if (tables_dir / "smoke_days_municipio_2015_2024.csv").exists() else []
+    burden_unit_rows = read_csv_rows(tables_dir / "IECH_unit_2015_2024_mean.csv")[1] if (tables_dir / "IECH_unit_2015_2024_mean.csv").exists() else []
+    burden_muni_rows = read_csv_rows(tables_dir / "IECH_municipio_2015_2024_mean.csv")[1] if (tables_dir / "IECH_municipio_2015_2024_mean.csv").exists() else []
 
     backend_map = {str(r.get("metric") or ""): r for r in backend_rows}
     decoder_available = 1 if str(backend_map.get("decoder_available", {}).get("status", "")).upper() == "PASS" else 0
@@ -1529,8 +1531,10 @@ def write_oc03_v11_decoder_contract_validation(output_root: Path) -> None:
     homogeneous_flags = [safe_float(r.get("spatial_homogeneous_flag")) for r in smoke_audit_rows if safe_float(r.get("year")) is not None]
     smoke_homogeneous = 1 if homogeneous_flags and all((v or 0.0) >= 1.0 for v in homogeneous_flags) else 0
 
-    iech_unit_unique = len({round(float(v), 8) for v in [safe_float(r.get("IECH_mean_2015_2024")) for r in iech_unit_rows] if v is not None})
-    iech_muni_unique = len({round(float(v), 8) for v in [safe_float(r.get("IECH_mean_2015_2024")) for r in iech_muni_rows] if v is not None})
+    smoke_unit_unique = len({round(float(v), 8) for v in [safe_float(r.get("smoke_days")) for r in smoke_unit_rows] if v is not None})
+    smoke_muni_unique = len({round(float(v), 8) for v in [safe_float(r.get("smoke_days")) for r in smoke_muni_rows] if v is not None})
+    burden_unit_unique = len({round(float(v), 8) for v in [safe_float(r.get("population_smoke_day_burden_proxy_mean_2015_2024")) for r in burden_unit_rows] if v is not None})
+    burden_muni_unique = len({round(float(v), 8) for v in [safe_float(r.get("population_smoke_day_burden_proxy_mean_2015_2024")) for r in burden_muni_rows] if v is not None})
 
     rows = [
         ["metric", "value", "status", "detail"],
@@ -1542,8 +1546,10 @@ def write_oc03_v11_decoder_contract_validation(output_root: Path) -> None:
         ["GFASUniqueYears", len([y for y in unique_years if y >= 0]), "PASS" if unique_years else "HOLD", ",".join(str(y) for y in unique_years if y >= 0)],
         ["GFASEdgeOnly", "True" if gfas_edge_only else "False", "PASS" if not gfas_edge_only else "HOLD", "Derived from GFAS daily summary rows and unique dates."],
         ["SmokeRouteHomogeneous", "True" if smoke_homogeneous else "False", "PASS" if not smoke_homogeneous else "HOLD", "Derived from smoke_route_audit.tsv spatial_homogeneous_flag."],
-        ["IECHUnitUniqueMeanCount", iech_unit_unique, "PASS" if iech_unit_unique > 1 else "HOLD", str(tables_dir / "IECH_unit_2015_2024_mean.csv")],
-        ["IECHMunicipioUniqueMeanCount", iech_muni_unique, "PASS" if iech_muni_unique > 1 else "HOLD", str(tables_dir / "IECH_municipio_2015_2024_mean.csv")],
+        ["SmokeDayUnitUniqueCount", smoke_unit_unique, "PASS" if smoke_unit_unique > 1 else "HOLD", str(tables_dir / "smoke_days_unit_2015_2024.csv")],
+        ["SmokeDayMunicipioUniqueCount", smoke_muni_unique, "PASS" if smoke_muni_unique > 1 else "HOLD", str(tables_dir / "smoke_days_municipio_2015_2024.csv")],
+        ["PopulationSmokeDayBurdenUnitUniqueMeanCount", burden_unit_unique, "PASS" if burden_unit_unique > 1 else "HOLD", str(tables_dir / "IECH_unit_2015_2024_mean.csv")],
+        ["PopulationSmokeDayBurdenMunicipioUniqueMeanCount", burden_muni_unique, "PASS" if burden_muni_unique > 1 else "HOLD", str(tables_dir / "IECH_municipio_2015_2024_mean.csv")],
     ]
     write_tsv(out_tsv, rows[0], rows[1:])
 

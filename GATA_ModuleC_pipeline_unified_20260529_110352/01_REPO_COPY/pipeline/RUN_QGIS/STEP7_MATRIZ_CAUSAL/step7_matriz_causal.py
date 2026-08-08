@@ -2470,7 +2470,13 @@ def write_aggregate_consistency_audits(
             uid = (row.get("unit_id") or "").strip()
             scenario = (row.get("scenario") or "").strip().upper()
             proxy = _first_present_float(row, "population_smoke_day_burden_proxy", "population_smoke_burden_proxy", "IECH")
-            delta = _first_present_float(row, "delta_population_smoke_burden_proxy_vs_S0", "delta_vs_S0")
+            delta = _first_present_float(
+                row,
+                "delta_population_smoke_day_burden_proxy_vs_S0",
+                "delta_smoke_day_burden_vs_S0",
+                "delta_population_smoke_burden_proxy_vs_S0",
+                "delta_vs_S0",
+            )
             if uid and scenario and proxy is not None:
                 detail_by_unit[uid][scenario].append(proxy)
             if uid and scenario == "S1" and delta is not None and abs(delta) > 1e-9:
@@ -2640,7 +2646,12 @@ def write_scenario_audit(output_root: Path, scen_unit_csv: Path, scen_muni_csv: 
     def _extract_direct_deltas(rows: List[Dict[str, str]]) -> List[float]:
         out: List[float] = []
         for r in rows:
-            for k in ("delta_S1_minus_S0", "delta_vs_S0"):
+            for k in (
+                "delta_population_smoke_day_burden_proxy_vs_S0",
+                "delta_smoke_day_burden_vs_S0",
+                "delta_S1_minus_S0",
+                "delta_vs_S0",
+            ):
                 v = safe_float(r.get(k))
                 if v is not None:
                     out.append(v)
@@ -2653,15 +2664,20 @@ def write_scenario_audit(output_root: Path, scen_unit_csv: Path, scen_muni_csv: 
         for r in rows:
             unit = (r.get("unit_id") or "").strip()
             yv = safe_float(r.get("year"))
-            iech = safe_float(r.get("IECH"))
+            burden = _first_present_float(
+                r,
+                "population_smoke_day_burden_proxy",
+                "population_smoke_burden_proxy",
+                "IECH",
+            )
             scenario = (r.get("scenario") or "").strip().upper()
-            if not unit or yv is None or iech is None:
+            if not unit or yv is None or burden is None:
                 continue
             key = (unit, int(yv))
             if scenario == "S0":
-                s0[key] = iech
+                s0[key] = burden
             elif scenario == "S1":
-                s1[key] = iech
+                s1[key] = burden
 
         out: List[float] = []
         for key, s0_val in s0.items():
@@ -2685,7 +2701,7 @@ def write_scenario_audit(output_root: Path, scen_unit_csv: Path, scen_muni_csv: 
     years = sorted({int(safe_float(r.get("year")) or -1) for r in all_rows if safe_float(r.get("year")) is not None})
     required_years = [2026, 2027, 2028, 2029, 2030]
     years_ok = all(y in years for y in required_years)
-    delta_note = "delta_S1_minus_S0/delta_vs_S0 present or pairwise S1-S0 calculable"
+    delta_note = "canonical population smoke-day burden delta present or pairwise S1-S0 calculable"
     rows = [
         ["metric", "value", "status", "note"],
         ["scenario_unit_rows", len(unit_rows), "PASS" if len(unit_rows) > 0 else "HOLD", ""],
