@@ -28,6 +28,21 @@ def test_step9_uses_current_required_artifacts_contract():
     assert r"qa\gfas_pm2p5fire_portugal_xyz.csv" not in text
 
 
+def test_python_final_output_contract_includes_recurrence_and_scenario_artifacts():
+    repo_root = Path(__file__).resolve().parents[1]
+    module = repo_root / "pipeline" / "moduleC_pipeline_v2.py"
+    text = module.read_text(encoding="utf-8", errors="replace")
+
+    for required in (
+        'output_root / "qa" / "recurrence_classification_audit.tsv"',
+        'output_root / "qa" / "scenario_audit.tsv"',
+        'output_root / "tables" / "recurrence_unit_2015_2024.csv"',
+        'output_root / "tables" / "IECH_scenarios_2026_2030.csv"',
+        'output_root / "tables" / "IECH_scenarios_unit_2026_2030_mean.csv"',
+    ):
+        assert required in text
+
+
 
 def test_r6k_refresh_tracks_current_portuguese_aq_anchor_contract():
     repo_root = Path(__file__).resolve().parents[1]
