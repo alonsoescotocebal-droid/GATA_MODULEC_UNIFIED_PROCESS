@@ -98,7 +98,7 @@ def test_oc03_decoder_audit_uses_canonical_smoke_and_burden_outputs(tmp_path):
     mod = _load_modulec()
     qa = tmp_path / "qa"
     tables = tmp_path / "tables"
-    _write(qa / "inputs_resolved.json", json.dumps({"meta": {"smoke_route_selected": "v0_gfas_era5_real"}}))
+    _write(qa / "inputs_resolved.json", json.dumps({"meta": {"smoke_route_selected": "v0_gfas_era5_advection_screening_proxy"}}))
     _write(
         qa / "gfas_era5_decoder_backend_audit.tsv",
         "metric\tstatus\n"

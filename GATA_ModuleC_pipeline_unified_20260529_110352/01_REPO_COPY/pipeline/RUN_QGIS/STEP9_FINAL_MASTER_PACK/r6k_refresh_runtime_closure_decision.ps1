@@ -10,9 +10,13 @@ $ExpectedFinal = "GO_DIRECT_2015_2024_FOR_PROSPECTIVE_PROXY_SCREENING"
 $ExpectedAQProtocol = "GO_DIRECT_2015_2024_FOR_PROSPECTIVE_PROXY_SCREENING"
 $ExpectedTier = "TIER_3_PEER_REVIEWED_OPERATIONAL_PROXY"
 $ExpectedAnchorStatus = "PORTUGUESE_AQ_CONSUMED_BUT_SPATIALLY_INSUFFICIENT_FOR_LOCAL_AQ_ANCHOR"
-$ExpectedIndicatorName = "population_smoke_burden_proxy"
-$ExpectedIndicatorUnit = "proxy person-hours"
-$ExpectedClaimStatus = "OPERATIONAL_POPULATION_BURDEN_PROXY_NOT_NORMALIZED_IECH"`r`n$ExpectedAnchoredProxyFinalDecision = "GO_WITH_PORTUGUESE_AQ_ANCHORED_PROXY_AND_POPULATION_BURDEN_SEMANTICS"`r`n$ExpectedAnchoredProxyProtocol = "GO_WITH_PORTUGUESE_AQ_ANCHORED_PROXY_PROTOCOL"`r`n$ExpectedAnchoredProxyTier = "TIER_2_LOCAL_SMOKE_PROXY_VALIDATED_BY_AQ"`r`n$ExpectedAnchoredProxyStatus = "LOCAL_AQ_ANCHORED_PROXY"
+$ExpectedIndicatorName = "population_smoke_day_burden_proxy"
+$ExpectedIndicatorUnit = "classified smoke-proxy person-days"
+$ExpectedClaimStatus = "OPERATIONAL_TERRITORIAL_SMOKE_DAY_BURDEN_PROXY"
+$ExpectedAnchoredProxyFinalDecision = "GO_WITH_PORTUGUESE_AQ_ANCHORED_PROXY_AND_POPULATION_BURDEN_SEMANTICS"
+$ExpectedAnchoredProxyProtocol = "GO_WITH_PORTUGUESE_AQ_ANCHORED_PROXY_PROTOCOL"
+$ExpectedAnchoredProxyTier = "TIER_2_LOCAL_SMOKE_PROXY_VALIDATED_BY_AQ"
+$ExpectedAnchoredProxyStatus = "LOCAL_AQ_ANCHORED_PROXY"
 
 $RuntimeDecision = Join-Path $OutputRoot "deliverables_step9\runtime_closure_decision.md"
 $ScientificDecision = Join-Path $OutputRoot "deliverables_step9\runtime_scientific_closure_decision.md"
@@ -68,22 +72,29 @@ function Write-Audit {
 $ScientificText = Read-Text-Safe $ScientificDecision
 $PortugueseGateText = Read-Text-Safe $PortugueseGateTsv
 
-if (-not (Has-Token $ScientificText $ExpectedFinal)) {
-    Write-Audit -Path $AuditTsv -Decision "NO_GO" -Message "Scientific closure lacks expected final token."
-    throw "Scientific closure lacks expected final token."
+$UseAnchoredProxy = (Has-Token $ScientificText $ExpectedAnchoredProxyFinalDecision) -or (Has-Token $PortugueseGateText $ExpectedAnchoredProxyProtocol)
+$SelectedFinal = if ($UseAnchoredProxy) { $ExpectedAnchoredProxyFinalDecision } else { $ExpectedFinal }
+$SelectedAQProtocol = if ($UseAnchoredProxy) { $ExpectedAnchoredProxyProtocol } else { $ExpectedAQProtocol }
+$SelectedTier = if ($UseAnchoredProxy) { $ExpectedAnchoredProxyTier } else { $ExpectedTier }
+$SelectedAnchorStatus = if ($UseAnchoredProxy) { $ExpectedAnchoredProxyStatus } else { $ExpectedAnchorStatus }
+$SelectedProxyScope = if ($UseAnchoredProxy) { "PORTUGUESE_AQ_LOCALLY_ANCHORED_PROXY" } else { "PORTUGUESE_AQ_CONSUMED_BUT_NOT_LOCAL_AQ_ANCHORED" }
+
+if (-not (Has-Token $ScientificText $SelectedFinal)) {
+    Write-Audit -Path $AuditTsv -Decision "NO_GO" -Message "Scientific closure lacks selected final token."
+    throw "Scientific closure lacks selected final token."
 }
 
-if (-not (Has-Token $ScientificText $ExpectedTier) -and -not (Has-Token $PortugueseGateText $ExpectedTier)) {
+if (-not (Has-Token $ScientificText $SelectedTier) -and -not (Has-Token $PortugueseGateText $SelectedTier)) {
     Write-Audit -Path $AuditTsv -Decision "NO_GO" -Message "Current AQ-anchored proxy tier not present in scientific closure or Portuguese AQ gate."
     throw "Current AQ-anchored proxy tier missing."
 }
 
-if (-not (Has-Token $ScientificText $ExpectedAnchorStatus) -and -not (Has-Token $PortugueseGateText $ExpectedAnchorStatus)) {
+if (-not (Has-Token $ScientificText $SelectedAnchorStatus) -and -not (Has-Token $PortugueseGateText $SelectedAnchorStatus)) {
     Write-Audit -Path $AuditTsv -Decision "NO_GO" -Message "Current Portuguese AQ anchored proxy status not present in scientific closure or Portuguese AQ gate."
     throw "Portuguese AQ anchored proxy status missing."
 }
 
-if (-not (Has-Token $PortugueseGateText $ExpectedAQProtocol)) {
+if (-not (Has-Token $PortugueseGateText $SelectedAQProtocol)) {
     Write-Audit -Path $AuditTsv -Decision "NO_GO" -Message "Portuguese AQ validation gate lacks expected anchored proxy protocol token."
     throw "Portuguese AQ protocol token missing."
 }
@@ -91,16 +102,17 @@ if (-not (Has-Token $PortugueseGateText $ExpectedAQProtocol)) {
 $runtimeContent = @"
 # Runtime Closure Decision — Module C / GATA
 
-decision: $ExpectedFinal
+decision: $SelectedFinal
 decision_source: runtime_scientific_closure_decision.md
-evidence_tier_selected: $ExpectedTier
-local_aq_anchor_status: $ExpectedAnchorStatus
-aq_protocol_decision: $ExpectedAQProtocol
-proxy_validation_scope: PORTUGUESE_AQ_CONSUMED_BUT_NOT_LOCAL_AQ_ANCHORED
+evidence_tier_selected: $SelectedTier
+local_aq_anchor_status: $SelectedAnchorStatus
+aq_protocol_decision: $SelectedAQProtocol
+proxy_validation_scope: $SelectedProxyScope
 indicator_name: $ExpectedIndicatorName
 indicator_unit: $ExpectedIndicatorUnit
 claim_status: $ExpectedClaimStatus
-population_smoke_burden_proxy_formula: smoke_hours_equiv * population_total
+population_smoke_day_burden_proxy_formula: smoke_days * population_total
+legacy_population_smoke_burden_proxy: deprecated_not_canonical
 population_exposed_assumed: population_total
 exposure_fraction_assumption: 1.0
 normalized_IECH_individual_claim: BLOCKED
@@ -119,7 +131,7 @@ local_database_only: true
 external_downloads_attempted: false
 external_api_calls_attempted: false
 
-interpretation: El Modulo C cierra como sistema territorial autonomo con proxy GFAS/ERA5 para screening prospectivo y semantica explicita de population_smoke_burden_proxy. La AQ portuguesa fue consumida pero resulto espacialmente insuficiente para anclaje local; por tanto no cierra como exposicion sanitaria validada, IECH normalizado individual, poblacion expuesta diferencial, superacion regulatoria, correlacion estadistica robusta ni causalidad epidemiologica.
+interpretation: El Modulo C reporta un proxy GFAS/ERA5 de dias de humo clasificados para screening territorial. La AQ portuguesa fue consumida pero resulto espacialmente insuficiente para anclaje local; por tanto no cierra como exposicion sanitaria validada, IECH normalizado individual, poblacion expuesta diferencial, superacion regulatoria, correlacion estadistica robusta ni causalidad epidemiologica. El descriptor historico population_smoke_burden_proxy permanece deprecated y no canonico.
 
 required_limitations:
 - no_health_exposure_validation
@@ -179,7 +191,7 @@ if (-not $manifestHasRuntime) {
 }
 
 $finalRuntimeText = Read-Text-Safe $RuntimeDecision
-if (-not (Has-Token $finalRuntimeText $ExpectedFinal)) {
+if (-not (Has-Token $finalRuntimeText $SelectedFinal)) {
     Write-Audit -Path $AuditTsv -Decision "NO_GO" -Message "Runtime closure refresh write failed."
     throw "Runtime closure refresh write failed."
 }

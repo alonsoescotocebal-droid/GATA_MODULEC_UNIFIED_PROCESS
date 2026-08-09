@@ -31,7 +31,7 @@ def test_direct_recovery_trace_audit_uses_effective_source_and_not_modulea_hold(
             "smoke_effective_data_root": r"D:\X\Datos_RECOVERY_2015_2024_PIPELINE_GRIB",
         },
         "meta": {
-            "smoke_route_selected": "v0_gfas_era5_real",
+            "smoke_route_selected": "v0_gfas_era5_advection_screening_proxy",
         },
     }
     sources = {
@@ -45,7 +45,7 @@ def test_direct_recovery_trace_audit_uses_effective_source_and_not_modulea_hold(
         "forbidden_primary_source": False,
     }
     route_decision = {
-        "route_selected": "v0_gfas_era5_real",
+        "route_selected": "v0_gfas_era5_advection_screening_proxy",
         "smoke_route_decision": "THRESHOLD_DEFINED_AS_INDEXED_METHOD",
     }
 

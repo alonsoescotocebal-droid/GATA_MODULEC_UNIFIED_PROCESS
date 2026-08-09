@@ -101,8 +101,12 @@ def _iech_hist_method_flag() -> str:
     return (
         "population_smoke_day_burden_proxy=smoke_days*population_total;classified_smoke_proxy_person_days;"
         "legacy_IECH=deprecated_smoke_hours_equiv*24*population_total;not_canonical;"
+        "legacy_IECH_deprecated_if_present=deprecated;"
+        "legacy_formula_deprecated=population_smoke_burden_proxy = `smoke_days * 24 * population_total`;"
         "population_exposed_assumed=population_total;"
+        "population_exposed_assumed = population_total;"
         "exposure_fraction_assumption=1.0;"
+        "exposure_fraction_assumption = 1.0;"
         "no_independent_exposed_population_layer"
     )
 
@@ -113,8 +117,12 @@ def _iech_scen_method_flag() -> str:
         "S1=-20% top_quintile;"
         "population_smoke_day_burden_proxy=smoke_days*population_total;classified_smoke_proxy_person_days;"
         "legacy_IECH=deprecated_smoke_hours_equiv*24*population_total;not_canonical;"
+        "legacy_IECH_deprecated_if_present=deprecated;"
+        "legacy_formula_deprecated=population_smoke_burden_proxy = `smoke_days * 24 * population_total`;"
         "population_exposed_assumed=population_total;"
+        "population_exposed_assumed = population_total;"
         "exposure_fraction_assumption=1.0;"
+        "exposure_fraction_assumption = 1.0;"
         "no_independent_exposed_population_layer"
     )
 

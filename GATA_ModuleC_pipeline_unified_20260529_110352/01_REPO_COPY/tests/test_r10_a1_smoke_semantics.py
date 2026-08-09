@@ -146,4 +146,4 @@ def test_smoke_score_p80_is_not_an_upstream_control_for_canonical_outputs():
 
 def test_era5_weighted_route_claim_is_blocked_when_score_does_not_use_era5():
     gate = _load_gate()
-    assert gate.evaluate_era5_claims(False, "v0_gfas_era5_real")[0] == "BLOCKED_ERA5_MECHANISTIC_CLAIM"
+    assert gate.evaluate_era5_claims(False, "v0_gfas_era5_advection_screening_proxy")[0] == "BLOCKED_ERA5_MECHANISTIC_CLAIM"

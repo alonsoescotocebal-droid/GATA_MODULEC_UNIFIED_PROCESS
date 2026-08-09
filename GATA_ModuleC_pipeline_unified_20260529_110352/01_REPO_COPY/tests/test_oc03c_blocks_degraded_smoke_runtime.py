@@ -41,7 +41,7 @@ def _seed_regressed_smoke_runtime(output_root: Path) -> None:
     for year in range(2015, 2025):
         method = 'gfas_era5_proxy_p60_unit_daily_spatial_direct_year' if year == 2017 else 'gfas_era5_proxy_p60_unit_daily_spatial_flat_single_anchor'
         route_lines.append(
-            f'{year}\t5\t{method}\t0\tv0_gfas_era5_real\tPASS\tTHRESHOLD_DEFINED_AS_INDEXED_METHOD\tBLOCKED\tPASS\tPASS\tPASS\tPASS'
+            f'{year}\t5\t{method}\t0\tv0_gfas_era5_advection_screening_proxy\tPASS\tTHRESHOLD_DEFINED_AS_INDEXED_METHOD\tBLOCKED\tPASS\tPASS\tPASS\tPASS'
         )
     (qa_dir / 'smoke_route_audit.tsv').write_text('\n'.join(route_lines) + '\n', encoding='utf-8')
 

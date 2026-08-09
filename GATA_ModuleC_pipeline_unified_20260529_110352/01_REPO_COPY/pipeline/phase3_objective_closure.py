@@ -120,9 +120,9 @@ def _semantic_audits(output_root: Path) -> None:
     scen = _rows(output_root / "tables" / "IECH_scenarios_2026_2030.csv")
     muni = _rows(output_root / "tables" / "IECH_municipio_2015_2024.csv")
     semantic_rows = [
-        ["OC-05", "indicator_name", "population_smoke_burden_proxy", "PASS_WITH_POPULATION_BURDEN_PROXY_SEMANTICS", "Canonical formula is retained; not normalized IECH."],
-        ["OC-05", "indicator_unit", "proxy person-hours", "PASS_WITH_POPULATION_BURDEN_PROXY_SEMANTICS", "smoke_hours_equiv * population_total."],
-        ["OC-05", "formula", "smoke_hours_equiv * population_total", "PASS_WITH_POPULATION_BURDEN_PROXY_SEMANTICS", "population_smoke_burden_proxy is preserved."],
+        ["OC-05", "indicator_name", "population_smoke_day_burden_proxy", "PASS_WITH_POPULATION_BURDEN_PROXY_SEMANTICS", "Canonical classified smoke-day burden proxy; not normalized IECH."],
+        ["OC-05", "indicator_unit", "classified smoke-proxy person-days", "PASS_WITH_POPULATION_BURDEN_PROXY_SEMANTICS", "smoke_days * population_total."],
+        ["OC-05", "formula", "smoke_days * population_total", "PASS_WITH_POPULATION_BURDEN_PROXY_SEMANTICS", "Canonical population smoke-day burden proxy."],
         ["OC-05", "population_exposed_assumption", "population_exposed_equals_population_total", "PASS_WITH_POPULATION_BURDEN_PROXY_SEMANTICS", "No independent exposed-population layer."],
         ["OC-05", "exposure_fraction_assumption", "1.0", "PASS_WITH_POPULATION_BURDEN_PROXY_SEMANTICS", "Operational assumption, not measured exposure."],
         ["OC-05", "normalized_IECH_claim_status", "BLOCKED_NORMALIZED_IECH_CLAIM", "BLOCKED_NORMALIZED_IECH_CLAIM", "No normalization or independent exposure layer."],
@@ -142,7 +142,8 @@ def _semantic_audits(output_root: Path) -> None:
         "# Phase 3 Objective Semantic Contract",
         "",
         f"- generated_at: {_now()}",
-        "- population_smoke_burden_proxy is retained as smoke_hours_equiv * population_total.",
+        "- population_smoke_day_burden_proxy is canonical: smoke_days * population_total.",
+        "- population_smoke_burden_proxy and smoke_hours_equiv are LEGACY/DEPRECATED and non-canonical.",
         "- normalized IECH, health exposure, causal inference, direct municipal smoke and formal WUI claims remain blocked.",
         "- municipal atmospheric values are regional NUTS3 signals allocated to municipalities.",
         "- scenarios are normative assumptions, not empirically validated projections.",
@@ -493,7 +494,8 @@ def _rewrite_brief_and_matrix_names(output_root: Path) -> None:
         text = re.sub(r"\n## Semantica de cierre Fase 3\n.*?(?=\n## |\Z)", "", text, flags=re.S)
         text += (
             "\n## Semantica de cierre Fase 3\n"
-            "- `population_smoke_burden_proxy` es carga poblacional proxy de humo: `smoke_hours_equiv * population_total`.\n"
+            "- `population_smoke_day_burden_proxy` es la carga poblacional proxy de dias de humo clasificados: `smoke_days * population_total`.\n"
+            "- `population_smoke_burden_proxy` y `smoke_hours_equiv` son LEGACY/DEPRECATED y no canonicos.\n"
             "- No es IECH normalizado ni una afirmacion clinica o epidemiologica.\n"
             "- La matriz es `TERRITORIAL_SCREENING_ASSOCIATION_MATRIX`, no inferencia causal.\n"
             "- El humo municipal es una asignacion de la senal NUTS3 (`MAPPED_FROM_NUTS3`), no una senal atmosferica municipal independiente.\n"

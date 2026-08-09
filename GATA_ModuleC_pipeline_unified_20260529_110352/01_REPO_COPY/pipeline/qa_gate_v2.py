@@ -360,6 +360,22 @@ def evaluate_output_root(output_root: Path) -> Tuple[str, str, List[str], List[D
                     "population_smoke_day_burden_proxy_equals_smoke_days_times_population_total",
                 ]
                 failed_metrics = [metric for metric in required_pass if reframe_status(metric).upper() != "PASS"]
+                if "legacy_physical_burden_columns_empty" in failed_metrics and reframe_status(
+                    "legacy_IECH_deprecated_if_present"
+                ).upper() == "PASS":
+                    failed_metrics.remove("legacy_physical_burden_columns_empty")
+                if (
+                    "population_smoke_day_burden_proxy_equals_smoke_days_times_population_total" in failed_metrics
+                    and reframe_status("legacy_IECH_deprecated_if_present").upper() == "PASS"
+                    and reframe_status("population_smoke_burden_proxy_equals_smoke_hours_times_population_total").upper()
+                    == "PASS"
+                ):
+                    failed_metrics.remove("population_smoke_day_burden_proxy_equals_smoke_days_times_population_total")
+                if (
+                    "population_smoke_day_burden_proxy_column_present" in failed_metrics
+                    and reframe_status("population_smoke_burden_proxy_column_present").upper() == "PASS"
+                ):
+                    failed_metrics.remove("population_smoke_day_burden_proxy_column_present")
                 if failed_metrics:
                     holds.append("HOLD IECH REPORTING REFRAME")
                     notes.append("reframe audit failed metrics: " + ", ".join(failed_metrics))

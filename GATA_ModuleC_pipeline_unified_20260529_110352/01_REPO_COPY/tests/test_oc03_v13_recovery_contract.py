@@ -33,7 +33,7 @@ def test_oc03_v13_direct_contract_rejects_v9d_signature(tmp_path):
                     "smoke_effective_source_path": r"D:\X\Datos_RECOVERY_2015_2024_PIPELINE_GRIB\CAM-GFAS-RECOVERY",
                 },
                 "meta": {
-                    "smoke_route_selected": "v0_gfas_era5_real",
+                    "smoke_route_selected": "v0_gfas_era5_advection_screening_proxy",
                     "smoke_route_detected_sources": {"effective_source_is_recovery": True},
                 },
             }
@@ -85,7 +85,7 @@ def test_oc03_v13_direct_contract_accepts_recovery_metrics(tmp_path):
                     "smoke_effective_source_path": r"D:\X\Datos_RECOVERY_2015_2024_PIPELINE_GRIB\CAM-GFAS (ADS)",
                 },
                 "meta": {
-                    "smoke_route_selected": "v0_gfas_era5_real",
+                    "smoke_route_selected": "v0_gfas_era5_advection_screening_proxy",
                     "smoke_route_detected_sources": {"effective_source_is_recovery": True},
                 },
             }
@@ -138,7 +138,7 @@ def test_oc03_v13_direct_contract_prefers_tab_tsv_when_detail_contains_many_semi
                     "smoke_effective_source_path": r"D:\X\Datos_RECOVERY_2015_2024_PIPELINE_GRIB\CAM-GFAS (ADS)",
                 },
                 "meta": {
-                    "smoke_route_selected": "v0_gfas_era5_real",
+                    "smoke_route_selected": "v0_gfas_era5_advection_screening_proxy",
                     "smoke_route_detected_sources": {"effective_source_is_recovery": True},
                 },
             }

@@ -29,4 +29,4 @@ def test_smoke_route_selector_detects_nested_recovery_root_under_datos(tmp_path)
 
     assert sources["effective_source_is_recovery"] is True
     assert "Datos_RECOVERY_2015_2024_PIPELINE_GRIB" in sources["effective_data_root"]
-    assert decision["route_selected"] == "v0_gfas_era5_real"
+    assert decision["route_selected"] == "v0_gfas_era5_advection_screening_proxy"

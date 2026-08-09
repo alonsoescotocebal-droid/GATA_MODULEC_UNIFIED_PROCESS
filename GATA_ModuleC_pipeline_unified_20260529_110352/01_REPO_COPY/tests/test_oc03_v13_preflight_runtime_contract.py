@@ -61,7 +61,7 @@ def test_refresh_preflight_report_writes_runtime_artifact_and_canon_meta(tmp_pat
         output_root=runtime,
         inputs=inputs,
         route_decision={
-            "route_selected": "v0_gfas_era5_real",
+            "route_selected": "v0_gfas_era5_advection_screening_proxy",
             "smoke_route_decision": "THRESHOLD_DEFINED_AS_INDEXED_METHOD",
         },
         report=report,
@@ -70,6 +70,6 @@ def test_refresh_preflight_report_writes_runtime_artifact_and_canon_meta(tmp_pat
 
     text = out_path.read_text(encoding="utf-8")
     assert out_path.exists()
-    assert "smoke route preflight selected=v0_gfas_era5_real" in text
+    assert "smoke route preflight selected=v0_gfas_era5_advection_screening_proxy" in text
     assert "smoke effective data root: D:\\X\\Datos_RECOVERY_2015_2024_PIPELINE_GRIB" in text
     assert "END HOLD preflight (missing inputs)" in text

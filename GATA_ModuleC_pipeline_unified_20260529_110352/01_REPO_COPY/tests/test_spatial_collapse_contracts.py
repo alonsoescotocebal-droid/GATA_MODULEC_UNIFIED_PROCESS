@@ -201,7 +201,7 @@ def test_spatial_collapse_audit_and_brief_block_claims(tmp_path):
         json.dumps(
             {
                 "meta": {
-                    "smoke_route_selected": "v0_gfas_era5_real",
+                    "smoke_route_selected": "v0_gfas_era5_advection_screening_proxy",
                     "smoke_route_status": "SCIENTIFIC_PRIMARY_REAL",
                     "smoke_route_decision": "THRESHOLD_DEFINED_AS_INDEXED_METHOD",
                     "health_exposure_claim": "BLOCKED_HEALTH_EXPOSURE_CLAIM",

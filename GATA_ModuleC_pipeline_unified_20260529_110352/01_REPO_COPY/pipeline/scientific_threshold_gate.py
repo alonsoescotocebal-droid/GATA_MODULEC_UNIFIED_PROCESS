@@ -332,7 +332,7 @@ def evaluate_smoke_route_trace(inputs_json: Path) -> Tuple[str, str, str]:
     if not route_selected:
         return "BLOCKED_FOR_REQUIRED_VARIABLE", "smoke_route_selected missing in inputs_resolved meta", ""
 
-    if route_selected in ("v1_moduleA_validated", "v0_gfas_era5_real"):
+    if route_selected in ("v1_moduleA_validated", "v0_gfas_era5_advection_screening_proxy"):
         return (
             "THRESHOLD_DEFINED_AS_INDEXED_METHOD",
             f"route_selected={route_selected}; route_decision={route_decision}",
@@ -429,7 +429,7 @@ def evaluate_direct_decoder_contract(output_root: Path) -> Tuple[str, str]:
     effective_path = str(paths.get("smoke_effective_source_path") or "").replace("/", "\\").lower()
     recovery_flag = bool(meta.get("smoke_route_detected_sources", {}).get("effective_source_is_recovery")) if isinstance(meta.get("smoke_route_detected_sources"), dict) else False
 
-    if route_selected != "v0_gfas_era5_real":
+    if route_selected != "v0_gfas_era5_advection_screening_proxy":
         return "BLOCKED_DECODER_REQUIRED", f"route_selected={route_selected or 'EMPTY'}"
     if not recovery_flag or "datos_recovery_2015_2024_pipeline_grib" not in (effective_root + " " + effective_path):
         return "BLOCKED_FOR_REQUIRED_VARIABLE", f"effective recovery smoke root missing in inputs_resolved: {effective_root or effective_path}"
@@ -512,11 +512,11 @@ def evaluate_population_cancellation(iech_hist_csv: Path) -> Tuple[str, str]:
 def evaluate_era5_claims(era5_used_in_score: bool, route_name: str) -> Tuple[str, str]:
     """Block meteorological transport claims until R10-A2 wires ERA5 into the score."""
     route = str(route_name or "").strip().lower()
-    if not era5_used_in_score and any(token in route for token in ("weighted", "upwind", "transport", "dispersion", "gfas_era5_real")):
+    if not era5_used_in_score and any(token in route for token in ("weighted", "upwind", "transport", "dispersion", "advection_screening_proxy")):
         return "BLOCKED_ERA5_MECHANISTIC_CLAIM", "ERA5 is QA-only and does not modify smoke_day_score."
     if not era5_used_in_score:
         return "ERA5_QA_ONLY", "ERA5 is read and validated but remains outside smoke_day_score."
-    return "THRESHOLD_DEFINED_AS_INDEXED_METHOD", "ERA5 score integration is not evaluated by R10-A1."
+    return "THRESHOLD_DEFINED_AS_INDEXED_METHOD", "ERA5 score integration is active under the R10-A2C operational proxy contract."
 
 
 def evaluate_r10_a2_contract(qa_dir: Path) -> Tuple[str, str]:
@@ -548,6 +548,46 @@ def evaluate_r10_a2_era5_effect(qa_dir: Path) -> Tuple[str, str]:
     if changed is None or changed <= 0.0:
         return "BLOCKED_ERA5_SCORE_INFLUENCE", f"fraction_unit_days_changed={changed}"
     return "PASS", f"fraction_unit_days_changed={changed}"
+
+
+def evaluate_r10_a2c_multi_receptor(qa_dir: Path) -> Tuple[str, str]:
+    path = qa_dir / "r10_a2c_multi_receptor_aggregation_audit.tsv"
+    if not path.exists():
+        return "BLOCKED_R10_A2C_MULTI_RECEPTOR", f"{path.name} missing"
+    rows = {str(row.get("metric") or "").strip(): row for row in read_csv_rows(path)}
+    implemented = str(rows.get("MULTI_RECEPTOR_AGGREGATION_IMPLEMENTED", {}).get("value") or "").upper()
+    multi_days = safe_float(rows.get("unit_days_with_multiple_valid_receptors", {}).get("value")) or 0.0
+    differs = safe_float(rows.get("unit_days_mean_differs_from_max", {}).get("value")) or 0.0
+    if implemented != "TRUE" or multi_days <= 0.0 or differs <= 0.0:
+        return "BLOCKED_R10_A2C_MULTI_RECEPTOR", f"implemented={implemented} multi_days={multi_days} differs={differs}"
+    return "PASS", f"multi_receptor_unit_days={multi_days}; mean_differs_from_max={differs}"
+
+
+def evaluate_r10_a2c_sensitivity(qa_dir: Path) -> Tuple[str, str]:
+    path = qa_dir / "r10_a2_weight_sensitivity.tsv"
+    if not path.exists():
+        return "BLOCKED_R10_A2C_SENSITIVITY", f"{path.name} missing"
+    rows = read_csv_rows(path)
+    canonical = [
+        row
+        for row in rows
+        if abs((safe_float(row.get("timescale_hours")) or 0.0) - 24.0) <= 1.0e-12
+        and abs((safe_float(row.get("mean_weight")) or 0.0) - 0.75) <= 1.0e-12
+        and abs((safe_float(row.get("max_weight")) or 0.0) - 0.25) <= 1.0e-12
+    ]
+    if len(rows) != 12 or len(canonical) != 1:
+        return "BLOCKED_R10_A2C_SENSITIVITY", f"rows={len(rows)} canonical_rows={len(canonical)}"
+    row = canonical[0]
+    metrics = (
+        safe_float(row.get("daily_score_spearman_to_canonical")),
+        safe_float(row.get("annual_smoke_days_spearman_to_canonical")),
+        safe_float(row.get("annual_burden_spearman_to_canonical")),
+        safe_float(row.get("top5_units_overlap")),
+        safe_float(row.get("top_quintile_units_overlap")),
+    )
+    if any(value is None or abs(float(value) - 1.0) > 1.0e-9 for value in metrics):
+        return "BLOCKED_R10_A2C_SENSITIVITY", f"canonical_metrics={metrics}"
+    return "PASS", "canonical 24h/75-25 sensitivity self-reproduction passed"
 
 
 def evaluate_iech_proxy_semantics(reframe_audit_tsv: Path) -> Tuple[str, str]:
@@ -778,7 +818,7 @@ def main() -> int:
         str(inputs_json),
         "meta.smoke_route_selected/meta.smoke_route_decision",
         route_obs,
-        "priority=v1_moduleA_validated>v0_gfas_era5_real>BLOCKED_DECODER_REQUIRED>v0_parquet_proxy_degraded>NO-GO_SMOKE_ROUTE",
+        "priority=v1_moduleA_validated>v0_gfas_era5_advection_screening_proxy>BLOCKED_DECODER_REQUIRED>v0_parquet_proxy_degraded>NO-GO_SMOKE_ROUTE",
         "SRC-GATE-SMOKE-ROUTE",
         "METHODOLOGICAL_GATE",
         route_status,
@@ -805,7 +845,7 @@ def main() -> int:
         "SRC-GATE-ERA5-CLAIM-SCOPE",
         "CLAIM_GOVERNANCE",
         era5_claim_status,
-        "GFAS direct emission proxy with ERA5 QA-only semantics.",
+        "GFAS + ERA5 advection-informed operational smoke proxy semantics.",
         "ERA5-weighted or upwind smoke claims before R10-A2.",
         "NO-GO_SCIENTIFIC_THRESHOLD" if era5_claim_status.startswith("BLOCKED") else "NONE",
     )
@@ -839,6 +879,36 @@ def main() -> int:
             "Canonical score changes numerically under ERA5-informed transport.",
             "Canonical score identical to GFAS-only reference for all unit-days.",
             "NO-GO_SCIENTIFIC_THRESHOLD" if effect_status.startswith("BLOCKED") else "NONE",
+        )
+        multi_status, multi_obs = evaluate_r10_a2c_multi_receptor(qa_dir)
+        add_gate(
+            "ERA5_SCORE_003",
+            "A2C multi-receptor non-degeneration",
+            str(qa_dir / "r10_a2c_multi_receptor_aggregation_audit.tsv"),
+            "MULTI_RECEPTOR_AGGREGATION_IMPLEMENTED/unit_days_mean_differs_from_max",
+            multi_obs,
+            "Multiple valid receptors must be aggregated after source-to-receptor transport.",
+            "SRC-GATE-R10-A2C-MULTI-RECEPTOR",
+            "SCIENTIFIC_CONSTRUCT",
+            multi_status,
+            "Non-degenerate multireceptor ERA5 operational smoke proxy.",
+            "Single-receptor collapse when multiple valid unit samples exist.",
+            "NO-GO_SCIENTIFIC_THRESHOLD" if multi_status.startswith("BLOCKED") else "NONE",
+        )
+        sensitivity_status, sensitivity_obs = evaluate_r10_a2c_sensitivity(qa_dir)
+        add_gate(
+            "ERA5_SCORE_004",
+            "A2C sensitivity canonical self-reproduction",
+            str(qa_dir / "r10_a2_weight_sensitivity.tsv"),
+            "24h/75-25 canonical self-reproduction",
+            sensitivity_obs,
+            "The sensitivity machinery must reproduce canonical daily, annual and burden rankings.",
+            "SRC-GATE-R10-A2C-SENSITIVITY",
+            "SCIENTIFIC_CONSTRUCT",
+            sensitivity_status,
+            "Mathematically exact source-level sensitivity with canonical self-reproduction.",
+            "Approximate aggregate sensitivity or canonical self-mismatch.",
+            "NO-GO_SCIENTIFIC_THRESHOLD" if sensitivity_status.startswith("BLOCKED") else "NONE",
         )
         for threshold_id, component, variable, detail, status in (
             ("UPWIND_GEOMETRY_001", "source-receptor upwind geometry", "UPWIND_WEIGHTING_IMPLEMENTED", "Upwind alignment affects source contribution.", transport_status),
@@ -932,7 +1002,7 @@ def main() -> int:
         str(output_root / "qa" / "gfas_era5_decoder_daily_spatial_audit.tsv"),
         "unique_years, unique_dates, smoke_method, effective recovery root",
         direct_contract_obs,
-        "Requires route_selected=v0_gfas_era5_real, recovery root trace, unique_years>=10, unique_units>=24 for Portugal continental, all years 2015-2024, all 12 months per year, full expected annual date coverage, and no anchored/interpolated/extrapolated methods.",
+        "Requires route_selected=v0_gfas_era5_advection_screening_proxy, recovery root trace, unique_years>=10, unique_units>=24 for Portugal continental, all years 2015-2024, all 12 months per year, full expected annual date coverage, and no anchored/interpolated/extrapolated methods.",
         "SRC-GATE-SMOKE-DIRECT-2015-2024",
         "METHODOLOGICAL_GATE",
         direct_contract_status,

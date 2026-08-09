@@ -123,7 +123,7 @@ def _seed_minimal_runtime(
         encoding="utf-8",
     )
     (qa_dir / "inputs_resolved.json").write_text(
-        '{"meta":{"objectives_canon_path":"canon.md","objectives_canon_sha256":"abc","smoke_route_selected":"v0_gfas_era5_real","smoke_route_decision":"THRESHOLD_DEFINED_AS_INDEXED_METHOD"}}',
+        '{"meta":{"objectives_canon_path":"canon.md","objectives_canon_sha256":"abc","smoke_route_selected":"v0_gfas_era5_advection_screening_proxy","smoke_route_decision":"THRESHOLD_DEFINED_AS_INDEXED_METHOD"}}',
         encoding="utf-8",
     )
     (qa_dir / "scientific_validation_gate.tsv").write_text(
@@ -318,7 +318,7 @@ def _seed_base_smoke_contract_inputs(output_root: Path, valid: bool) -> None:
     ]
     for year in range(2015, 2025):
         route_lines.append(
-            f"{year}	5	{route_methods[year]}	0	v0_gfas_era5_real	PASS	THRESHOLD_DEFINED_AS_INDEXED_METHOD	BLOCKED	PASS	PASS	PASS	PASS"
+            f"{year}	5	{route_methods[year]}	0	v0_gfas_era5_advection_screening_proxy	PASS	THRESHOLD_DEFINED_AS_INDEXED_METHOD	BLOCKED	PASS	PASS	PASS	PASS"
         )
     (qa_dir / "smoke_route_audit.tsv").write_text("\n".join(route_lines) + "\n", encoding="utf-8")
 

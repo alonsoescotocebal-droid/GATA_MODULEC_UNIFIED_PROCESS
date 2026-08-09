@@ -39,7 +39,8 @@ def test_r6k_refresh_tracks_current_portuguese_aq_anchor_contract():
     assert "TIER_2_LOCAL_SMOKE_PROXY_VALIDATED_BY_AQ" in text
     assert "LOCAL_AQ_ANCHORED_PROXY" in text
     assert "population_smoke_burden_proxy" in text
-    assert "OPERATIONAL_POPULATION_BURDEN_PROXY_NOT_NORMALIZED_IECH" in text
+    assert "OPERATIONAL_TERRITORIAL_SMOKE_DAY_BURDEN_PROXY" in text
+    assert "population_smoke_day_burden_proxy_formula: smoke_days * population_total" in text
     assert r"qa\portuguese_aq_validation_gate.tsv" in text
     assert "GO_WITH_LOCAL_AQ_ANCHOR_AND_LOW_N_DIRECTIONAL_CONCORDANCE" not in text
     assert "LOCAL_AQ_LOW_N_DIRECTIONAL_CONCORDANCE_ALLOWED" not in text

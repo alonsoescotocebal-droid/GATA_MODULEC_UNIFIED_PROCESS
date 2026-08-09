@@ -32,7 +32,7 @@ def test_direct_decoder_contract_allows_recovery_cam_gfas_ads_path(tmp_path):
                     "smoke_effective_source_path": r"D:\X\Datos_RECOVERY_2015_2024_PIPELINE_GRIB\CAM-GFAS (ADS)",
                 },
                 "meta": {
-                    "smoke_route_selected": "v0_gfas_era5_real",
+                    "smoke_route_selected": "v0_gfas_era5_advection_screening_proxy",
                     "smoke_route_detected_sources": {"effective_source_is_recovery": True},
                 },
             }
@@ -76,7 +76,7 @@ def test_direct_decoder_contract_accepts_lowercase_daily_spatial_metrics(tmp_pat
                     "smoke_effective_source_path": r"D:\X\Datos_RECOVERY_2015_2024_PIPELINE_GRIB\CAM-GFAS (ADS)",
                 },
                 "meta": {
-                    "smoke_route_selected": "v0_gfas_era5_real",
+                    "smoke_route_selected": "v0_gfas_era5_advection_screening_proxy",
                     "smoke_route_detected_sources": {"effective_source_is_recovery": True},
                 },
             }
@@ -119,7 +119,7 @@ def test_direct_decoder_contract_prefers_tab_for_tsv_with_semicolon_heavy_detail
                     "smoke_effective_source_path": r"D:\X\Datos_RECOVERY_2015_2024_PIPELINE_GRIB\CAM-GFAS (ADS)",
                 },
                 "meta": {
-                    "smoke_route_selected": "v0_gfas_era5_real",
+                    "smoke_route_selected": "v0_gfas_era5_advection_screening_proxy",
                     "smoke_route_detected_sources": {"effective_source_is_recovery": True},
                 },
             }

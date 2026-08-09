@@ -7,13 +7,14 @@ from typing import Dict, Iterable, List, Optional, Sequence
 
 
 ROUTE_PRIORITY = [
-    "v0_gfas_era5_real",
+    "v0_gfas_era5_advection_screening_proxy",
     "v1_moduleA_validated",
     "BLOCKED_DECODER_REQUIRED",
     "v0_parquet_proxy_degraded",
     "NO-GO_SMOKE_ROUTE",
 ]
 R10_A1_ROUTE_NAME = "v0_gfas_direct_emission_proxy_era5_qa_only"
+R10_A2_ROUTE_NAME = "v0_gfas_era5_advection_screening_proxy"
 
 MODULEA_HINT_KEYS: Sequence[str] = (
     "smoke_v1_modulea",
@@ -414,8 +415,8 @@ def select_smoke_route(sources: Dict[str, object], decoder_available: bool = Fal
         if decoder_available:
             result.update(
                 {
-                    "route_selected": "v0_gfas_era5_real",
-                    "route_name": R10_A1_ROUTE_NAME,
+                    "route_selected": R10_A2_ROUTE_NAME,
+                    "route_name": R10_A2_ROUTE_NAME,
                     "smoke_route_status": "SCIENTIFIC_PRIMARY_REAL",
                     "smoke_route_decision": "THRESHOLD_DEFINED_AS_INDEXED_METHOD",
                     "health_exposure_claim": "BLOCKED_HEALTH_EXPOSURE_CLAIM",
@@ -424,8 +425,8 @@ def select_smoke_route(sources: Dict[str, object], decoder_available: bool = Fal
                     "brief_decision": "PENDING_DOWNSTREAM_VALIDATION",
                     "final_scientific_decision": "PENDING_DOWNSTREAM_GATES",
                     "reason": f"Recovered GFAS + ERA5 detected under {source_root} and decoder is available.",
-                    "allowed_use": "GFAS direct emission proxy with ERA5 QA only",
-                    "forbidden_use": "ERA5-weighted, upwind, transport, dispersion, health exposure, GO",
+                    "allowed_use": "GFAS + ERA5 advection-informed operational smoke proxy",
+                    "forbidden_use": "ambient PM2.5 concentration, health exposure, dose, epidemiological IECH, GO",
                 }
             )
             return result

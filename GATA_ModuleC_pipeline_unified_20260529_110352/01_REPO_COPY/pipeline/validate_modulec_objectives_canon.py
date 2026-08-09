@@ -389,8 +389,8 @@ def _check_oc03_v13_direct_contract(output_root: Path, inputs: Dict[str, object]
     effective_root = str(paths.get("smoke_effective_data_root") or meta.get("effective_data_root") or "").strip()
     recovery_flag = bool(meta.get("smoke_route_detected_sources", {}).get("effective_source_is_recovery")) if isinstance(meta.get("smoke_route_detected_sources"), dict) else False
 
-    if route_selected != "v0_gfas_era5_real":
-        return False, f"OC-03 direct closure requires route_selected=v0_gfas_era5_real, found {route_selected or 'EMPTY'}"
+    if route_selected != "v0_gfas_era5_advection_screening_proxy":
+        return False, f"OC-03 direct closure requires route_selected=v0_gfas_era5_advection_screening_proxy, found {route_selected or 'EMPTY'}"
     if not recovery_flag:
         return False, "inputs_resolved does not mark the effective smoke source as recovery-backed."
     if "datos_recovery_2015_2024_pipeline_grib" not in _norm_text(effective_root) and "datos_recovery_2015_2024_pipeline_grib" not in _norm_text(effective_source_path):

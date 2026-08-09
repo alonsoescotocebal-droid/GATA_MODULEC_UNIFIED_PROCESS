@@ -47,7 +47,7 @@ def test_smoke_route_selector_enables_real_route_when_decoder_available(tmp_path
     sources = selector.detect_smoke_sources(data, {"paths": {"smoke_csv": str(data / "ParquetFiles 2022.zip")}})
     decision = selector.select_smoke_route(sources, decoder_available=True)
 
-    assert decision["route_selected"] == "v0_gfas_era5_real"
+    assert decision["route_selected"] == "v0_gfas_era5_advection_screening_proxy"
     assert decision["smoke_route_status"] == "SCIENTIFIC_PRIMARY_REAL"
 
 
