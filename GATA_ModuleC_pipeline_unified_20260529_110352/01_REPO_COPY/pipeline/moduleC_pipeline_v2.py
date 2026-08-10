@@ -4976,10 +4976,25 @@ def assert_global_audit_status_clear(output_root: Path, report: Report) -> None:
     if not scan_tsv.exists():
         report.fail(f"Global audit status scan missing: {scan_tsv}")
     rows = read_csv_rows(scan_tsv)[1]
+    provenance_blocked_metrics = set()
+    provenance_path = output_root / "qa" / "provenance_runtime_window_audit.tsv"
+    if provenance_path.exists():
+        provenance_blocked_metrics = {
+            str(item.get("metric") or "")
+            for item in read_csv_rows(provenance_path)[1]
+            if str(item.get("status") or "").upper() == "BLOCKED"
+        }
     blocked = []
     for row in rows:
         blocker_count = safe_float(row.get("active_blocker_count"))
         if blocker_count is not None and blocker_count > 0:
+            if (
+                Path(str(row.get("file_path") or "")).name == "provenance_runtime_window_audit.tsv"
+                and provenance_blocked_metrics
+                and provenance_blocked_metrics.issubset({"Step9", "manifest", "ZIP", "ZIP SHA"})
+            ):
+                # Step9 files are necessarily absent during the pre-package scan.
+                continue
             blocked.append(
                 f"{Path(str(row.get('file_path') or '')).name}:{int(blocker_count)}"
             )
@@ -6041,6 +6056,8 @@ def complete_post_smoke_runtime(
     # Refresh the closure window after the first package exists, then rebuild
     # once so the final manifest/ZIP contain the stable provenance surface.
     write_source_runtime_provenance(output_root)
+    run_global_audit_status_scan(output_root, report)
+    assert_global_audit_status_clear(output_root, report)
     create_r10b_audit_capsule(output_root, report)
     outputs = collect_final_outputs(output_root, scientific_decision_path, include_global_scan=True)
     build_manifest_and_zip(outputs, deliver_dir, report)
