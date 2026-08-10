@@ -4655,7 +4655,6 @@ def create_r10b_audit_capsule(output_root: Path, report: Report) -> Path:
         output_root / "deliverables_step9" / "final_manifest.json",
         output_root / "deliverables_step9" / "final_manifest_recursive_audit.tsv",
         output_root / "deliverables_step9" / "final_sha256_checkpoints.txt",
-        output_root / "deliverables_step9" / "ModuleC_ALL_FINAL_deliverables.zip",
         output_root / "provenance" / "launcher_command.txt",
         output_root / "provenance" / "launcher_roots.tsv",
         output_root / "logs" / "step7_stdout.txt",
