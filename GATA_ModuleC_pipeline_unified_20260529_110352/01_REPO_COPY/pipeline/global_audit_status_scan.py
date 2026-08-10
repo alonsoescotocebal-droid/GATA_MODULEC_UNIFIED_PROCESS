@@ -124,6 +124,8 @@ def main() -> int:
     for d in scan_paths:
         if d.exists():
             for f in d.rglob("*"):
+                if f in (out_tsv, out_md):
+                    continue
                 if f.is_file() and f.suffix.lower() in (".tsv", ".csv", ".json", ".md", ".txt"):
                     files.append(f)
     files = sorted(set(files))
