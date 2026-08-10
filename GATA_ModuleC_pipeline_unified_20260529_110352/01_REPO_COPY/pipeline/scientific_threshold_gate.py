@@ -822,7 +822,7 @@ def evaluate_r10c_screening(output_root: Path) -> Tuple[str, str, Dict[str, int]
         "unit_id", "unit_level", "population_smoke_day_burden_proxy_mean_2015_2024", "recurrence_score",
         "burden_priority_rank", "recurrence_priority_rank", "screening_priority_score", "burden_band", "recurrence_band",
         "screening_profile", "screening_method", "screening_claim_status", "screening_core_status", "contextual_completeness_status",
-        "legacy_policy_priority", "legacy_burden_p80_flag", "smoke_signal_resolution", "recurrence_signal_resolution", "policy_priority",
+        "legacy_policy_priority", "legacy_burden_p80_flag", "smoke_signal_resolution", "recurrence_signal_resolution", "policy_priority", "downstream_status",
     }
     for level, rows in matrices.items():
         if not rows or not required_columns.issubset(rows[0]):
@@ -846,6 +846,12 @@ def evaluate_r10c_screening(output_root: Path) -> Tuple[str, str, Dict[str, int]
             if row.get("policy_priority") != expected_class or row.get("screening_claim_status") != claim or row.get("screening_core_status") != "PASS":
                 metrics["core_failures"] += 1
                 return "BLOCKED_R10_C_SCREENING_CLASS_OR_CLAIM", f"{level} {row.get('unit_id')} class/claim/core mismatch", metrics
+            if level == "MUNICIPIO" and (row.get("smoke_signal_resolution") != "REGIONAL_NUTS3_SIGNAL_ALLOCATED_TO_MUNICIPALITY" or row.get("recurrence_signal_resolution") != "DIRECT_MUNICIPAL_FIRE_FOOTPRINT"):
+                return "BLOCKED_R10_C_MUNICIPAL_RESOLUTION", f"municipal signal resolution mismatch for {row.get('unit_id')}", metrics
+            if level == "NUTS3" and row.get("smoke_signal_resolution") != "DIRECT_NUTS3_SCREENING":
+                return "BLOCKED_R10_C_NUTS3_RESOLUTION", f"NUTS3 signal resolution mismatch for {row.get('unit_id')}", metrics
+            if "ATMOSPHERIC_RISK" in str(row.get("screening_claim_status") or ""):
+                return "BLOCKED_R10_C_MUNICIPAL_CLAIM", f"forbidden atmospheric claim for {row.get('unit_id')}", metrics
     git_rows = read_csv_rows(qa / "r10_c_git_root_audit.tsv")
     git_decisions = [str(row.get("value") or "") for row in git_rows if row.get("metric") == "decision"]
     if git_decisions != ["PASS"]:
@@ -853,12 +859,19 @@ def evaluate_r10c_screening(output_root: Path) -> Tuple[str, str, Dict[str, int]
     construct_rows = read_csv_rows(qa / "r10_c_screening_construct_audit.tsv")
     if any(str(row.get("status") or "").upper() != "PASS" for row in construct_rows):
         return "BLOCKED_R10_C_SCREENING_CONSTRUCT", "construct audit contains non-PASS status", metrics
+    construct_metrics = {str(row.get("metric") or ""): row for row in construct_rows}
+    for metric in ("NUTS3_TEMPORAL_PERSISTENCE", "NUTS3_REBURN"):
+        if metric not in construct_metrics:
+            return "BLOCKED_R10_C_R10B_SATURATION_AUDIT", f"construct audit missing {metric}", metrics
     method = (qa / "r10_c_screening_method_declaration.md").read_text(encoding="utf-8-sig", errors="replace").lower()
     method_terms = ("population smoke-day burden", "r10-b recurrence score", "tie-aware", "0.50", "[0,1/3)", "no quotas", "wui", "wrb", "municipal")
     missing_terms = [term for term in method_terms if term not in method]
     if missing_terms:
         return "BLOCKED_R10_C_METHOD_DECLARATION", "method declaration missing: " + ",".join(missing_terms), metrics
     transport = read_csv_rows(qa / "r10_c_smoke_transport_sensitivity_propagation.tsv")
+    transport_columns = {"variant_smoke_days_total", "variant_population_smoke_day_burden_proxy_mean", "variant_burden_rank_min", "variant_burden_rank_max", "variant_policy_priority_counts"}
+    if not transport or not transport_columns.issubset(transport[0]):
+        return "BLOCKED_R10_C_TRANSPORT_SCHEMA", "transport sensitivity missing variant propagation columns", metrics
     canonical_transport = [row for row in transport if row.get("variant") == "24h_75_25_CANONICAL"]
     if len(canonical_transport) != 2 or any(str(row.get("status") or "").upper() != "PASS" or int(float(row.get("units_changing_class") or 1)) != 0 for row in canonical_transport):
         return "BLOCKED_R10_C_TRANSPORT_SENSITIVITY", "canonical 24h/75-25 transport propagation did not reproduce screening", metrics
@@ -871,6 +884,12 @@ def evaluate_r10c_screening(output_root: Path) -> Tuple[str, str, Dict[str, int]
     dimension = read_csv_rows(qa / "r10_c_screening_independence_audit.tsv")
     if not any(row.get("metric") == "burden_vs_recurrence_spearman" for row in dimension):
         return "BLOCKED_R10_C_DIMENSION_INDEPENDENCE", "burden/recurrence independence diagnostic absent", metrics
+    baseline_rows = [row for row in dimension if row.get("metric") == "legacy_recurrence_only_class_agreement" and row.get("territorial_level") == "NUTS3"]
+    if not baseline_rows or baseline_rows[0].get("value") in (None, "", "not supplied"):
+        return "BLOCKED_R10_C_LEGACY_BASELINE", "legacy recurrence-only baseline is not explicit", metrics
+    legacy_audit = read_csv_rows(qa / "r10_c_legacy_screening_dominance_audit.tsv")
+    if not any(row.get("territorial_level") == "NUTS3" and row.get("metric") == "legacy_policy_rule" and all(row.get(key) not in (None, "") for key in ("high_priority_count", "medium_priority_count", "monitor_count")) for row in legacy_audit):
+        return "BLOCKED_R10_C_LEGACY_COUNTS", "NUTS3 legacy priority counts are not explicitly reproduced", metrics
     return "PASS", f"R10-C screening passed: NUTS3=24, municipalities=278, core_failures=0", metrics
 
 

@@ -174,7 +174,13 @@ def _interpolate_population(population: Mapping[str, float], year: int) -> float
     return p2020 + (p2025 - p2020) * ((year - 2020) / 5.0)
 
 
-def _transport_variant_burdens(daily_path: Path, pop_path: Path, timescale: int, mean_weight: float, max_weight: float) -> dict[str, float]:
+def _transport_variant_burdens(
+    daily_path: Path,
+    pop_path: Path,
+    timescale: int,
+    mean_weight: float,
+    max_weight: float,
+) -> tuple[dict[str, float], dict[str, float]]:
     daily_rows = _read_rows(daily_path)
     pop_rows = _read_rows(pop_path)
     population = {
@@ -188,7 +194,7 @@ def _transport_variant_burdens(daily_path: Path, pop_path: Path, timescale: int,
     scores = [_float_value(row, "smoke_day_score") for row in daily_rows]
     positive_scores = [score for score in scores if score > 0.0]
     if not positive_scores:
-        return {}
+        return {}, {}
     threshold = sorted(positive_scores)[int(0.60 * (len(positive_scores) - 1))]
     mean_key = f"transport_proxy_{timescale}h_mean"
     max_key = f"transport_proxy_{timescale}h_max"
@@ -204,10 +210,12 @@ def _transport_variant_burdens(daily_path: Path, pop_path: Path, timescale: int,
             continue
         variant_score = max((_float_value(row, mean_key) * mean_weight + _float_value(row, max_key) * max_weight) * 1.0e11, 0.0)
         annual[unit_id][year] += float(variant_score >= threshold and variant_score > 0.0)
-    return {
+    burdens = {
         unit_id: sum(days * _interpolate_population(population.get(unit_id, {}), year) for year, days in years.items()) / 10.0
         for unit_id, years in annual.items()
     }
+    smoke_days = {unit_id: sum(years.values()) for unit_id, years in annual.items()}
+    return burdens, smoke_days
 
 
 def write_transport_sensitivity(
@@ -226,9 +234,14 @@ def write_transport_sensitivity(
         ("24h_25_75", 24, 0.25, 0.75),
     )
     for level, rows in _level_rows(rows_by_level):
-        canonical_by_unit = {str(row.get("unit_id")): row for row in rows}
         for variant, timescale, mean_weight, max_weight in variants:
-            burdens = _transport_variant_burdens(daily_paths.get(level, Path()), population_paths.get(level, Path()), timescale, mean_weight, max_weight)
+            burdens, smoke_days = _transport_variant_burdens(
+                daily_paths.get(level, Path()),
+                population_paths.get(level, Path()),
+                timescale,
+                mean_weight,
+                max_weight,
+            )
             variant_values = [burdens.get(str(row.get("unit_id")), 0.0) for row in rows]
             ranks = tie_aware_fractional_rank(variant_values) if rows else []
             scores = [0.50 * rank + 0.50 * float(row["recurrence_priority_rank"]) for row, rank in zip(rows, ranks)]
@@ -236,14 +249,18 @@ def write_transport_sensitivity(
             status = "PASS" if burdens and variant == "24h_75_25_CANONICAL" and metrics["units_changing_class"] == 0 else "PASS" if burdens else "BLOCKED_INPUT_MISSING"
             detail = "one-factor transport propagation; canonical 24 h 75/25 remains unchanged" if burdens else "daily transport or population input unavailable"
             output_rows.append([
-                level, variant, timescale, mean_weight, max_weight, len(burdens),
+                level, variant, timescale, mean_weight, max_weight, len(burdens), sum(smoke_days.values()),
+                sum(variant_values) / float(len(variant_values)) if variant_values else None,
+                min(ranks) if ranks else None, max(ranks) if ranks else None,
                 spearman(variant_values, [float(row["population_smoke_day_burden_proxy_mean_2015_2024"]) for row in rows]) if rows else None,
                 metrics["screening_score_spearman_to_canonical"], metrics["class_agreement_fraction"], metrics["HIGH_class_jaccard"],
-                metrics["top5_overlap"], metrics["units_changing_class"], status, detail,
+                metrics["top5_overlap"], metrics["units_changing_class"],
+                ";".join(f"{label}={sum(value == label for value in (priority_from_score(score) for score in scores))}" for label in ("MONITOR", "MEDIUM_PRIORITY", "HIGH_PRIORITY")),
+                status, detail,
             ])
     write_tsv(
         qa_dir / "r10_c_smoke_transport_sensitivity_propagation.tsv",
-        ["territorial_level", "variant", "timescale_hours", "mean_weight", "max_weight", "units_with_variant_burden", "burden_spearman_to_canonical", "screening_score_spearman_to_canonical", "class_agreement_fraction", "HIGH_class_jaccard", "top5_overlap", "units_changing_class", "status", "detail"],
+        ["territorial_level", "variant", "timescale_hours", "mean_weight", "max_weight", "units_with_variant_burden", "variant_smoke_days_total", "variant_population_smoke_day_burden_proxy_mean", "variant_burden_rank_min", "variant_burden_rank_max", "burden_spearman_to_canonical", "screening_score_spearman_to_canonical", "class_agreement_fraction", "HIGH_class_jaccard", "top5_overlap", "units_changing_class", "variant_policy_priority_counts", "status", "detail"],
         output_rows,
     )
 
@@ -261,6 +278,7 @@ def write_r10c_qa(qa_dir: Path, rows_by_level: Mapping[str, Sequence[Mapping[str
     weight_rows = []
     recurrence_rows = []
     legacy_rows = []
+    legacy_agreement_by_level: dict[str, float] = {}
     crosswalk = []
     construct = [
         ["burden_input_valid", 1, "PASS", "non-negative population smoke-day burden"],
@@ -308,10 +326,15 @@ def write_r10c_qa(qa_dir: Path, rows_by_level: Mapping[str, Sequence[Mapping[str
         ]
         legacy_classes = [str(row.get("legacy_policy_priority") or "") for row in rows]
         legacy_agreement = sum(a == b for a, b in zip(legacy_recurrence_classes, legacy_classes)) / float(len(rows)) if rows else 1.0
+        legacy_agreement_by_level[level] = legacy_agreement
+        new_classes = [str(row.get("policy_priority") or "") for row in rows]
+        changed_count = sum(a != b for a, b in zip(legacy_classes, new_classes))
         legacy_rows.extend([
             [level, "legacy_policy_rule", len(rows), sum(label == "HIGH_PRIORITY" for label in legacy_classes), sum(label == "MEDIUM_PRIORITY" for label in legacy_classes), sum(label == "MONITOR" for label in legacy_classes), "PASS", "pre-R10-C branch reproduced from Step7"],
             [level, "legacy_recurrence_only_agreement", legacy_agreement, "", "", "", "PASS", "diagnostic; recurrence class was not a canonical independent dimension"],
             [level, "legacy_burden_p80_high_exception", sum(bool(row.get("legacy_burden_p80_flag")) and str(row.get("recurrence_class") or "") == "HIGH" for row in rows), "", "", "", "PASS", "P80 branch retained only as crosswalk"],
+            [level, "new_policy_rule", len(rows), sum(label == "HIGH_PRIORITY" for label in new_classes), sum(label == "MEDIUM_PRIORITY" for label in new_classes), sum(label == "MONITOR" for label in new_classes), "PASS", "fixed R10-C bands; no quota"],
+            [level, "legacy_vs_new_changed", changed_count, "", "", "", "PASS", f"fraction_changed={changed_count / float(len(rows)) if rows else 0.0}; canonical_vs_legacy_agreement={1.0 - changed_count / float(len(rows)) if rows else 1.0}"],
         ])
         for name, burden_weight, recurrence_weight in (("50/50 canonical", .5, .5), ("60/40 burden/recurrence", .6, .4), ("40/60 burden/recurrence", .4, .6), ("100/0 burden-only", 1.0, 0.0), ("0/100 recurrence-only", 0.0, 1.0)):
             values = [burden_weight * float(row["burden_priority_rank"]) + recurrence_weight * float(row["recurrence_priority_rank"]) for row in rows]
@@ -331,7 +354,15 @@ def write_r10c_qa(qa_dir: Path, rows_by_level: Mapping[str, Sequence[Mapping[str
                 [f"{level}_core_status", sum(row.get("screening_core_status") == "PASS" for row in rows), "PASS", "burden and recurrence valid"],
             ]
         )
-    baseline_agreement = (legacy_baseline or {}).get("legacy_recurrence_only_agreement", "not supplied")
+    nuts_rows = list(rows_by_level.get("NUTS3", ()))
+    temporal_values = [float(row.get("affected_year_fraction")) for row in nuts_rows if row.get("affected_year_fraction") not in (None, "")]
+    reburn_values = [float(row.get("recurrence_reburn_rank")) for row in nuts_rows if row.get("recurrence_reburn_rank") not in (None, "")]
+    if temporal_values:
+        saturated = sum(value >= 1.0 for value in temporal_values)
+        construct.append(["NUTS3_TEMPORAL_PERSISTENCE", "NEAR_SATURATED", "PASS", f"affected_year_fraction==1.0 for {saturated}/{len(temporal_values)} NUTS3 units"])
+    if reburn_values:
+        construct.append(["NUTS3_REBURN", "PRIMARY_DISCRIMINATING_RECURRENCE_COMPONENT", "PASS", f"recurrence_reburn_rank_unique={len(set(reburn_values))}/{len(reburn_values)}"])
+    baseline_agreement = (legacy_baseline or {}).get("legacy_recurrence_only_agreement") or legacy_agreement_by_level.get("NUTS3", "not supplied")
     dimension_rows.append(["NUTS3", "legacy_recurrence_only_class_agreement", baseline_agreement, "PASS", "pre-R10-C baseline"])
     dimension_rows.append(["NUTS3", "new_recurrence_only_class_agreement", single_axis_rows[1][3] if len(single_axis_rows) > 1 else "", "PASS", "diagnostic after independent score"])
     dimension_rows.append(["NUTS3", "new_burden_only_class_agreement", single_axis_rows[0][3] if single_axis_rows else "", "PASS", "diagnostic after independent score"])
