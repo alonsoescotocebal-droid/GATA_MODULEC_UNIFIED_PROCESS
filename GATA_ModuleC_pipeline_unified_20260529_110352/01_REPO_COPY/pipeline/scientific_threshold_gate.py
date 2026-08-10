@@ -787,6 +787,93 @@ def evaluate_r10b_recurrence(output_root: Path) -> Tuple[str, str, Dict[str, int
     return "PASS", f"R10-B recurrence passed: NUTS3={len(unit)}, municipalities={len(muni)}, score_unique={metrics['score_unique']}, geometry_failures=0", metrics
 
 
+def evaluate_r10c_screening(output_root: Path) -> Tuple[str, str, Dict[str, int]]:
+    """Evaluate the independent R10-C burden/recurrence screening contract."""
+    qa = output_root / "qa"
+    matrix_dir = output_root / "brief" / "causal_matrix"
+    required = [
+        qa / name for name in (
+            "r10_c_git_root_audit.tsv",
+            "r10_c_legacy_screening_dominance_audit.tsv",
+            "r10_c_dimension_independence_audit.tsv",
+            "r10_c_single_axis_dominance_audit.tsv",
+            "r10_c_screening_weight_sensitivity.tsv",
+            "r10_c_recurrence_sensitivity_propagation.tsv",
+            "r10_c_smoke_transport_sensitivity_propagation.tsv",
+            "r10_c_screening_legacy_crosswalk.tsv",
+            "r10_c_screening_construct_audit.tsv",
+            "r10_c_screening_independence_audit.tsv",
+            "r10_c_screening_method_declaration.md",
+        )
+    ] + [matrix_dir / name for name in ("territorial_screening_matrix_nuts3.csv", "territorial_screening_matrix_municipio.csv")]
+    metrics = {"nuts3_rows": 0, "municipal_rows": 0, "core_failures": 0, "schema_failures": 0}
+    missing = [str(path) for path in required if not path.exists()]
+    if missing:
+        return "BLOCKED_R10_C_SCREENING_ARTIFACT_MISSING", "; ".join(missing), metrics
+    matrices = {
+        "NUTS3": read_csv_rows(matrix_dir / "territorial_screening_matrix_nuts3.csv"),
+        "MUNICIPIO": read_csv_rows(matrix_dir / "territorial_screening_matrix_municipio.csv"),
+    }
+    metrics["nuts3_rows"] = len(matrices["NUTS3"])
+    metrics["municipal_rows"] = len(matrices["MUNICIPIO"])
+    if len(matrices["NUTS3"]) != 24 or len(matrices["MUNICIPIO"]) != 278:
+        return "BLOCKED_R10_C_SCREENING_COVERAGE", f"rows NUTS3/municipality={len(matrices['NUTS3'])}/{len(matrices['MUNICIPIO'])}; expected 24/278", metrics
+    required_columns = {
+        "unit_id", "unit_level", "population_smoke_day_burden_proxy_mean_2015_2024", "recurrence_score",
+        "burden_priority_rank", "recurrence_priority_rank", "screening_priority_score", "burden_band", "recurrence_band",
+        "screening_profile", "screening_method", "screening_claim_status", "screening_core_status", "contextual_completeness_status",
+        "legacy_policy_priority", "legacy_burden_p80_flag", "smoke_signal_resolution", "recurrence_signal_resolution", "policy_priority",
+    }
+    for level, rows in matrices.items():
+        if not rows or not required_columns.issubset(rows[0]):
+            metrics["schema_failures"] += 1
+            return "BLOCKED_R10_C_SCREENING_SCHEMA", f"{level} matrix missing canonical R10-C columns", metrics
+        claim = "REGIONAL_SMOKE_INFORMED_MUNICIPAL_SCREENING" if level == "MUNICIPIO" else "RELATIVE_TERRITORIAL_SCREENING_BURDEN_AND_WILDFIRE_RECURRENCE"
+        for row in rows:
+            burden = safe_float(row.get("population_smoke_day_burden_proxy_mean_2015_2024"))
+            recurrence = safe_float(row.get("recurrence_score"))
+            burden_rank = safe_float(row.get("burden_priority_rank"))
+            recurrence_rank = safe_float(row.get("recurrence_priority_rank"))
+            score = safe_float(row.get("screening_priority_score"))
+            if burden is None or burden < 0 or recurrence is None or not 0 <= recurrence <= 1 or burden_rank is None or not 0 <= burden_rank <= 1 or recurrence_rank is None or not 0 <= recurrence_rank <= 1 or score is None or not 0 <= score <= 1:
+                metrics["core_failures"] += 1
+                return "BLOCKED_R10_C_SCREENING_RANGE", f"{level} {row.get('unit_id')} core range invalid", metrics
+            expected_score = 0.50 * burden_rank + 0.50 * recurrence_rank
+            if abs(score - expected_score) > 1e-12:
+                metrics["core_failures"] += 1
+                return "BLOCKED_R10_C_SCREENING_FORMULA", f"{level} {row.get('unit_id')} score is not 50/50 rank average", metrics
+            expected_class = "MONITOR" if score < 1 / 3 else "MEDIUM_PRIORITY" if score < 2 / 3 else "HIGH_PRIORITY"
+            if row.get("policy_priority") != expected_class or row.get("screening_claim_status") != claim or row.get("screening_core_status") != "PASS":
+                metrics["core_failures"] += 1
+                return "BLOCKED_R10_C_SCREENING_CLASS_OR_CLAIM", f"{level} {row.get('unit_id')} class/claim/core mismatch", metrics
+    git_rows = read_csv_rows(qa / "r10_c_git_root_audit.tsv")
+    git_decisions = [str(row.get("value") or "") for row in git_rows if row.get("metric") == "decision"]
+    if git_decisions != ["PASS"]:
+        return "BLOCKED_R10_C_GIT_ROOT_AUDIT", "r10_c_git_root_audit decision is not PASS", metrics
+    construct_rows = read_csv_rows(qa / "r10_c_screening_construct_audit.tsv")
+    if any(str(row.get("status") or "").upper() != "PASS" for row in construct_rows):
+        return "BLOCKED_R10_C_SCREENING_CONSTRUCT", "construct audit contains non-PASS status", metrics
+    method = (qa / "r10_c_screening_method_declaration.md").read_text(encoding="utf-8-sig", errors="replace").lower()
+    method_terms = ("population smoke-day burden", "r10-b recurrence score", "tie-aware", "0.50", "[0,1/3)", "no quotas", "wui", "wrb", "municipal")
+    missing_terms = [term for term in method_terms if term not in method]
+    if missing_terms:
+        return "BLOCKED_R10_C_METHOD_DECLARATION", "method declaration missing: " + ",".join(missing_terms), metrics
+    transport = read_csv_rows(qa / "r10_c_smoke_transport_sensitivity_propagation.tsv")
+    canonical_transport = [row for row in transport if row.get("variant") == "24h_75_25_CANONICAL"]
+    if len(canonical_transport) != 2 or any(str(row.get("status") or "").upper() != "PASS" or int(float(row.get("units_changing_class") or 1)) != 0 for row in canonical_transport):
+        return "BLOCKED_R10_C_TRANSPORT_SENSITIVITY", "canonical 24h/75-25 transport propagation did not reproduce screening", metrics
+    recurrence = read_csv_rows(qa / "r10_c_recurrence_sensitivity_propagation.tsv")
+    if not recurrence or any(str(row.get("status") or "PASS").upper() not in ("PASS", "") for row in recurrence):
+        return "BLOCKED_R10_C_RECURRENCE_SENSITIVITY", "recurrence sensitivity propagation failed", metrics
+    weights = read_csv_rows(qa / "r10_c_screening_weight_sensitivity.tsv")
+    if not any(row.get("variant") == "50/50 canonical" and abs(float(row.get("burden_weight") or -1) - 0.5) < 1e-12 and abs(float(row.get("recurrence_weight") or -1) - 0.5) < 1e-12 for row in weights):
+        return "BLOCKED_R10_C_WEIGHT_DECLARATION", "50/50 canonical row absent from weight sensitivity", metrics
+    dimension = read_csv_rows(qa / "r10_c_screening_independence_audit.tsv")
+    if not any(row.get("metric") == "burden_vs_recurrence_spearman" for row in dimension):
+        return "BLOCKED_R10_C_DIMENSION_INDEPENDENCE", "burden/recurrence independence diagnostic absent", metrics
+    return "PASS", f"R10-C screening passed: NUTS3=24, municipalities=278, core_failures=0", metrics
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--output-root", required=True)
@@ -888,6 +975,49 @@ def main() -> int:
     add_evidence("r10_b_recurrence_construct_audit", output_root / "qa" / "r10_b_recurrence_construct_audit.tsv")
     add_evidence("r10_b_recurrence_unit_summary", output_root / "tables" / "recurrence_unit_2015_2024.csv")
     add_evidence("r10_b_recurrence_municipal_summary", output_root / "tables" / "recurrence_municipio_2015_2024.csv")
+
+    r10c_status, r10c_observation, r10c_metrics = evaluate_r10c_screening(output_root)
+    r10c_effect = "NONE" if r10c_status == "PASS" else "NO-GO_SCIENTIFIC_THRESHOLD"
+    r10c_checks = (
+        ("SCREENING_GIT_001", "R10-C Git root and clean-tree audit"),
+        ("SCREENING_INPUT_001", "population smoke-day burden is primary dimension A"),
+        ("SCREENING_INPUT_002", "R10-B recurrence score is primary dimension B"),
+        ("SCREENING_RANK_001", "burden ranks are tie-aware fractional ranks within level"),
+        ("SCREENING_RANK_002", "recurrence ranks are tie-aware fractional ranks within level"),
+        ("SCREENING_SCALE_001", "canonical score is normalized to [0,1]"),
+        ("SCREENING_WEIGHT_001", "canonical weights are 0.50 burden and 0.50 recurrence"),
+        ("SCREENING_CLASS_001", "fixed bands are [0,1/3), [1/3,2/3), [2/3,1]"),
+        ("SCREENING_INDEPENDENCE_001", "dimension independence and single-axis diagnostics are present"),
+        ("SCREENING_DOUBLECOUNT_001", "smoke-days and population are not double-counted in canonical score"),
+        ("SCREENING_DOUBLECOUNT_002", "R10-B subcomponents, WUI, WRB, AQ and S1 are excluded from canonical score"),
+        ("SCREENING_CONTEXT_001", "contextual incompleteness does not block core screening"),
+        ("SCREENING_DOMINANCE_001", "legacy dominance is retained only as a crosswalk diagnostic"),
+        ("SCREENING_SENSITIVITY_001", "recurrence and transport sensitivities propagate through screening"),
+        ("SCREENING_MUNICIPAL_001", "municipal smoke claim is regional NUTS3 allocation"),
+        ("SCREENING_CLAIM_001", "claim remains relative territorial screening, not risk or causality"),
+    )
+    for gate_id, rule in r10c_checks:
+        add_gate(
+            gate_id,
+            "OC-09 R10-C independent two-dimensional screening",
+            str(output_root / "qa" / "r10_c_screening_construct_audit.tsv"),
+            rule,
+            r10c_observation,
+            rule,
+            "R10-C-SCREENING-SCIENTIFIC-CONTRACT",
+            "SCIENTIFIC_CONSTRUCT_GATE",
+            r10c_status,
+            "Relative burden-and-wildfire-recurrence territorial screening within the validated dataset.",
+            "Risk, dose, health exposure, causal priority, regulatory priority, quota or intervention claims.",
+            r10c_effect,
+        )
+    for name in (
+        "r10_c_git_root_audit.tsv", "r10_c_legacy_screening_dominance_audit.tsv", "r10_c_dimension_independence_audit.tsv",
+        "r10_c_single_axis_dominance_audit.tsv", "r10_c_screening_weight_sensitivity.tsv", "r10_c_recurrence_sensitivity_propagation.tsv",
+        "r10_c_smoke_transport_sensitivity_propagation.tsv", "r10_c_screening_legacy_crosswalk.tsv", "r10_c_screening_construct_audit.tsv",
+        "r10_c_screening_independence_audit.tsv", "r10_c_screening_method_declaration.md",
+    ):
+        add_evidence(f"r10_c_{name}", output_root / "qa" / name)
 
     if threshold_register.exists():
         add_gate(
@@ -1450,6 +1580,7 @@ def main() -> int:
         and str(row.get("final_decision_effect", "")) == "NONE"
         for row in r10b_rows
     )
+    r10c_pass = r10c_status == "PASS"
 
     aq_protocol_decision = portuguese_aq_gate.get("aq_protocol_decision") or "n/a"
     if scientific_decision == "GO" and aq_protocol_decision == IECH_PROXY_AQ_PROTOCOL:
@@ -1467,6 +1598,8 @@ def main() -> int:
         f"- scientific_threshold_decision: **{scientific_decision}**",
         f"- final_operational_decision: **{final_operational_decision}**",
         f"- R10_B_RECURRENCE_DECISION: **{'R10_B_RECURRENCE_PASS' if r10b_pass else 'R10_B_RECURRENCE_NOT_CLOSED'}**",
+        f"- R10_C_SCREENING_DECISION: **{'R10_C_SCREENING_INDEPENDENCE_PASS' if r10c_pass else r10c_status}**",
+        f"- OC_09: **{'PASS' if r10c_pass else 'HOLD'}**",
         "- MODULE_C_FINAL_SCIENTIFIC_GO: PROHIBITED_WHILE_DOWNSTREAM_HOLDS_OPEN",
         f"- indicator_name: {IECH_PROXY_INDICATOR_NAME}",
         f"- indicator_unit: {IECH_PROXY_INDICATOR_UNIT}",
@@ -1488,7 +1621,7 @@ def main() -> int:
         [
             "",
             "## Known downstream scientific holds",
-            "- R10-C SCREENING_INDEPENDENCE",
+            *([] if r10c_pass else ["- R10-C SCREENING_INDEPENDENCE"]),
             "- R10-D FORMAL_WUI",
             "- R10-E AQ_TIER_REVIEW",
             "- R10-F S1_TARGET_SELECTION",

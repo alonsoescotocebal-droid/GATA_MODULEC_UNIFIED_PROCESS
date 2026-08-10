@@ -155,6 +155,17 @@ OBJECTIVES: List[Dict[str, object]] = [
             "brief/causal_matrix/territorial_screening_matrix_municipio.csv",
             "brief/causal_matrix/territorial_screening_narrative.md",
             "qa/matrix_semantic_gate.tsv",
+            "qa/r10_c_git_root_audit.tsv",
+            "qa/r10_c_legacy_screening_dominance_audit.tsv",
+            "qa/r10_c_dimension_independence_audit.tsv",
+            "qa/r10_c_single_axis_dominance_audit.tsv",
+            "qa/r10_c_screening_weight_sensitivity.tsv",
+            "qa/r10_c_recurrence_sensitivity_propagation.tsv",
+            "qa/r10_c_smoke_transport_sensitivity_propagation.tsv",
+            "qa/r10_c_screening_legacy_crosswalk.tsv",
+            "qa/r10_c_screening_construct_audit.tsv",
+            "qa/r10_c_screening_independence_audit.tsv",
+            "qa/r10_c_screening_method_declaration.md",
         ],
         "producer_script": "step7_matriz_causal.py",
         "validation_rule": "No qa_flag=HOLD y missing_components vacÃ­o para cierre GO.",
@@ -960,6 +971,15 @@ def _check_r10b_objective(output_root: Path) -> Tuple[bool, str]:
     return status == "PASS", detail
 
 
+def _check_r10c_objective(output_root: Path) -> Tuple[bool, str]:
+    try:
+        import scientific_threshold_gate  # type: ignore
+        status, detail, _metrics = scientific_threshold_gate.evaluate_r10c_screening(output_root)
+    except Exception as exc:
+        return False, f"R10-C objective gate could not evaluate screening contract: {exc}"
+    return status == "PASS", detail
+
+
 def objective_specific_check(obj_id: str, output_root: Path, inputs: Dict[str, object]) -> Tuple[bool, str]:
     if obj_id == "OC-03":
         ok, reason = _check_smoke_inputs_clean(inputs)
@@ -995,6 +1015,9 @@ def objective_specific_check(obj_id: str, output_root: Path, inputs: Dict[str, o
     if obj_id == "OC-08":
         return _check_wrb_quality(output_root)
     if obj_id == "OC-09":
+        ok, reason = _check_r10c_objective(output_root)
+        if not ok:
+            return ok, reason
         ok, reason = _phase3_contract_check(output_root, obj_id)
         return (ok, reason) if not ok else (True, reason)
     if obj_id == "OC-11":

@@ -4702,6 +4702,53 @@ def create_r10b_audit_capsule(output_root: Path, report: Report) -> Path:
     return capsule
 
 
+def create_r10c_audit_capsule(output_root: Path, report: Report) -> Path:
+    """Create the compact R10-C closure capsule without large payloads."""
+    deliver_dir = output_root / "deliverables_step9"
+    ensure_dir(deliver_dir)
+    repo_root = Path(__file__).resolve().parents[1]
+    git_root = repo_root.parent
+    git = lambda *args: subprocess.run(["git", "-C", str(git_root), *args], capture_output=True, text=True, encoding="utf-8").stdout.strip()
+    head = git("rev-parse", "--short=12", "HEAD") or "unknown"
+    capsule = deliver_dir / f"R10_C_AUDIT_CAPSULE_{head}.zip"
+    selected = [
+        output_root / "qa" / name for name in (
+            "r10_c_git_root_audit.tsv", "r10_c_legacy_screening_dominance_audit.tsv", "r10_c_dimension_independence_audit.tsv",
+            "r10_c_single_axis_dominance_audit.tsv", "r10_c_screening_weight_sensitivity.tsv", "r10_c_recurrence_sensitivity_propagation.tsv",
+            "r10_c_smoke_transport_sensitivity_propagation.tsv", "r10_c_screening_legacy_crosswalk.tsv", "r10_c_screening_construct_audit.tsv",
+            "r10_c_screening_independence_audit.tsv", "r10_c_screening_method_declaration.md", "scientific_validation_gate.tsv",
+            "scientific_claim_gate.tsv", "objectives_canon_alignment_report.tsv", "objectives_canon_alignment_report.md",
+            "pytest_result_summary.tsv", "pytest_evidence_inventory.tsv",
+        )
+    ] + [
+        output_root / "brief" / "causal_matrix" / "territorial_screening_matrix_nuts3.csv",
+        output_root / "brief" / "causal_matrix" / "territorial_screening_matrix_municipio.csv",
+    ] + [
+        output_root / "deliverables_step9" / name for name in (
+            "runtime_closure_decision.md", "runtime_scientific_closure_decision.md", "final_manifest.json",
+            "final_manifest_recursive_audit.tsv", "final_sha256_checkpoints.txt",
+        )
+    ]
+    git_state = "\n".join([
+        f"git_toplevel={git_root}", f"branch={git('branch', '--show-current')}", f"head={git('rev-parse', 'HEAD')}",
+        "status_short:", git("status", "--short"), "",
+    ])
+    phase_summary = "\n".join([
+        "# R10-C Audit Capsule", "", "Decision: R10_C_SCREENING_INDEPENDENCE_PASS when the canonical screening gate is PASS.",
+        "Canonical score: 0.50 tie-aware burden rank + 0.50 tie-aware R10-B recurrence rank within each territorial level.",
+        "Claims are limited to relative territorial screening; risk, causal priority, dose and health exposure remain blocked.",
+        "R10-D and later phases remain explicitly held and were not started.", "",
+    ])
+    with zipfile.ZipFile(capsule, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("00_git_state.txt", git_state)
+        zf.writestr("00_phase_summary.md", phase_summary)
+        for path in selected:
+            if path.exists() and path.is_file():
+                zf.write(path, arcname=_relative_output_path(path, output_root))
+    report.log(f"R10-C audit capsule created: {capsule}")
+    return capsule
+
+
 def resolve_step7_script(gata_root: Path, report: Report) -> Path:
     local_repo_script = Path(__file__).resolve().parent / "RUN_QGIS" / "STEP7_MATRIZ_CAUSAL" / "step7_matriz_causal.py"
     external_root_script = gata_root / "pipeline" / "RUN_QGIS" / "STEP7_MATRIZ_CAUSAL" / "step7_matriz_causal.py"
@@ -4776,7 +4823,7 @@ def write_runtime_closure_decision(output_root: Path, decision: str, summary: st
         [
             "",
             "## Known downstream scientific holds",
-            "- R10-C SCREENING_INDEPENDENCE",
+            *([] if all((output_root / "qa" / name).exists() for name in ("r10_c_screening_construct_audit.tsv", "r10_c_git_root_audit.tsv", "scientific_validation_gate.tsv")) else ["- R10-C SCREENING_INDEPENDENCE"]),
             "- R10-D FORMAL_WUI",
             "- R10-E AQ_TIER_REVIEW",
             "- R10-F S1_TARGET_SELECTION",
@@ -5917,6 +5964,17 @@ def collect_final_outputs(output_root: Path, scientific_decision_path: Path, inc
         output_root / "qa" / "r10_b_recurrence_legacy_crosswalk.tsv",
         output_root / "qa" / "r10_b_recurrence_sensitivity.tsv",
         output_root / "qa" / "r10_b_recurrence_method_declaration.md",
+        output_root / "qa" / "r10_c_git_root_audit.tsv",
+        output_root / "qa" / "r10_c_legacy_screening_dominance_audit.tsv",
+        output_root / "qa" / "r10_c_dimension_independence_audit.tsv",
+        output_root / "qa" / "r10_c_single_axis_dominance_audit.tsv",
+        output_root / "qa" / "r10_c_screening_weight_sensitivity.tsv",
+        output_root / "qa" / "r10_c_recurrence_sensitivity_propagation.tsv",
+        output_root / "qa" / "r10_c_smoke_transport_sensitivity_propagation.tsv",
+        output_root / "qa" / "r10_c_screening_legacy_crosswalk.tsv",
+        output_root / "qa" / "r10_c_screening_construct_audit.tsv",
+        output_root / "qa" / "r10_c_screening_independence_audit.tsv",
+        output_root / "qa" / "r10_c_screening_method_declaration.md",
         output_root / "qa" / "scenario_audit.tsv",
         output_root / "qa" / "wrb_method_consistency_audit.tsv",
         output_root / "provenance" / "launcher_command.txt",
@@ -5955,7 +6013,7 @@ def collect_final_outputs(output_root: Path, scientific_decision_path: Path, inc
         scientific_decision_path,
     ]
     capsule_candidates = sorted(
-        (output_root / "deliverables_step9").glob("R10_B_AUDIT_CAPSULE_*.zip"),
+        (output_root / "deliverables_step9").glob("R10_C_AUDIT_CAPSULE_*.zip"),
         key=lambda path: path.stat().st_mtime,
     )
     if capsule_candidates:
@@ -6060,7 +6118,7 @@ def complete_post_smoke_runtime(
     write_source_runtime_provenance(output_root)
     run_global_audit_status_scan(output_root, report)
     assert_global_audit_status_clear(output_root, report)
-    create_r10b_audit_capsule(output_root, report)
+    create_r10c_audit_capsule(output_root, report)
     outputs = collect_final_outputs(output_root, scientific_decision_path, include_global_scan=True)
     build_manifest_and_zip(outputs, deliver_dir, report)
 

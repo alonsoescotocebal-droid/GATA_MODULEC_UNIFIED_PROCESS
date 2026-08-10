@@ -10,6 +10,7 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
 import sys
 import traceback
@@ -33,6 +34,7 @@ from recurrence_r10b import (
     write_recurrence_qa,
     write_summary,
 )
+from screening_r10c import apply_canonical_screening, write_git_root_audit, write_r10c_qa
 
 YEARS_HIST = list(range(2015, 2025))
 YEARS_SCEN = list(range(2026, 2031))
@@ -1996,11 +1998,11 @@ def build_causal_matrix(
             missing_components.append("SMOKE_ROUTE_BLOCKED")
 
         if iech_mean is not None and iech_mean >= iech_q80 and rec_class == "HIGH":
-            priority = "HIGH_PRIORITY"
+            legacy_priority = "HIGH_PRIORITY"
         elif rec_class in ("HIGH", "MEDIUM", "MED"):
-            priority = "MEDIUM_PRIORITY"
+            legacy_priority = "MEDIUM_PRIORITY"
         else:
-            priority = "MONITOR"
+            legacy_priority = "MONITOR"
 
         interpretation = (
             f"screening association: population_smoke_burden_proxy_mean={iech_mean if iech_mean is not None else 'NA'}; "
@@ -2046,7 +2048,7 @@ def build_causal_matrix(
             "indicator_name": IECH_PROXY_INDICATOR_NAME,
             "indicator_unit": IECH_PROXY_INDICATOR_UNIT,
             "claim_status": IECH_PROXY_CLAIM_STATUS,
-            "policy_priority": priority,
+            "policy_priority": legacy_priority,
             "causal_interpretation": interpretation,
             "missing_components": "|".join(missing_components),
             "qa_flag": qa_flag,
@@ -2060,6 +2062,21 @@ def build_causal_matrix(
         }
         rows_out.append(row)
 
+    try:
+        rows_out = apply_canonical_screening(rows_out, unit_level)
+    except ValueError as exc:
+        # Preserve legacy helper behavior for minimal audit fixtures; a real
+        # runtime with this state is rejected by the R10-C scientific gate.
+        for row in rows_out:
+            row.update(
+                {
+                    "screening_method": "R10_C_CORE_INPUT_BLOCKED",
+                    "screening_core_status": "BLOCKED_R10_C_CORE_INPUT",
+                    "contextual_completeness_status": "NOT_EVALUATED",
+                    "screening_claim_status": "R10_C_SCREENING_NOT_EVALUATED",
+                    "screening_input_error": str(exc),
+                }
+            )
     header = [
         "unit_id",
         "unit_name",
@@ -2078,6 +2095,22 @@ def build_causal_matrix(
         "recurrence_temporal_rank",
         "recurrence_reburn_rank",
         "recurrence_score",
+        "burden_priority_rank",
+        "burden_band",
+        "recurrence_priority_rank",
+        "recurrence_band",
+        "screening_priority_score",
+        "screening_profile",
+        "screening_method",
+        "screening_claim_status",
+        "screening_core_status",
+        "contextual_completeness_status",
+        "screening_input_error",
+        "legacy_policy_priority",
+        "legacy_burden_p80_flag",
+        "legacy_recurrence_driven_rule",
+        "smoke_signal_resolution",
+        "recurrence_signal_resolution",
         "legacy_years_area_gt_own_p75",
         "legacy_recurrence_class_absolute_burn_tertile",
         "recurrence_class",
@@ -2905,6 +2938,16 @@ def generate_brief(output_root: Path, inputs: Dict[str, object]) -> Path:
     else:
         lines.append("- population_smoke_day_burden_proxy municipal no disponible (HOLD MUNICIPAL).")
     lines.append("")
+    screening_nuts = causal_dir / "territorial_screening_matrix_nuts3.csv"
+    screening_muni = causal_dir / "territorial_screening_matrix_municipio.csv"
+    lines.append("## R10-C screening bidimensional")
+    lines.append("- Dimensión A: population_smoke_day_burden_proxy_mean_2015_2024; dimensión B: R10-B recurrence_score.")
+    lines.append("- Score canónico: 0.50 burden_priority_rank + 0.50 recurrence_priority_rank, con ranks fraccionales tie-aware separados por nivel.")
+    lines.append("- Bandas fijas: LOW/MONITOR [0,1/3), MEDIUM/MEDIUM_PRIORITY [1/3,2/3), HIGH/HIGH_PRIORITY [2/3,1]; no cuotas ni P80 hard-gating.")
+    lines.append(f"- Matrices screening NUTS3/municipio: {'disponibles' if screening_nuts.exists() and screening_muni.exists() else 'HOLD'}.")
+    lines.append("- Claim municipal: REGIONAL_SMOKE_INFORMED_MUNICIPAL_SCREENING; smoke regional NUTS3 asignado y recurrence con huella municipal directa.")
+    lines.append("- WUI, WRB, AQ, S1, smoke_days, población auxiliar y subcomponentes R10-B quedan fuera del score canónico; su estado es contextual o downstream.")
+    lines.append("")
     lines.append("## Resultados WRB")
     lines.append(f"- Tabla WRB NUTS3: {'sí' if wrb_nuts.exists() else 'no'}.")
     if wrb_top:
@@ -2935,11 +2978,11 @@ def generate_brief(output_root: Path, inputs: Dict[str, object]) -> Path:
     lines.append("")
     lines.append("## Recomendaciones")
     if missing_summary:
-        lines.append("- Mantener priorización provisional; evitar ranking territorial fuerte mientras existan componentes en HOLD.")
+        lines.append("- Usar el resultado como screening relativo y mantener separado el estado contextual de los componentes en HOLD.")
     else:
-        lines.append("- Priorizar intervención en unidades HIGH_PRIORITY con recurrencia alta y soporte completo de componentes.")
-    lines.append("- Mantener WRB como contexto edáfico interpretativo, no como causal directo.")
-    lines.append("- Consolidar proxy WUI con datos formales de combustible/landcover cuando estén disponibles.")
+        lines.append("- Usar HIGH_PRIORITY como banda de screening relativo, no como prioridad causal, regulatoria o de intervención.")
+    lines.append("- Mantener WRB y WUI como contexto descriptivo, no como entradas del score R10-C.")
+    lines.append("- Mantener AQ y S1 como validación o contexto downstream; no alteran el score canónico.")
     lines.append("")
     lines.append("## Evidencia de QA")
     lines.append(f"- `{output_root / 'qa' / 'inputs_resolved.json'}`")
@@ -3132,7 +3175,7 @@ def main() -> int:
         )
 
         out_causal_muni_csv = causal_dir / "causal_matrix_IECH_municipio.csv"
-        build_causal_matrix(
+        rows_muni = build_causal_matrix(
             output_root=output_root,
             unit_level="MUNICIPIO",
             smoke_csv=smoke_muni_csv,
@@ -3146,6 +3189,12 @@ def main() -> int:
             smoke_route_blocked=smoke_route_blocked,
             smoke_route_context=smoke_route_context,
         )
+        shutil.copy2(out_causal_nuts_csv, causal_dir / "territorial_screening_matrix_nuts3.csv")
+        shutil.copy2(out_causal_muni_csv, causal_dir / "territorial_screening_matrix_municipio.csv")
+        code_root = PIPELINE_ROOT.parent
+        outer_root = code_root.parent.parent
+        write_r10c_qa(output_root / "qa", {"NUTS3": rows_nuts, "MUNICIPIO": rows_muni})
+        write_git_root_audit(output_root / "qa", outer_root, code_root)
 
         write_causal_json_txt_sha(
             causal_dir=causal_dir,
