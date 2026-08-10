@@ -120,6 +120,8 @@ def main() -> int:
     qa_dir.mkdir(parents=True, exist_ok=True)
 
     scan_paths = [root / "qa", root / "brief", root / "brief" / "causal_matrix", root / "deliverables_step9"]
+    out_tsv = qa_dir / "global_audit_status_scan.tsv"
+    out_md = qa_dir / "global_audit_status_scan.md"
     files: List[Path] = []
     for d in scan_paths:
         if d.exists():
@@ -129,9 +131,6 @@ def main() -> int:
                 if f.is_file() and f.suffix.lower() in (".tsv", ".csv", ".json", ".md", ".txt"):
                     files.append(f)
     files = sorted(set(files))
-
-    out_tsv = qa_dir / "global_audit_status_scan.tsv"
-    out_md = qa_dir / "global_audit_status_scan.md"
 
     rows = []
     total_blockers = 0
