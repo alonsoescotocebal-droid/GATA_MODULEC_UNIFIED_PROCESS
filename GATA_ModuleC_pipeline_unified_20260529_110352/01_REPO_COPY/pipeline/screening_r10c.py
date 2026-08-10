@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import csv
 import math
+import os
+import shutil
 import statistics
 from collections import defaultdict
 from pathlib import Path
@@ -404,11 +406,19 @@ def write_r10c_qa(qa_dir: Path, rows_by_level: Mapping[str, Sequence[Mapping[str
 
 def write_git_root_audit(qa_dir: Path, outer: Path, code: Path) -> None:
     import subprocess
-    outer_top = subprocess.run(["git", "-C", str(outer), "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=True).stdout.strip()
-    code_top = subprocess.run(["git", "-C", str(code), "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=True).stdout.strip()
-    branch = subprocess.run(["git", "-C", str(outer), "branch", "--show-current"], capture_output=True, text=True, check=True).stdout.strip()
-    head = subprocess.run(["git", "-C", str(outer), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
-    status = subprocess.run(["git", "-C", str(outer), "status", "--short", "--untracked-files=all"], capture_output=True, text=True, check=True).stdout.strip()
+    git_exe = os.environ.get("MODULEC_GIT_EXE") or shutil.which("git")
+    if not git_exe:
+        for candidate in (Path(r"C:\Program Files\Git\cmd\git.exe"), Path(r"C:\Program Files\Git\bin\git.exe")):
+            if candidate.exists():
+                git_exe = str(candidate)
+                break
+    if not git_exe:
+        raise FileNotFoundError("Git executable not found; set MODULEC_GIT_EXE or install Git")
+    outer_top = subprocess.run([git_exe, "-C", str(outer), "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=True).stdout.strip()
+    code_top = subprocess.run([git_exe, "-C", str(code), "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=True).stdout.strip()
+    branch = subprocess.run([git_exe, "-C", str(outer), "branch", "--show-current"], capture_output=True, text=True, check=True).stdout.strip()
+    head = subprocess.run([git_exe, "-C", str(outer), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+    status = subprocess.run([git_exe, "-C", str(outer), "status", "--short", "--untracked-files=all"], capture_output=True, text=True, check=True).stdout.strip()
     same = Path(outer_top).resolve() == Path(code_top).resolve()
     decision = "PASS" if same and not status else "BLOCKED_R10_C_GIT_TOPLEVEL_AMBIGUITY" if not same else "BLOCKED_R10_C_DIRTY_TREE"
     write_tsv(qa_dir / "r10_c_git_root_audit.tsv", ["metric", "value", "status", "detail"], [
