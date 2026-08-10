@@ -7,6 +7,7 @@ import csv
 import datetime as dt
 import hashlib
 import json
+import math
 import os
 import re
 import subprocess
@@ -24,6 +25,14 @@ if str(PIPELINE_ROOT) not in sys.path:
 
 from wrb_source_route import find_wrb_annual_burned_area_paths, find_wrb_source_bundle
 from phase3_objective_closure import run_phase3_closure
+from recurrence_r10b import (
+    EVENT_NOT_VALIDATED,
+    YEARS_HIST as R10B_YEARS,
+    absolute_area_tertile_classes,
+    build_recurrence_records,
+    write_recurrence_qa,
+    write_summary,
+)
 
 YEARS_HIST = list(range(2015, 2025))
 YEARS_SCEN = list(range(2026, 2031))
@@ -678,177 +687,172 @@ def _stats_unique_by_category(layer, cat_field: str, val_field: str, processing)
     return acc
 
 
-def compute_recurrence_table(layer, id_field: str, fire_paths: List[Path], out_csv: Path, processing) -> None:
-    unit_ids = get_unit_ids(layer, id_field)
-    if not unit_ids:
+def _r10b_union(geometries, QgsGeometry):
+    valid = [geometry for geometry in geometries if geometry and not geometry.isEmpty()]
+    if not valid:
+        return QgsGeometry()
+    try:
+        return QgsGeometry.unaryUnion(valid)
+    except Exception:
+        result = valid[0]
+        for geometry in valid[1:]:
+            result = result.combine(geometry)
+        return result
+
+
+def compute_recurrence_table(layer, id_field: str, fire_paths: List[Path], out_csv: Path, processing, annual_out_csv: Optional[Path] = None, territorial_level: str = "NUTS3") -> Dict[str, object]:
+    """Calculate recurrence from annual dissolved ICNF footprints."""
+    from qgis.core import QgsCoordinateReferenceSystem, QgsGeometry, QgsVectorLayer  # type: ignore
+
+    target_crs = QgsCoordinateReferenceSystem("EPSG:3035")
+    admin_metric = processing.run("native:reprojectlayer", {"INPUT": layer, "TARGET_CRS": target_crs, "OUTPUT": "memory:"})["OUTPUT"]
+    admin_metric = processing.run("native:fixgeometries", {"INPUT": admin_metric, "OUTPUT": "memory:"})["OUTPUT"]
+    unit_geometries: Dict[str, object] = {}
+    unit_areas: Dict[str, float] = {}
+    for feature in admin_metric.getFeatures():
+        unit_id = str(feature[id_field])
+        if unit_id in unit_geometries:
+            raise RuntimeError(f"Duplicate administrative unit id: {unit_id}")
+        geometry = feature.geometry()
+        area = float(geometry.area()) if geometry and not geometry.isEmpty() else 0.0
+        if area <= 0 or not math.isfinite(area):
+            raise RuntimeError(f"Invalid administrative area for {unit_id}: {area}")
+        unit_geometries[unit_id] = geometry
+        unit_areas[unit_id] = area / 10000.0
+    if not unit_geometries:
         raise RuntimeError(f"No unit ids found for field '{id_field}'")
 
-    burn_by_u_y: Dict[str, Dict[int, float]] = {u: {} for u in unit_ids}
-    big_by_u_y: Dict[str, Dict[int, int]] = {u: {} for u in unit_ids}
-    forest_by_u_y: Dict[str, Dict[int, float]] = {u: {} for u in unit_ids}
-    shrub_by_u_y: Dict[str, Dict[int, float]] = {u: {} for u in unit_ids}
-
-    admin_fix = processing.run("native:fixgeometries", {"INPUT": layer, "OUTPUT": "memory:"})["OUTPUT"]
+    annual_geometries: Dict[str, Dict[int, object]] = {unit_id: {} for unit_id in unit_geometries}
+    polygon_counts: Dict[str, Dict[int, int]] = {unit_id: defaultdict(int) for unit_id in unit_geometries}
+    event_ids: Dict[str, Dict[int, set[str]]] = {unit_id: defaultdict(set) for unit_id in unit_geometries}
+    forest_by_year: Dict[str, Dict[int, float]] = {unit_id: defaultdict(float) for unit_id in unit_geometries}
+    shrub_by_year: Dict[str, Dict[int, float]] = {unit_id: defaultdict(float) for unit_id in unit_geometries}
+    semantics: List[Dict[str, object]] = []
+    geometry_failures = 0
 
     for gpkg in fire_paths:
         year = _extract_year(gpkg.name)
         if year is None or year not in YEARS_HIST:
             continue
-
-        from qgis.core import QgsVectorLayer  # type: ignore
-
         fire = QgsVectorLayer(str(gpkg), f"fire_{year}", "ogr")
         if not fire.isValid():
-            raise RuntimeError(f"Invalid fire layer: {gpkg}")
+            raise RuntimeError(f"Invalid ICNF fire layer: {gpkg}")
+        field_names = list(fire.fields().names())
+        event_candidates = [name for name in field_names if name.lower() in {"event_id", "eventid", "fire_id", "fireid", "incident_id", "incidentid"}]
+        event_field = event_candidates[0] if event_candidates else ""
+        raw_ids = [str(feature[event_field]).strip() for feature in fire.getFeatures()] if event_field else []
+        duplicate_ids = len(raw_ids) - len(set(raw_ids)) if raw_ids else 0
+        events_validated = bool(event_field and raw_ids and duplicate_ids == 0 and all(raw_ids))
+        semantics.append({
+            "territorial_level": territorial_level,
+            "source_layer": str(gpkg),
+            "year": year,
+            "feature_count": fire.featureCount(),
+            "candidate_event_id_fields": ",".join(event_candidates),
+            "unique_candidate_ids": len(set(raw_ids)) if raw_ids else "",
+            "duplicate_ids": duplicate_ids,
+            "multipart_geometry_count": sum(1 for feature in fire.getFeatures() if feature.geometry() and feature.geometry().isMultipart()),
+            "event_semantics_status": "FIRE_EVENT_ID_SEMANTICS_VALIDATED" if events_validated else EVENT_NOT_VALIDATED,
+            "note": "EVENT_FREQUENCY_NOT_CANONICAL" if not events_validated else "explicit unique event_id field validated",
+        })
 
-        fire2 = processing.run(
-            "native:fieldcalculator",
-            {
-                "INPUT": fire,
-                "FIELD_NAME": "area_ha",
-                "FIELD_TYPE": 0,
-                "FIELD_LENGTH": 20,
-                "FIELD_PRECISION": 4,
-                "FORMULA": "$area/10000.0",
-                "OUTPUT": "memory:",
-            },
-        )["OUTPUT"]
-        fire2 = processing.run(
-            "native:fieldcalculator",
-            {
-                "INPUT": fire2,
-                "FIELD_NAME": "evt_id",
-                "FIELD_TYPE": 1,
-                "FIELD_LENGTH": 20,
-                "FIELD_PRECISION": 0,
-                "FORMULA": "$id",
-                "OUTPUT": "memory:",
-            },
-        )["OUTPUT"]
+        fire2 = processing.run("native:fieldcalculator", {"INPUT": fire, "FIELD_NAME": "area_ha", "FIELD_TYPE": 0, "FIELD_LENGTH": 20, "FIELD_PRECISION": 4, "FORMULA": "$area/10000.0", "OUTPUT": "memory:"})["OUTPUT"]
+        fire_metric = processing.run("native:reprojectlayer", {"INPUT": fire2, "TARGET_CRS": target_crs, "OUTPUT": "memory:"})["OUTPUT"]
+        fire_metric = processing.run("native:fixgeometries", {"INPUT": fire_metric, "OUTPUT": "memory:"})["OUTPUT"]
+        inter = processing.run("native:intersection", {"INPUT": admin_metric, "OVERLAY": fire_metric, "OUTPUT": "memory:"})["OUTPUT"]
+        by_unit: Dict[str, List[object]] = defaultdict(list)
+        fields = set(inter.fields().names())
+        pov_field = next((name for name in ("AreaHaPov", "areahapov", "AREAHAPOV") if name in fields), None)
+        mato_field = next((name for name in ("AreaHaMato", "areahamato", "AREAHAMATO") if name in fields), None)
+        for feature in inter.getFeatures():
+            geometry = feature.geometry()
+            if not geometry or geometry.isEmpty() or not geometry.isGeosValid():
+                geometry_failures += 1
+                continue
+            area_ha = float(geometry.area()) / 10000.0
+            if area_ha < 0 or not math.isfinite(area_ha):
+                geometry_failures += 1
+                continue
+            unit_id = str(feature[id_field])
+            by_unit[unit_id].append(geometry)
+            polygon_counts[unit_id][year] += 1
+            if events_validated and event_field in fields:
+                event_value = str(feature[event_field]).strip()
+                if event_value:
+                    event_ids[unit_id][year].add(event_value)
+            try:
+                full_area = float(feature["area_ha"] or 0.0)
+            except Exception:
+                full_area = 0.0
+            if pov_field and mato_field and full_area > 0:
+                try:
+                    ratio = area_ha / full_area
+                    forest_by_year[unit_id][year] += max(0.0, float(feature[pov_field] or 0.0)) * ratio
+                    shrub_by_year[unit_id][year] += max(0.0, float(feature[mato_field] or 0.0)) * ratio
+                except Exception:
+                    forest_by_year[unit_id][year] += area_ha * 0.6
+                    shrub_by_year[unit_id][year] += area_ha * 0.4
+            else:
+                forest_by_year[unit_id][year] += area_ha * 0.6
+                shrub_by_year[unit_id][year] += area_ha * 0.4
+        for unit_id in unit_geometries:
+            annual_geometries[unit_id][year] = _r10b_union(by_unit.get(unit_id, []), QgsGeometry)
 
-        fire_fix = processing.run("native:fixgeometries", {"INPUT": fire2, "OUTPUT": "memory:"})["OUTPUT"]
-        inter = processing.run("native:intersection", {"INPUT": admin_fix, "OVERLAY": fire_fix, "OUTPUT": "memory:"})["OUTPUT"]
-        inter = processing.run(
-            "native:fieldcalculator",
-            {
-                "INPUT": inter,
-                "FIELD_NAME": "area_ha_i",
-                "FIELD_TYPE": 0,
-                "FIELD_LENGTH": 20,
-                "FIELD_PRECISION": 4,
-                "FORMULA": "$area/10000.0",
-                "OUTPUT": "memory:",
-            },
-        )["OUTPUT"]
+    if geometry_failures:
+        raise RuntimeError(f"R10-B geometry failures after intersection: {geometry_failures}")
 
-        i_fields = set(inter.fields().names())
-        area_pov_name = None
-        area_mato_name = None
-        for cand in ("AreaHaPov", "areahapov", "AREAHAPOV"):
-            if cand in i_fields:
-                area_pov_name = cand
-                break
-        for cand in ("AreaHaMato", "areahamato", "AREAHAMATO"):
-            if cand in i_fields:
-                area_mato_name = cand
-                break
-
-        if area_pov_name:
-            formula_pov = f"coalesce(\"{area_pov_name}\",0) * CASE WHEN \"area_ha\" > 0 THEN (\"area_ha_i\" / \"area_ha\") ELSE 0 END"
-        else:
-            formula_pov = "0.6 * \"area_ha_i\""
-        inter = processing.run(
-            "native:fieldcalculator",
-            {
-                "INPUT": inter,
-                "FIELD_NAME": "forest_i",
-                "FIELD_TYPE": 0,
-                "FIELD_LENGTH": 20,
-                "FIELD_PRECISION": 4,
-                "FORMULA": formula_pov,
-                "OUTPUT": "memory:",
-            },
-        )["OUTPUT"]
-
-        if area_mato_name:
-            formula_mato = f"coalesce(\"{area_mato_name}\",0) * CASE WHEN \"area_ha\" > 0 THEN (\"area_ha_i\" / \"area_ha\") ELSE 0 END"
-        else:
-            formula_mato = "0.4 * \"area_ha_i\""
-        inter = processing.run(
-            "native:fieldcalculator",
-            {
-                "INPUT": inter,
-                "FIELD_NAME": "shrub_i",
-                "FIELD_TYPE": 0,
-                "FIELD_LENGTH": 20,
-                "FIELD_PRECISION": 4,
-                "FORMULA": formula_mato,
-                "OUTPUT": "memory:",
-            },
-        )["OUTPUT"]
-
-        area_lookup = _stats_sum_by_category(inter, id_field, "area_ha_i", processing)
-        forest_lookup = _stats_sum_by_category(inter, id_field, "forest_i", processing)
-        shrub_lookup = _stats_sum_by_category(inter, id_field, "shrub_i", processing)
-
-        for uid in unit_ids:
-            burn_by_u_y[uid][year] = area_lookup.get(uid, 0.0)
-            forest_by_u_y[uid][year] = forest_lookup.get(uid, 0.0)
-            shrub_by_u_y[uid][year] = shrub_lookup.get(uid, 0.0)
-
-        fire_big = processing.run(
-            "native:extractbyexpression",
-            {"INPUT": fire2, "EXPRESSION": "\"area_ha\" >= 1000", "OUTPUT": "memory:"},
-        )["OUTPUT"]
-        fire_big_fix = processing.run("native:fixgeometries", {"INPUT": fire_big, "OUTPUT": "memory:"})["OUTPUT"]
-        inter_big = processing.run("native:intersection", {"INPUT": admin_fix, "OVERLAY": fire_big_fix, "OUTPUT": "memory:"})["OUTPUT"]
-        big_lookup = _stats_unique_by_category(inter_big, id_field, "evt_id", processing)
-
-        for uid in unit_ids:
-            big_by_u_y[uid][year] = big_lookup.get(uid, 0)
-
-    totals: List[float] = []
-    rows_tmp: List[Tuple[str, float, int, int, float, float]] = []
-    for uid in unit_ids:
-        annual_burn = [burn_by_u_y[uid].get(y, 0.0) for y in YEARS_HIST]
-        total_burn = float(sum(annual_burn))
-        p75 = sorted(annual_burn)[int(0.75 * (len(annual_burn) - 1))] if annual_burn else 0.0
-        years_gt_p75 = sum(1 for v in annual_burn if v > p75 and v > 0)
-        n_big = int(sum(big_by_u_y[uid].get(y, 0) for y in YEARS_HIST))
-        forest_total = float(sum(forest_by_u_y[uid].get(y, 0.0) for y in YEARS_HIST))
-        shrub_total = float(sum(shrub_by_u_y[uid].get(y, 0.0) for y in YEARS_HIST))
-        totals.append(total_burn)
-        rows_tmp.append((uid, total_burn, years_gt_p75, n_big, forest_total, shrub_total))
-
-    totals_sorted = sorted(totals)
-    t33 = totals_sorted[int(0.33 * (len(totals_sorted) - 1))] if totals_sorted else 0.0
-    t66 = totals_sorted[int(0.66 * (len(totals_sorted) - 1))] if totals_sorted else 0.0
-
-    rows_out = []
-    for uid, total_burn, years_gt_p75, n_big, forest_total, shrub_total in rows_tmp:
-        if total_burn <= t33:
-            rc = "LOW"
-        elif total_burn <= t66:
-            rc = "MED"
-        else:
-            rc = "HIGH"
-        rows_out.append([uid, total_burn, years_gt_p75, n_big, rc, forest_total, shrub_total, 0])
-
-    write_csv(
-        out_csv,
-        [
-            "unit_id",
-            "total_burn_ha_2015_2024",
-            "years_area_gt_p75",
-            "n_events_gt_1000ha",
-            "recurrence_class",
-            "forest_proxy_ha_2015_2024",
-            "shrubland_proxy_ha_2015_2024",
-            "recurrence_missing_flag",
-        ],
-        rows_out,
-        delim=";",
-    )
+    legacy_totals = []
+    per_unit = []
+    annual_rows = []
+    for unit_id in sorted(unit_geometries):
+        annual_areas = {}
+        for year in YEARS_HIST:
+            geometry = annual_geometries[unit_id].get(year, QgsGeometry())
+            area = float(geometry.area()) / 10000.0 if geometry and not geometry.isEmpty() else 0.0
+            annual_areas[year] = area
+            annual_rows.append([unit_id, year, unit_areas[unit_id], area, area / unit_areas[unit_id], int(area > 0), polygon_counts[unit_id].get(year, 0), len(event_ids[unit_id].get(year, set())) if any(item.get("event_semantics_status") == "FIRE_EVENT_ID_SEMANTICS_VALIDATED" for item in semantics) else ""])
+        unique_geometry = _r10b_union(list(annual_geometries[unit_id].values()), QgsGeometry)
+        unique_area = float(unique_geometry.area()) / 10000.0 if unique_geometry and not unique_geometry.isEmpty() else 0.0
+        pairwise = []
+        for index, left_year in enumerate(YEARS_HIST):
+            for right_year in YEARS_HIST[index + 1:]:
+                left = annual_geometries[unit_id].get(left_year, QgsGeometry())
+                right = annual_geometries[unit_id].get(right_year, QgsGeometry())
+                if left and right and not left.isEmpty() and not right.isEmpty():
+                    overlap = left.intersection(right)
+                    if overlap and not overlap.isEmpty():
+                        pairwise.append(overlap)
+        reburn_geometry = _r10b_union(pairwise, QgsGeometry)
+        reburn_area = float(reburn_geometry.area()) / 10000.0 if reburn_geometry and not reburn_geometry.isEmpty() else 0.0
+        annual_max = max(annual_areas.values())
+        if reburn_area < 0 or reburn_area > unique_area or unique_area > unit_areas[unit_id] or annual_max > unit_areas[unit_id] or not all(math.isfinite(value) for value in (reburn_area, unique_area, annual_max)):
+            raise RuntimeError(f"R10-B geometry ordering failure for {unit_id}")
+        legacy_totals.append(sum(annual_areas.values()))
+        per_unit.append({
+            "territorial_level": territorial_level,
+            "unit_id": unit_id,
+            "unit_area_ha": unit_areas[unit_id],
+            "annual_burned_area_by_year": annual_areas,
+            "unique_burned_area_ha": unique_area,
+            "reburned_area_ha": reburn_area,
+            "burned_polygon_count": sum(polygon_counts[unit_id].values()),
+            "event_count_if_validated": sum(len(event_ids[unit_id].get(year, set())) for year in YEARS_HIST) if any(item.get("event_semantics_status") == "FIRE_EVENT_ID_SEMANTICS_VALIDATED" for item in semantics) else "",
+            "forest_proxy_ha_2015_2024": sum(forest_by_year[unit_id].values()),
+            "shrubland_proxy_ha_2015_2024": sum(shrub_by_year[unit_id].values()),
+        })
+    legacy_classes = absolute_area_tertile_classes(legacy_totals)
+    for record, legacy_class in zip(per_unit, legacy_classes):
+        record["legacy_recurrence_class_absolute_burn_tertile"] = legacy_class
+    rows = build_recurrence_records(per_unit)
+    for row in rows:
+        row["territorial_level"] = territorial_level
+    write_summary(out_csv, rows, write_csv)
+    if annual_out_csv is not None:
+        write_csv(annual_out_csv, ["unit_id", "year", "unit_area_ha", "annual_burned_area_ha", "annual_burned_fraction", "affected_year_flag", "polygon_count", "event_count_if_validated"], annual_rows, delim=";")
+    geometry_rows = []
+    for row in rows:
+        geometry_rows.append({"territorial_level": territorial_level, "unit_id": row["unit_id"], "unit_area_ha": row["unit_area_ha"], "unique_burned_area_ha": row["unique_burned_area_ha"], "reburned_area_ha": row["reburned_area_ha"], "annual_area_max_ha": row["maximum_annual_burned_fraction"] * row["unit_area_ha"], "geometry_failures": 0, "negative_area_failures": 0, "area_ordering_failures": 0, "status": "PASS"})
+    return {"territorial_level": territorial_level, "records": rows, "semantics": semantics, "geometry": geometry_rows}
 
 
 def interpolate_pop(p2015: float, p2020: float, p2025: float, year: int) -> float:
@@ -1950,9 +1954,16 @@ def build_causal_matrix(
         smoke_mean_u = smoke_mean.get(uid)
         pop2020 = safe_float(pop_r.get("pop_2020_sum"))
         pop2030 = safe_float(pop_r.get("pop_2030_sum"))
-        burn = safe_float(rec_r.get("total_burn_ha_2015_2024"))
-        years_gt = safe_float(rec_r.get("years_area_gt_p75"))
-        n_big = safe_float(rec_r.get("n_events_gt_1000ha"))
+        burn = safe_float(rec_r.get("cumulative_burned_area_ha", rec_r.get("total_burn_ha_2015_2024")))
+        years_gt = safe_float(rec_r.get("legacy_years_area_gt_own_p75", rec_r.get("years_area_gt_p75")))
+        n_big = safe_float(rec_r.get("event_count_if_validated", rec_r.get("n_events_gt_1000ha")))
+        unit_area = safe_float(rec_r.get("unit_area_ha"))
+        affected_year_fraction = safe_float(rec_r.get("affected_year_fraction"))
+        unique_burned_fraction = safe_float(rec_r.get("unique_burned_fraction"))
+        reburn_share = safe_float(rec_r.get("reburn_share_of_unique_burned_area"))
+        recurrence_score = safe_float(rec_r.get("recurrence_score"))
+        recurrence_temporal_rank = safe_float(rec_r.get("recurrence_temporal_rank"))
+        recurrence_reburn_rank = safe_float(rec_r.get("recurrence_reburn_rank"))
         rec_class = (rec_r.get("recurrence_class") or "").strip()
 
         s0 = _first_present_float(scen_r, "population_smoke_day_burden_proxy_S0_mean_2026_2030", "population_smoke_burden_proxy_S0_mean_2026_2030", "IECH_S0_mean_2026_2030")
@@ -1986,7 +1997,7 @@ def build_causal_matrix(
 
         if iech_mean is not None and iech_mean >= iech_q80 and rec_class == "HIGH":
             priority = "HIGH_PRIORITY"
-        elif rec_class in ("HIGH", "MED"):
+        elif rec_class in ("HIGH", "MEDIUM", "MED"):
             priority = "MEDIUM_PRIORITY"
         else:
             priority = "MONITOR"
@@ -2011,7 +2022,17 @@ def build_causal_matrix(
             "total_burn_ha_2015_2024": burn,
             "years_area_gt_p75": years_gt,
             "n_events_gt_1000ha": n_big,
+            "unit_area_ha": unit_area,
+            "affected_year_fraction": affected_year_fraction,
+            "unique_burned_fraction": unique_burned_fraction,
+            "reburn_share_of_unique_burned_area": reburn_share,
+            "recurrence_temporal_rank": recurrence_temporal_rank,
+            "recurrence_reburn_rank": recurrence_reburn_rank,
+            "recurrence_score": recurrence_score,
+            "legacy_years_area_gt_own_p75": years_gt,
+            "legacy_recurrence_class_absolute_burn_tertile": rec_r.get("legacy_recurrence_class_absolute_burn_tertile", ""),
             "recurrence_class": rec_class,
+            "downstream_status": "SCREENING_REQUIRES_R10_C",
             "population_smoke_day_burden_proxy_S0_mean_2026_2030": s0,
             "population_smoke_day_burden_proxy_S1_mean_2026_2030": s1,
             "delta_population_smoke_day_burden_proxy_S1_minus_S0": delta,
@@ -2050,7 +2071,17 @@ def build_causal_matrix(
         "total_burn_ha_2015_2024",
         "years_area_gt_p75",
         "n_events_gt_1000ha",
+        "unit_area_ha",
+        "affected_year_fraction",
+        "unique_burned_fraction",
+        "reburn_share_of_unique_burned_area",
+        "recurrence_temporal_rank",
+        "recurrence_reburn_rank",
+        "recurrence_score",
+        "legacy_years_area_gt_own_p75",
+        "legacy_recurrence_class_absolute_burn_tertile",
         "recurrence_class",
+        "downstream_status",
         "population_smoke_day_burden_proxy_S0_mean_2026_2030",
         "population_smoke_day_burden_proxy_S1_mean_2026_2030",
         "delta_population_smoke_day_burden_proxy_S1_minus_S0",
@@ -2348,7 +2379,17 @@ def write_recurrence_audit(output_root: Path, rec_unit_csv: Path, rec_muni_csv: 
     out_tsv = qa_dir / "recurrence_classification_audit.tsv"
     unit_rows = read_csv_rows(rec_unit_csv)[1] if rec_unit_csv.exists() else []
     muni_rows = read_csv_rows(rec_muni_csv)[1] if rec_muni_csv.exists() else []
-    required_cols = ["total_burn_ha_2015_2024", "years_area_gt_p75", "n_events_gt_1000ha", "recurrence_class"]
+    required_cols = [
+        "unit_area_ha",
+        "affected_year_fraction",
+        "unique_burned_fraction",
+        "reburn_share_of_unique_burned_area",
+        "recurrence_temporal_rank",
+        "recurrence_reburn_rank",
+        "recurrence_score",
+        "recurrence_class",
+        "legacy_years_area_gt_own_p75",
+    ]
     missing_cols = []
     if unit_rows:
         for c in required_cols:
@@ -2358,7 +2399,9 @@ def write_recurrence_audit(output_root: Path, rec_unit_csv: Path, rec_muni_csv: 
         ["metric", "value", "status", "note"],
         ["rec_unit_rows", len(unit_rows), "PASS" if len(unit_rows) > 0 else "HOLD", ""],
         ["rec_muni_rows", len(muni_rows), "PASS" if len(muni_rows) > 0 else "HOLD", ""],
-        ["rec_required_cols_missing", ",".join(missing_cols), "PASS" if not missing_cols else "HOLD", ""],
+        ["rec_required_cols_missing", ",".join(missing_cols), "PASS" if not missing_cols else "HOLD", "R10-B construct fields; legacy p75 diagnostic only"],
+        ["recurrence_source", "ICNF annual dissolved footprints", "PASS", "spatial reburn is computed across distinct years"],
+        ["absolute_hectares_sole_classifier", 0, "PASS", "canonical recurrence score uses temporal and spatial ranks"],
     ]
     write_csv(out_tsv, rows[0], rows[1:], delim="\t")
 
@@ -2854,7 +2897,7 @@ def generate_brief(output_root: Path, inputs: Dict[str, object]) -> Path:
     lines.append("")
     lines.append("## Resultados recurrencia")
     lines.append(f"- Filas recurrencia NUTS3: {_table_rowcount(rec_unit)}.")
-    lines.append("- Métricas: total_burn_ha, years_area_gt_p75, n_events_gt_1000ha y clase de recurrencia.")
+    lines.append("- Recurrence: affected-year persistence plus distinct-year reburn share; absolute burn and legacy p75 remain context/diagnostic only.")
     lines.append("")
     lines.append("## Resultados municipales")
     if iech_muni.exists():
@@ -2984,13 +3027,26 @@ def main() -> int:
         write_smoke_daily_table_from_nuts_map(smoke_daily_unit_csv, municipio_map_csv, smoke_daily_muni_csv)
         log_line(run_log, "Municipal smoke tables generated from NUTS3 mapping")
 
-        # Recurrence (recompute both levels to include fuel proxies)
+        # R10-B recurrence: calculate both levels directly from fire footprints.
         fire_paths = [Path(p) for p in paths.get("fire_gpkgs_tm06", [])]
         rec_unit_csv = tables_dir / "recurrence_unit_2015_2024.csv"
         rec_muni_csv = tables_dir / "recurrence_municipio_2015_2024.csv"
-        compute_recurrence_table(nuts_layer, nuts_field, fire_paths, rec_unit_csv, processing)
-        compute_recurrence_table(muni_layer, muni_field, fire_paths, rec_muni_csv, processing)
-        log_line(run_log, "Recurrence tables refreshed (NUTS3 + municipio)")
+        rec_unit_year_csv = tables_dir / "recurrence_unit_year_2015_2024.csv"
+        rec_muni_year_csv = tables_dir / "recurrence_municipio_year_2015_2024.csv"
+        recurrence_unit_result = compute_recurrence_table(
+            nuts_layer, nuts_field, fire_paths, rec_unit_csv, processing,
+            annual_out_csv=rec_unit_year_csv, territorial_level="NUTS3",
+        )
+        recurrence_muni_result = compute_recurrence_table(
+            muni_layer, muni_field, fire_paths, rec_muni_csv, processing,
+            annual_out_csv=rec_muni_year_csv, territorial_level="MUNICIPIO",
+        )
+        write_recurrence_qa(
+            output_root / "qa",
+            [recurrence_unit_result, recurrence_muni_result],
+            list(recurrence_unit_result["records"]) + list(recurrence_muni_result["records"]),
+        )
+        log_line(run_log, "R10-B recurrence tables refreshed from direct NUTS3 and municipality fire footprints")
 
         # Population municipal
         pop_muni_csv = tables_dir / "pop_municipio_2015_2025_2030.csv"
@@ -3136,7 +3192,9 @@ def main() -> int:
         write_smoke_route_audit(output_root, inputs, smoke_unit_csv, smoke_muni_csv)
         write_fire_ingestion_audit(output_root, fire_paths)
         write_population_audit(output_root, pop_unit_csv, pop_muni_csv)
-        write_recurrence_audit(output_root, rec_unit_csv, rec_muni_csv)
+        # The R10-B producer already wrote the complete recurrence audit after
+        # both territorial levels were computed; do not overwrite it with the
+        # former row-count-only audit.
         write_iech_audit(output_root, tables_dir / "IECH_unit_2015_2024.csv", iech_muni_csv)
         write_territorial_and_wrb_audits(output_root, wrb_nuts_csv, wrb_muni_csv, terr_nuts_csv, terr_muni_csv)
         write_scenario_audit(output_root, scen_unit_csv, scen_muni_csv)

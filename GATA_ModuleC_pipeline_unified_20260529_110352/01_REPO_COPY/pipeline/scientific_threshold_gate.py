@@ -7,6 +7,7 @@ import csv
 import datetime as dt
 import hashlib
 import json
+import math
 import re
 import sys
 from pathlib import Path
@@ -711,6 +712,81 @@ def audit_brief_claims(brief_path: Path, active_blocks: List[str]) -> List[Tuple
     return hits
 
 
+def evaluate_r10b_recurrence(output_root: Path) -> Tuple[str, str, Dict[str, int]]:
+    """Evaluate OC-06 from the R10-B construct, not row counts alone."""
+    qa = output_root / "qa"
+    tables = output_root / "tables"
+    required = [
+        qa / "r10_b_fire_feature_semantics.tsv",
+        qa / "r10_b_reburn_geometry_audit.tsv",
+        qa / "r10_b_recurrence_construct_audit.tsv",
+        qa / "r10_b_recurrence_legacy_crosswalk.tsv",
+        qa / "r10_b_recurrence_sensitivity.tsv",
+        qa / "r10_b_recurrence_method_declaration.md",
+        qa / "recurrence_classification_audit.tsv",
+        tables / "recurrence_unit_2015_2024.csv",
+        tables / "recurrence_municipio_2015_2024.csv",
+        tables / "recurrence_unit_year_2015_2024.csv",
+        tables / "recurrence_municipio_year_2015_2024.csv",
+    ]
+    metrics = {"unit_rows": 0, "municipal_rows": 0, "unit_year_rows": 0, "municipal_year_rows": 0, "score_unique": 0, "geometry_failures": 0}
+    missing = [str(path) for path in required if not path.exists()]
+    if missing:
+        return "BLOCKED_R10_B_RECURRENCE_ARTIFACT_MISSING", "; ".join(missing), metrics
+
+    unit = read_csv_rows(tables / "recurrence_unit_2015_2024.csv")
+    muni = read_csv_rows(tables / "recurrence_municipio_2015_2024.csv")
+    unit_year = read_csv_rows(tables / "recurrence_unit_year_2015_2024.csv")
+    muni_year = read_csv_rows(tables / "recurrence_municipio_year_2015_2024.csv")
+    metrics.update(unit_rows=len(unit), municipal_rows=len(muni), unit_year_rows=len(unit_year), municipal_year_rows=len(muni_year))
+    if not unit or not muni or not unit_year or not muni_year:
+        return "BLOCKED_R10_B_RECURRENCE_EMPTY", "one or more recurrence outputs are empty", metrics
+    summary_columns = {"unit_area_ha", "affected_year_fraction", "unique_burned_fraction", "cumulative_burned_fraction", "reburned_area_fraction", "reburn_share_of_unique_burned_area", "recurrence_temporal_rank", "recurrence_reburn_rank", "recurrence_score", "recurrence_class", "legacy_years_area_gt_own_p75", "recurrence_method", "recurrence_claim_status"}
+    annual_columns = {"unit_id", "year", "unit_area_ha", "annual_burned_area_ha", "annual_burned_fraction", "affected_year_flag", "polygon_count", "event_count_if_validated"}
+    if not summary_columns.issubset(unit[0]) or not summary_columns.issubset(muni[0]):
+        return "BLOCKED_R10_B_RECURRENCE_SCHEMA", "canonical recurrence summary columns missing", metrics
+    if not annual_columns.issubset(unit_year[0]) or not annual_columns.issubset(muni_year[0]):
+        return "BLOCKED_R10_B_RECURRENCE_ANNUAL_SCHEMA", "annual recurrence columns missing", metrics
+    if len(unit) != 24 or len(unit_year) != 240:
+        return "BLOCKED_R10_B_NUTS3_COVERAGE", f"NUTS3 summary/year rows={len(unit)}/{len(unit_year)} expected 24/240", metrics
+    if len(muni) != 278 or len(muni_year) != 2780:
+        return "BLOCKED_R10_B_MUNICIPAL_COVERAGE", f"municipal summary/year rows={len(muni)}/{len(muni_year)} expected 278/2780", metrics
+
+    for label, source_rows in (("NUTS3", unit), ("MUNICIPIO", muni)):
+        for row in source_rows:
+            for column in ("affected_year_fraction", "unique_burned_fraction", "reburned_area_fraction", "reburn_share_of_unique_burned_area", "recurrence_score"):
+                value = safe_float(row.get(column))
+                if value is None or not math.isfinite(value) or value < 0.0 or value > 1.0:
+                    return "BLOCKED_R10_B_RANGE", f"{label} {row.get('unit_id')} {column}={row.get(column)}", metrics
+            score = float(row["recurrence_score"])
+            expected_class = "LOW" if score < 1.0 / 3.0 else "MEDIUM" if score < 2.0 / 3.0 else "HIGH"
+            if row.get("recurrence_class") != expected_class:
+                return "BLOCKED_R10_B_FIXED_BANDS", f"{label} {row.get('unit_id')} score/class mismatch", metrics
+            if "ANNUAL_DISSOLVE" not in row.get("recurrence_method", ""):
+                return "BLOCKED_R10_B_METHOD", f"{label} method declaration missing annual dissolve", metrics
+    scores = [round(float(row["recurrence_score"]), 12) for row in unit]
+    metrics["score_unique"] = len(set(scores))
+    if metrics["score_unique"] <= 1:
+        return "BLOCKED_R10_B_RECURRENCE_CONSTRUCT_FAILED", "canonical NUTS3 score is non-discriminating", metrics
+    geometry_rows = read_csv_rows(qa / "r10_b_reburn_geometry_audit.tsv")
+    for row in geometry_rows:
+        for field in ("geometry_failures", "negative_area_failures", "area_ordering_failures"):
+            metrics["geometry_failures"] += int(safe_float(row.get(field)) or 0)
+        if (row.get("status") or "").strip().upper() != "PASS":
+            return "BLOCKED_R10_B_GEOMETRY", f"geometry audit status={row.get('status')}", metrics
+    if metrics["geometry_failures"]:
+        return "BLOCKED_R10_B_GEOMETRY", f"geometry failures={metrics['geometry_failures']}", metrics
+    construct = read_csv_rows(qa / "r10_b_recurrence_construct_audit.tsv")
+    if any((row.get("status") or "").strip().upper() == "HOLD" for row in construct):
+        return "BLOCKED_R10_B_DISCRIMINATION", "construct audit contains HOLD", metrics
+    method = (qa / "r10_b_recurrence_method_declaration.md").read_text(encoding="utf-8-sig", errors="replace").lower()
+    required_terms = ("affected_year_fraction", "reburn_share_of_unique_burned_area", "tie-aware", "0.50", "epsg:3035", "legacy")
+    missing_terms = [term for term in required_terms if term not in method]
+    if missing_terms:
+        return "BLOCKED_R10_B_METHOD", "method declaration missing: " + ",".join(missing_terms), metrics
+    return "PASS", f"R10-B recurrence passed: NUTS3={len(unit)}, municipalities={len(muni)}, score_unique={metrics['score_unique']}, geometry_failures=0", metrics
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--output-root", required=True)
@@ -778,6 +854,40 @@ def main() -> int:
             except Exception:
                 rows = -1
         evidence_rows.append([name, str(p), exists, size, sha, rows])
+
+    r10b_status, r10b_observation, r10b_metrics = evaluate_r10b_recurrence(output_root)
+    r10b_effect = "NONE" if r10b_status == "PASS" else "NO-GO_SCIENTIFIC_THRESHOLD"
+    r10b_checks = [
+        ("RECURRENCE_SOURCE_001", "ICNF footprint present and provenance valid"),
+        ("RECURRENCE_AREA_001", "unit area normalization valid"),
+        ("RECURRENCE_TEMPORAL_001", "affected-year frequency calculated"),
+        ("RECURRENCE_SPATIAL_001", "reburn across distinct years calculated"),
+        ("RECURRENCE_SPATIAL_002", "same-year polygon overlap cannot create reburn"),
+        ("RECURRENCE_CLASS_001", "absolute hectares are not sole classifier"),
+        ("RECURRENCE_CLASS_002", "fixed score bands applied"),
+        ("RECURRENCE_DISCRIMINATION_001", "canonical score discriminates units"),
+        ("RECURRENCE_LEGACY_001", "legacy own-p75 is not canonical input"),
+        ("RECURRENCE_EVENT_001", "event semantics declared before event frequency use"),
+        ("RECURRENCE_CLAIM_001", "HIGH recurrence is relative screening class"),
+    ]
+    for gate_id, rule in r10b_checks:
+        add_gate(
+            gate_id,
+            "OC-06 R10-B wildfire recurrence",
+            str(output_root / "qa" / "recurrence_classification_audit.tsv"),
+            rule,
+            r10b_observation,
+            rule,
+            "R10-B-SCIENTIFIC-CONTRACT",
+            "SCIENTIFIC_CONSTRUCT_GATE",
+            r10b_status,
+            "Relative recurrence screening within the ICNF 2015-2024 dataset.",
+            "Universal recurrence threshold, future probability, causal hazard, or unvalidated ignition frequency.",
+            r10b_effect,
+        )
+    add_evidence("r10_b_recurrence_construct_audit", output_root / "qa" / "r10_b_recurrence_construct_audit.tsv")
+    add_evidence("r10_b_recurrence_unit_summary", output_root / "tables" / "recurrence_unit_2015_2024.csv")
+    add_evidence("r10_b_recurrence_municipal_summary", output_root / "tables" / "recurrence_municipio_2015_2024.csv")
 
     if threshold_register.exists():
         add_gate(
@@ -1334,6 +1444,13 @@ def main() -> int:
     else:
         scientific_decision = "GO"
 
+    r10b_rows = [r for r in gate_rows if str(r.get("threshold_id", "")).startswith("RECURRENCE_")]
+    r10b_pass = bool(r10b_rows) and all(
+        str(row.get("gate_status", "")).upper() == "PASS"
+        and str(row.get("final_decision_effect", "")) == "NONE"
+        for row in r10b_rows
+    )
+
     aq_protocol_decision = portuguese_aq_gate.get("aq_protocol_decision") or "n/a"
     if scientific_decision == "GO" and aq_protocol_decision == IECH_PROXY_AQ_PROTOCOL:
         final_operational_decision = IECH_PROXY_FINAL_DECISION
@@ -1349,6 +1466,8 @@ def main() -> int:
         f"- output_root: \"{output_root}\"",
         f"- scientific_threshold_decision: **{scientific_decision}**",
         f"- final_operational_decision: **{final_operational_decision}**",
+        f"- R10_B_RECURRENCE_DECISION: **{'R10_B_RECURRENCE_PASS' if r10b_pass else 'R10_B_RECURRENCE_NOT_CLOSED'}**",
+        "- MODULE_C_FINAL_SCIENTIFIC_GO: PROHIBITED_WHILE_DOWNSTREAM_HOLDS_OPEN",
         f"- indicator_name: {IECH_PROXY_INDICATOR_NAME}",
         f"- indicator_unit: {IECH_PROXY_INDICATOR_UNIT}",
         f"- claim_status: {IECH_PROXY_CLAIM_STATUS}",
@@ -1365,6 +1484,21 @@ def main() -> int:
         decision_lines.extend([f"- {b}" for b in active_blocks])
     else:
         decision_lines.append("- none")
+    decision_lines.extend(
+        [
+            "",
+            "## Known downstream scientific holds",
+            "- R10-C SCREENING_INDEPENDENCE",
+            "- R10-D FORMAL_WUI",
+            "- R10-E AQ_TIER_REVIEW",
+            "- R10-F S1_TARGET_SELECTION",
+            "- MUNICIPAL_DIRECT_SMOKE",
+            "- WRB_METADATA",
+            "- LEGAL_2026",
+            "- FINAL_BRIEF",
+            "- R10-FINAL",
+        ]
+    )
     decision_lines.extend(
         [
             "",

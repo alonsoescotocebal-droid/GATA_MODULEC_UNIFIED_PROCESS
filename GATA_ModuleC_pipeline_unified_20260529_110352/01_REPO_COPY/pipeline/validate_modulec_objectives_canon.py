@@ -108,9 +108,21 @@ OBJECTIVES: List[Dict[str, object]] = [
         "objective_id": "OC-06",
         "objective_name": "Recurrencia",
         "required_database": "Incendios 2015-2024",
-        "required_output": ["tables/recurrence_unit_2015_2024.csv", "tables/recurrence_municipio_2015_2024.csv", "qa/recurrence_classification_audit.tsv"],
+        "required_output": [
+            "tables/recurrence_unit_2015_2024.csv",
+            "tables/recurrence_municipio_2015_2024.csv",
+            "tables/recurrence_unit_year_2015_2024.csv",
+            "tables/recurrence_municipio_year_2015_2024.csv",
+            "qa/recurrence_classification_audit.tsv",
+            "qa/r10_b_fire_feature_semantics.tsv",
+            "qa/r10_b_reburn_geometry_audit.tsv",
+            "qa/r10_b_recurrence_construct_audit.tsv",
+            "qa/r10_b_recurrence_legacy_crosswalk.tsv",
+            "qa/r10_b_recurrence_sensitivity.tsv",
+            "qa/r10_b_recurrence_method_declaration.md",
+        ],
         "producer_script": "moduleC_pipeline_v2.py + step7_matriz_causal.py",
-        "validation_rule": "Recurrence outputs completos + clasificaciÃ³n auditada.",
+        "validation_rule": "OC-06 PASS only when R10-B temporal persistence, distinct-year reburn, geometry, fixed-band and discrimination gates pass.",
     },
     {
         "objective_id": "OC-07",
@@ -939,6 +951,15 @@ def _phase3_contract_check(output_root: Path, objective_id: str) -> Tuple[bool, 
     return True, "Substantive semantic contract verified."
 
 
+def _check_r10b_objective(output_root: Path) -> Tuple[bool, str]:
+    try:
+        import scientific_threshold_gate  # type: ignore
+        status, detail, _metrics = scientific_threshold_gate.evaluate_r10b_recurrence(output_root)
+    except Exception as exc:
+        return False, f"R10-B objective gate could not evaluate recurrence construct: {exc}"
+    return status == "PASS", detail
+
+
 def objective_specific_check(obj_id: str, output_root: Path, inputs: Dict[str, object]) -> Tuple[bool, str]:
     if obj_id == "OC-03":
         ok, reason = _check_smoke_inputs_clean(inputs)
@@ -966,6 +987,8 @@ def objective_specific_check(obj_id: str, output_root: Path, inputs: Dict[str, o
         if not ok:
             return ok, reason
         return _phase3_contract_check(output_root, obj_id)
+    if obj_id == "OC-06":
+        return _check_r10b_objective(output_root)
     if obj_id == "OC-07":
         ok, reason = _phase3_contract_check(output_root, obj_id)
         return (ok, reason) if not ok else (True, reason)

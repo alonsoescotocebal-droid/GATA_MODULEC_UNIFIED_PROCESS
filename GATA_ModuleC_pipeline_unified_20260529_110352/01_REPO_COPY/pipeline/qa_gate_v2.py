@@ -29,6 +29,16 @@ GO_REQUIRED = [
     Path("tables/smoke_days_unit_2015_2024.csv"),
     Path("tables/pop_unit_2015_2025_2030.csv"),
     Path("tables/recurrence_unit_2015_2024.csv"),
+    Path("tables/recurrence_municipio_2015_2024.csv"),
+    Path("tables/recurrence_unit_year_2015_2024.csv"),
+    Path("tables/recurrence_municipio_year_2015_2024.csv"),
+    Path("qa/recurrence_classification_audit.tsv"),
+    Path("qa/r10_b_fire_feature_semantics.tsv"),
+    Path("qa/r10_b_reburn_geometry_audit.tsv"),
+    Path("qa/r10_b_recurrence_construct_audit.tsv"),
+    Path("qa/r10_b_recurrence_legacy_crosswalk.tsv"),
+    Path("qa/r10_b_recurrence_sensitivity.tsv"),
+    Path("qa/r10_b_recurrence_method_declaration.md"),
     Path("tables/IECH_scenarios_2026_2030.csv"),
     Path("brief/causal_matrix/causal_matrix_IECH_NUTS3.csv"),
     Path("brief/causal_matrix/causal_matrix_IECH_NUTS3.json"),
@@ -232,6 +242,22 @@ def evaluate_output_root(output_root: Path) -> Tuple[str, str, List[str], List[D
     for rel in CORE_NO_GO:
         if not (output_root / rel).exists():
             hard_fail.append(f"Core output missing: {rel.as_posix()}")
+
+    r10b_audit = output_root / "qa" / "recurrence_classification_audit.tsv"
+    r10b_construct = output_root / "qa" / "r10_b_recurrence_construct_audit.tsv"
+    if not r10b_audit.exists() or not r10b_construct.exists():
+        holds.append("HOLD R10-B RECURRENCE")
+        notes.append("R10-B scientific recurrence audit artifacts are missing")
+    else:
+        try:
+            audit_rows = read_csv_rows(r10b_audit)
+            construct_rows = read_csv_rows(r10b_construct)
+            if any(str(row.get("status") or "").strip().upper() in ("HOLD", "FAIL", "BLOCKED") for row in audit_rows + construct_rows):
+                holds.append("HOLD R10-B RECURRENCE")
+                notes.append("R10-B recurrence audit contains HOLD/FAIL/BLOCKED")
+        except Exception as exc:
+            holds.append("HOLD R10-B RECURRENCE")
+            notes.append(f"R10-B recurrence audit unreadable: {exc}")
 
     # HOLD rules
     if not (output_root / "tables/IECH_municipio_2015_2024.csv").exists():

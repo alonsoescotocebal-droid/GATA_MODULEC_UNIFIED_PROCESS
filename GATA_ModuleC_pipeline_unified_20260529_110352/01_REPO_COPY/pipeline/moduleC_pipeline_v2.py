@@ -3940,7 +3940,8 @@ def pop_prepare(inputs: Dict[str, object], admin_layer_path: Path, work_dir: Pat
     return out_path
 
 
-def recurrence_prepare(inputs: Dict[str, object], admin_layer_path: Path, tables_dir: Path, report: Report) -> Path:
+def _legacy_recurrence_prepare_removed_legacy_body(inputs: Dict[str, object], admin_layer_path: Path, tables_dir: Path, report: Report) -> Path:
+    """
     from qgis.core import QgsVectorLayer  # type: ignore
     import processing  # type: ignore
 
@@ -4083,6 +4084,42 @@ def recurrence_prepare(inputs: Dict[str, object], admin_layer_path: Path, tables
         rows_out.append([u, total_burn, years_gt_p75, n_big, cls, 0])
 
     write_csv(out_path, ["unit_id", "total_burn_ha_2015_2024", "years_area_gt_p75", "n_events_gt_1000ha", "recurrence_class", "recurrence_missing_flag"], rows_out, delim=";")
+    return out_path
+    """
+
+
+def _legacy_recurrence_prepare_removed(inputs: Dict[str, object], admin_layer_path: Path, tables_dir: Path, report: Report) -> Path:
+    """Retained only as historical source context; never called by runtime."""
+    raise RuntimeError("Legacy absolute-area recurrence producer is removed; use R10-B producer.")
+
+
+def recurrence_prepare(inputs: Dict[str, object], admin_layer_path: Path, tables_dir: Path, report: Report) -> Path:
+    """Use the canonical R10-B GIS producer for the initial NUTS3 table."""
+    from qgis.core import QgsVectorLayer  # type: ignore
+    import processing  # type: ignore
+
+    step7_path = Path(__file__).resolve().parent / "RUN_QGIS" / "STEP7_MATRIZ_CAUSAL" / "step7_matriz_causal.py"
+    spec = importlib.util.spec_from_file_location("modulec_r10b_step7", str(step7_path))
+    if spec is None or spec.loader is None:
+        report.fail(f"Unable to load R10-B producer: {step7_path}")
+    step7 = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(step7)
+    admin = QgsVectorLayer(str(admin_layer_path) + "|layername=admin_nuts3_2024", "admin", "ogr")
+    if not admin.isValid():
+        report.fail(f"Admin layer invalid: {admin_layer_path}")
+    fire_gpkgs = [Path(p) for p in inputs["paths"]["fire_gpkgs_tm06"]]
+    if len(fire_gpkgs) < len(YEARS_HIST):
+        report.fail(f"Not enough fire_gpkgs_tm06: {len(fire_gpkgs)}")
+    out_path = tables_dir / "recurrence_unit_2015_2024.csv"
+    step7.compute_recurrence_table(
+        admin,
+        "NUTS_ID",
+        fire_gpkgs,
+        out_path,
+        processing,
+        annual_out_csv=tables_dir / "recurrence_unit_year_2015_2024.csv",
+        territorial_level="NUTS3",
+    )
     return out_path
 
 
@@ -4578,6 +4615,94 @@ def build_manifest_and_zip(outputs: List[Path], out_dir: Path, report: Report) -
     return manifest_path, sha_path, zip_path
 
 
+def create_r10b_audit_capsule(output_root: Path, report: Report) -> Path:
+    """Create a compact evidence capsule without copying large GIS rasters."""
+    deliver_dir = output_root / "deliverables_step9"
+    ensure_dir(deliver_dir)
+    repo_root = Path(__file__).resolve().parents[1]
+    git_root = repo_root.parent
+    try:
+        head = subprocess.run(
+            ["git", "-C", str(git_root), "rev-parse", "--short=12", "HEAD"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
+        ).stdout.strip()
+    except Exception:
+        head = "unknown"
+    capsule = deliver_dir / f"R10_B_AUDIT_CAPSULE_{head}.zip"
+    selected = [
+        output_root / "qa" / "recurrence_classification_audit.tsv",
+        output_root / "qa" / "r10_b_fire_feature_semantics.tsv",
+        output_root / "qa" / "r10_b_reburn_geometry_audit.tsv",
+        output_root / "qa" / "r10_b_recurrence_construct_audit.tsv",
+        output_root / "qa" / "r10_b_recurrence_legacy_crosswalk.tsv",
+        output_root / "qa" / "r10_b_recurrence_sensitivity.tsv",
+        output_root / "qa" / "r10_b_recurrence_method_declaration.md",
+        output_root / "qa" / "scientific_validation_gate.tsv",
+        output_root / "qa" / "objectives_canon_alignment_report.tsv",
+        output_root / "qa" / "objective_semantic_contract_audit.tsv",
+        output_root / "qa" / "pytest_result_summary.tsv",
+        output_root / "tables" / "recurrence_unit_2015_2024.csv",
+        output_root / "tables" / "recurrence_unit_year_2015_2024.csv",
+        output_root / "tables" / "recurrence_municipio_2015_2024.csv",
+        output_root / "tables" / "recurrence_municipio_year_2015_2024.csv",
+        output_root / "brief" / "causal_matrix" / "territorial_screening_matrix_nuts3.csv",
+        output_root / "brief" / "causal_matrix" / "territorial_screening_matrix_municipio.csv",
+        output_root / "deliverables_step9" / "runtime_closure_decision.md",
+        output_root / "deliverables_step9" / "runtime_scientific_closure_decision.md",
+        output_root / "deliverables_step9" / "final_manifest.json",
+        output_root / "deliverables_step9" / "final_manifest_recursive_audit.tsv",
+        output_root / "deliverables_step9" / "final_sha256_checkpoints.txt",
+        output_root / "deliverables_step9" / "ModuleC_ALL_FINAL_deliverables.zip",
+        output_root / "provenance" / "launcher_command.txt",
+        output_root / "provenance" / "launcher_roots.tsv",
+        output_root / "logs" / "step7_stdout.txt",
+        output_root / "logs" / "step7_stderr.txt",
+        output_root / "logs" / "scientific_stdout.txt",
+        output_root / "logs" / "scientific_stderr.txt",
+    ]
+    branch = subprocess.run(
+        ["git", "-C", str(git_root), "branch", "--show-current"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    ).stdout.strip()
+    full_head = subprocess.run(
+        ["git", "-C", str(git_root), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    ).stdout.strip()
+    status = subprocess.run(
+        ["git", "-C", str(git_root), "status", "--short"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    ).stdout.rstrip()
+    git_state = "\n".join([f"git_toplevel={git_root}", f"branch={branch}", f"head={full_head}", "status_short:", status, ""])
+    phase_summary = "\n".join(
+        [
+            "# R10-B Audit Capsule",
+            "",
+            "R10-B recurrence rebuild only; R10-C and later redesigns were not started.",
+            "Canonical construct: ten-year affected-year persistence plus distinct-year spatial reburn.",
+            "Claims are limited to relative screening within the ICNF 2015-2024 footprint dataset.",
+            "Global Module C closure remains open on the downstream holds listed in runtime_closure_decision.md.",
+            "",
+        ]
+    )
+    with zipfile.ZipFile(capsule, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("00_git_state.txt", git_state)
+        zf.writestr("00_phase_summary.md", phase_summary)
+        for path in selected:
+            if path.exists():
+                zf.write(path, arcname=_relative_output_path(path, output_root))
+    report.log(f"R10-B audit capsule created: {capsule}")
+    return capsule
+
+
 def resolve_step7_script(gata_root: Path, report: Report) -> Path:
     local_repo_script = Path(__file__).resolve().parent / "RUN_QGIS" / "STEP7_MATRIZ_CAUSAL" / "step7_matriz_causal.py"
     external_root_script = gata_root / "pipeline" / "RUN_QGIS" / "STEP7_MATRIZ_CAUSAL" / "step7_matriz_causal.py"
@@ -4642,12 +4767,29 @@ def write_runtime_closure_decision(output_root: Path, decision: str, summary: st
         "",
     ]
     if holds:
-        lines.append("## Active holds")
+        lines.append("## Current R10-B QA holds")
         for h in holds:
             lines.append(f"- {h}")
     else:
-        lines.append("## Active holds")
-        lines.append("- none")
+        lines.append("## Current R10-B QA holds")
+        lines.append("- none for the R10-B artifact gate")
+    lines.extend(
+        [
+            "",
+            "## Known downstream scientific holds",
+            "- R10-C SCREENING_INDEPENDENCE",
+            "- R10-D FORMAL_WUI",
+            "- R10-E AQ_TIER_REVIEW",
+            "- R10-F S1_TARGET_SELECTION",
+            "- MUNICIPAL_DIRECT_SMOKE",
+            "- WRB_METADATA",
+            "- LEGAL_2026",
+            "- FINAL_BRIEF",
+            "- R10-FINAL",
+            "",
+            "- R10-B recurrence closure is local to this phase; global Module C closure is not declared.",
+        ]
+    )
     lines.append("")
     out_path.write_text("\n".join(lines), encoding="utf-8")
     return out_path
@@ -5755,6 +5897,12 @@ def collect_final_outputs(output_root: Path, scientific_decision_path: Path, inc
         output_root / "qa" / "iech_aggregate_consistency_audit.tsv",
         output_root / "qa" / "scenario_aggregate_consistency_audit.tsv",
         output_root / "qa" / "recurrence_classification_audit.tsv",
+        output_root / "qa" / "r10_b_fire_feature_semantics.tsv",
+        output_root / "qa" / "r10_b_reburn_geometry_audit.tsv",
+        output_root / "qa" / "r10_b_recurrence_construct_audit.tsv",
+        output_root / "qa" / "r10_b_recurrence_legacy_crosswalk.tsv",
+        output_root / "qa" / "r10_b_recurrence_sensitivity.tsv",
+        output_root / "qa" / "r10_b_recurrence_method_declaration.md",
         output_root / "qa" / "scenario_audit.tsv",
         output_root / "qa" / "wrb_method_consistency_audit.tsv",
         output_root / "provenance" / "launcher_command.txt",
@@ -5765,6 +5913,9 @@ def collect_final_outputs(output_root: Path, scientific_decision_path: Path, inc
         output_root / "tables" / "IECH_municipio_2015_2024.csv",
         output_root / "tables" / "IECH_municipio_2015_2024_mean.csv",
         output_root / "tables" / "recurrence_unit_2015_2024.csv",
+        output_root / "tables" / "recurrence_unit_year_2015_2024.csv",
+        output_root / "tables" / "recurrence_municipio_2015_2024.csv",
+        output_root / "tables" / "recurrence_municipio_year_2015_2024.csv",
         output_root / "tables" / "IECH_scenarios_2026_2030.csv",
         output_root / "tables" / "IECH_scenarios_unit_2026_2030_mean.csv",
         output_root / "tables" / "smoke_days_unit_2015_2024.csv",
@@ -5789,6 +5940,9 @@ def collect_final_outputs(output_root: Path, scientific_decision_path: Path, inc
         output_root / "deliverables_step9" / "final_bundle_staleness_audit.tsv",
         scientific_decision_path,
     ]
+    capsule_candidates = sorted((output_root / "deliverables_step9").glob("R10_B_AUDIT_CAPSULE_*.zip"))
+    if capsule_candidates:
+        outputs.append(capsule_candidates[-1])
     if include_global_scan:
         outputs.extend(
             [
@@ -5887,6 +6041,7 @@ def complete_post_smoke_runtime(
     # Refresh the closure window after the first package exists, then rebuild
     # once so the final manifest/ZIP contain the stable provenance surface.
     write_source_runtime_provenance(output_root)
+    create_r10b_audit_capsule(output_root, report)
     outputs = collect_final_outputs(output_root, scientific_decision_path, include_global_scan=True)
     build_manifest_and_zip(outputs, deliver_dir, report)
 
