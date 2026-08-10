@@ -266,7 +266,7 @@ def write_recurrence_qa(qa_dir: Path, results: Sequence[Mapping[str, Any]], rows
         ["same_year_overlap_not_counted_as_reburn", 1, "PASS", "annual dissolve before distinct-year intersections"],
         ["geometry_failure_rows", sum(1 for item in geometry if str(item.get("status", "")).upper() != "PASS"), "PASS" if all(str(item.get("status", "")).upper() == "PASS" for item in geometry) else "HOLD", "reburn <= unique <= unit area"],
         ["coverage_NUTS3_summary_rows", sum(1 for row in rows if str(row.get("territorial_level", "")) == "NUTS3"), "PASS", "expected canonical coverage is 24 units"],
-        ["coverage_municipality_summary_rows", sum(1 for row in rows if str(row.get("territorial_level", "")) == "MUNICIPALITY"), "PASS", "expected canonical coverage is 278 units"],
+        ["coverage_municipality_summary_rows", sum(1 for row in rows if str(row.get("territorial_level", "")).upper() in {"MUNICIPALITY", "MUNICIPIO"}), "PASS", "expected canonical coverage is 278 units"],
         ["event_semantics_declared", 1, "PASS", EVENT_NOT_VALIDATED],
         ["claim_status", R10B_CLAIM_STATUS, "PASS", "HIGH is relative screening class"],
     ])

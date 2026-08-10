@@ -5955,7 +5955,10 @@ def collect_final_outputs(output_root: Path, scientific_decision_path: Path, inc
         output_root / "deliverables_step9" / "final_bundle_staleness_audit.tsv",
         scientific_decision_path,
     ]
-    capsule_candidates = sorted((output_root / "deliverables_step9").glob("R10_B_AUDIT_CAPSULE_*.zip"))
+    capsule_candidates = sorted(
+        (output_root / "deliverables_step9").glob("R10_B_AUDIT_CAPSULE_*.zip"),
+        key=lambda path: path.stat().st_mtime,
+    )
     if capsule_candidates:
         outputs.append(capsule_candidates[-1])
     if include_global_scan:
