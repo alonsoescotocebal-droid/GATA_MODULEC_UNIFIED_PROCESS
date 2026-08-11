@@ -4708,7 +4708,10 @@ def create_r10c_audit_capsule(output_root: Path, report: Report) -> Path:
     ensure_dir(deliver_dir)
     repo_root = Path(__file__).resolve().parents[1]
     git_root = repo_root.parent
-    git = lambda *args: subprocess.run(["git", "-C", str(git_root), *args], capture_output=True, text=True, encoding="utf-8").stdout.strip()
+    git_cmd = _resolve_git_command()
+    if not git_cmd:
+        raise FileNotFoundError("Git executable not found; set PATH or install Git")
+    git = lambda *args: subprocess.run([git_cmd, "-C", str(git_root), *args], capture_output=True, text=True, encoding="utf-8", check=True).stdout.strip()
     head = git("rev-parse", "--short=12", "HEAD") or "unknown"
     capsule = deliver_dir / f"R10_C_AUDIT_CAPSULE_{head}.zip"
     selected = [
