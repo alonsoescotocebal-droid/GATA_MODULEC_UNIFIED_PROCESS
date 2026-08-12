@@ -4503,6 +4503,9 @@ def verify_final_deliverables(manifest_path: Path, sha_path: Path, zip_path: Pat
             zip_entries = {info.filename: info for info in zf.infolist() if not info.is_dir()}
             if manifest_rel not in zip_entries:
                 report.fail(f"Final ZIP missing manifest member: {manifest_rel}")
+            sha_rel = _relative_output_path(sha_path, output_root)
+            if sha_rel not in zip_entries:
+                report.fail(f"Final ZIP missing SHA checkpoint member: {sha_rel}")
             for rel_name, entry in manifest_entries.items():
                 info = zip_entries.get(rel_name)
                 if info is None:
@@ -4610,6 +4613,18 @@ def build_manifest_and_zip(outputs: List[Path], out_dir: Path, report: Report) -
         rel_name = _relative_output_path(p, output_root)
         h = _sha256_path(p)
         lines.append(f"OUT|{rel_name}|sha256={h}|bytes={p.stat().st_size}")
+    sha_path.write_text("\n".join(lines), encoding="utf-8")
+    # Include the checkpoint artifact in the bundle. Its external copy remains
+    # authoritative because the ZIP hash necessarily changes when this member is added.
+    with zipfile.ZipFile(zip_path, "a", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.write(sha_path, arcname=_relative_output_path(sha_path, output_root))
+    final_zip_rel = _relative_output_path(zip_path, output_root)
+    final_zip_sha = _sha256_path(zip_path)
+    lines = [
+        line if not line.startswith(f"OUT|{final_zip_rel}|")
+        else f"OUT|{final_zip_rel}|sha256={final_zip_sha}|bytes={zip_path.stat().st_size}"
+        for line in lines
+    ]
     sha_path.write_text("\n".join(lines), encoding="utf-8")
     verify_final_deliverables(manifest_path, sha_path, zip_path, output_root, report)
     return manifest_path, sha_path, zip_path

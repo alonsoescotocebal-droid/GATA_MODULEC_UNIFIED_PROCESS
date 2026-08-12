@@ -34,3 +34,4 @@ def test_modulec_runtime_packager_writes_recursive_and_staleness_audits(tmp_path
         zip_names = set(zf.namelist())
     assert 'deliverables_step9/final_manifest_recursive_audit.tsv' in zip_names
     assert 'deliverables_step9/final_bundle_staleness_audit.tsv' in zip_names
+    assert 'deliverables_step9/final_sha256_checkpoints.txt' in zip_names
