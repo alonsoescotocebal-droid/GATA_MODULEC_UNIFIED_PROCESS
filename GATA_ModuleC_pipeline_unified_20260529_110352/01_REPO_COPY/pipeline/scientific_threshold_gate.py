@@ -31,6 +31,17 @@ IECH_PROXY_AQ_PROTOCOL = "GO_WITH_PORTUGUESE_AQ_ANCHORED_PROXY_PROTOCOL"
 IECH_PROXY_INDICATOR_NAME = "population_smoke_day_burden_proxy"
 IECH_PROXY_INDICATOR_UNIT = "classified smoke-proxy person-days"
 IECH_PROXY_CLAIM_STATUS = "OPERATIONAL_TERRITORIAL_SMOKE_DAY_BURDEN_PROXY"
+R10_C_CANONICAL_SCORE_DEPENDS_ON_WUI = False
+FORMAL_WUI_HOLD = "HOLD_FORMAL_WUI"
+FORMAL_WUI_DECISION = "FORMAL_WUI_NOT_SUPPORTED_BY_CURRENT_AUTHORIZED_INPUTS"
+FORMAL_WUI_FORBIDDEN_CLAIMS = (
+    "FORMAL_WUI",
+    "INTERFACE_WUI",
+    "INTERMIX_WUI",
+    "WUI_RISK",
+    "WUI_EXPOSURE",
+    "WUI_CAUSAL_EFFECT",
+)
 
 
 def now_iso() -> str:
@@ -68,6 +79,126 @@ def safe_float(v: object):
         return None
 
 
+def _read_wui_semantic_status(output_root: Path) -> Dict[str, object]:
+    try:
+        from .validate_modulec_objectives_canon import read_wui_semantic_status
+    except ImportError:  # pragma: no cover - direct script execution
+        from validate_modulec_objectives_canon import read_wui_semantic_status  # type: ignore
+    return read_wui_semantic_status(output_root)
+
+
+def evaluate_formal_wui(output_root: Path) -> Tuple[str, str, Dict[str, int]]:
+    """Evaluate formal-WUI evidence without treating the territorial proxy as WUI."""
+    status = _read_wui_semantic_status(output_root)
+    metrics = {
+        "built_spatial_layer_available": int(bool(status.get("territorial_proxy_available"))),
+        "independent_vegetation_layer_available": int(status.get("independent_landcover_input_used", 0)),
+        "building_vegetation_spatial_relation": int(status.get("building_vegetation_spatial_relation", 0)),
+        "formal_wui_available": int(bool(status.get("formal_wui_available"))),
+        "current_wui_proxy_fire_history_dependent": int(status.get("current_wui_proxy_fire_history_dependent", 0)),
+    }
+    if bool(status.get("formal_wui_available")):
+        return "PASS", "Formal WUI evidence is complete.", metrics
+    detail = (
+        f"{FORMAL_WUI_HOLD}; {FORMAL_WUI_DECISION}; "
+        "built-up/fuel territorial contextual proxy is allowed; final_effect=HOLD_OC07"
+    )
+    return "BLOCKED_FORMAL_WUI_CLAIM", detail, metrics
+
+
+def audit_formal_wui_claims(output_root: Path) -> Tuple[str, List[str]]:
+    """Reject generated formal-WUI/risk claims while allowing explicit limitations."""
+    targets = [
+        output_root / "brief" / "Brief_Politica_IECH_2030.md",
+        output_root / "brief" / "causal_matrix" / "causal_matrix_IECH_NUTS3.csv",
+        output_root / "brief" / "causal_matrix" / "territorial_screening_narrative.md",
+    ]
+    patterns = {
+        "FORMAL_WUI": re.compile(r"\bformal\s+wui\s+(?:risk|exposure|causal|prioritization|score|index)\b", re.I),
+        "INTERFACE_WUI": re.compile(r"\binterface\s+wui\b", re.I),
+        "INTERMIX_WUI": re.compile(r"\bintermix\s+wui\b", re.I),
+        "WUI_RISK": re.compile(r"\bwui\s+risk\b", re.I),
+        "WUI_EXPOSURE": re.compile(r"\bwui\s+exposure\b", re.I),
+        "WUI_CAUSAL_EFFECT": re.compile(r"\bwui\s+causal\s+effect\b", re.I),
+    }
+    hits: List[str] = []
+    for path in targets:
+        if not path.exists() or not path.is_file():
+            continue
+        for line_no, line in enumerate(path.read_text(encoding="utf-8-sig", errors="replace").splitlines(), 1):
+            for token, pattern in patterns.items():
+                if pattern.search(line):
+                    hits.append(f"{token}:{path.name}:line={line_no}")
+    return ("BLOCKED_FORMAL_WUI_CLAIM" if hits else "PASS", hits)
+
+
+def _objective_status(output_root: Path, objective_id: str) -> str:
+    path = output_root / "qa" / "objectives_canon_alignment_report.tsv"
+    if not path.exists():
+        return "MISSING"
+    for row in read_csv_rows(path):
+        if str(row.get("objective_id") or "").strip() == objective_id:
+            return str(row.get("status") or "").strip() or "EMPTY"
+    return "MISSING"
+
+
+def write_r10_d1_wui_artifacts(
+    output_root: Path,
+    wui_status: str,
+    wui_detail: str,
+    wui_metrics: Dict[str, int],
+    claim_hits: List[str],
+) -> None:
+    qa = output_root / "qa"
+    qa.mkdir(parents=True, exist_ok=True)
+    semantic_rows = [
+        ["CURRENT_INDICATOR_TYPE", "BUILT_UP_FUEL_TERRITORIAL_PROXY", "PASS", "Current producer is a built-up x fire-history fuel territorial proxy."],
+        ["BUILT_SPATIAL_LAYER_AVAILABLE", wui_metrics["built_spatial_layer_available"], "PASS" if wui_metrics["built_spatial_layer_available"] else "HOLD", "GHSL Built is the resolved built-up spatial component."],
+        ["INDEPENDENT_VEGETATION_LAYER_AVAILABLE", wui_metrics["independent_vegetation_layer_available"], "PASS" if wui_metrics["independent_vegetation_layer_available"] else "HOLD", "Independent land-cover input required for formal WUI."],
+        ["BUILDING_VEGETATION_SPATIAL_RELATION", wui_metrics["building_vegetation_spatial_relation"], "PASS" if wui_metrics["building_vegetation_spatial_relation"] else "HOLD", "Explicit interface/intermix relation required for formal WUI."],
+        ["CURRENT_FORMAL_WUI", wui_metrics["formal_wui_available"], "PASS" if wui_metrics["formal_wui_available"] else "HOLD", "Formal WUI claim remains false/held with current inputs."],
+        ["CURRENT_WUI_PROXY_FIRE_HISTORY_DEPENDENT", wui_metrics["current_wui_proxy_fire_history_dependent"], "INFO", "Forest/shrub proxy is derived from the ICNF/fire-recurrence route."],
+        ["TERRITORIAL_PROXY_STATUS", "AVAILABLE_AS_CONTEXT", "PASS", "Proxy retained as a contextual territorial descriptor."],
+        ["FORMAL_WUI_CLAIM_STATUS", FORMAL_WUI_HOLD, "HOLD", wui_detail],
+        ["OC07_OBJECTIVE_STATUS", _objective_status(output_root, "OC-07"), "HOLD", "OC-07 must remain HOLD while formal WUI is unsupported."],
+        ["R10_C_CANONICAL_SCORE_DEPENDS_ON_WUI", str(R10_C_CANONICAL_SCORE_DEPENDS_ON_WUI).upper(), "PASS", "WUI is contextual and excluded from the canonical R10-C score."],
+        ["DECISION", FORMAL_WUI_DECISION, "HOLD", "BUILT_UP_FUEL_TERRITORIAL_PROXY_RETAINED_AS_CONTEXT"],
+    ]
+    write_tsv(qa / "r10_d1_wui_semantic_audit.tsv", ["metric", "value", "status", "detail"], semantic_rows)
+    gate_rows = [
+        ["WUI_FORMAL_001", "formal_wui_available=FALSE", wui_status, wui_detail],
+        ["WUI_CLAIM_001", "forbidden_claim_hits=" + str(len(claim_hits)), "BLOCKED_FORMAL_WUI_CLAIM" if claim_hits else "PASS", "Generated brief/matrix formal WUI claim audit."],
+        ["OC07_EFFECT", "HOLD_OC07", "HOLD", FORMAL_WUI_DECISION],
+        ["R10_C_CANONICAL_SCORE_DEPENDS_ON_WUI", "FALSE", "PASS", "No WUI input to canonical R10-C score."],
+    ]
+    write_tsv(qa / "r10_d1_wui_gate_audit.tsv", ["metric", "value", "status", "detail"], gate_rows)
+    declaration = "\n".join([
+        "# R10-D1 WUI Method Declaration",
+        "",
+        "## Current indicator",
+        "The current indicator is `BUILT_UP_FUEL_TERRITORIAL_PROXY`: a zonal GHSL Built-up sum multiplied by fire/recurrence-derived forest and shrub proxies.",
+        "",
+        "## What it is not",
+        "It is not formal WUI, interface WUI, intermix WUI, WUI risk, WUI exposure, a WUI causal effect, or formal-WUI prioritization.",
+        "",
+        "## Current decision",
+        f"`{FORMAL_WUI_DECISION}`. `formal_wui_claim_status=HOLD_FORMAL_WUI`.",
+        "The proxy remains available only as `CONTEXTUAL_TERRITORIAL_DESCRIPTOR`.",
+        "",
+        "## Required future evidence",
+        "A formal claim requires an independent vegetation/wildland spatial input, a built spatial component, a predeclared interface/intermix or equivalent spatial relation, a method declaration, and formal-WUI QA evidence.",
+        "",
+        "## Allowed claims",
+        "Built-up/fuel territorial contextual proxy and bounded descriptive context.",
+        "",
+        "## Forbidden claims",
+        "Formal WUI, interface WUI, intermix WUI, WUI risk, WUI exposure, WUI causal effect, and formal-WUI-based prioritization.",
+        "",
+        "## Next phase",
+        "R10-D2 is required for formal-WUI input acquisition and method predeclaration. No new data are acquired in R10-D1.",
+        "",
+    ])
+    (qa / "r10_d1_wui_method_declaration.md").write_text(declaration, encoding="utf-8")
 def _first_present_text(row: Dict[str, str], *keys: str) -> str:
     for key in keys:
         value = str(row.get(key) or "").strip()
@@ -1038,6 +1169,41 @@ def main() -> int:
     ):
         add_evidence(f"r10_c_{name}", output_root / "qa" / name)
 
+    wui_status, wui_observation, wui_metrics = evaluate_formal_wui(output_root)
+    claim_audit_status, claim_hits = audit_formal_wui_claims(output_root)
+    add_gate(
+        "WUI_FORMAL_001",
+        "OC-07 formal WUI claim",
+        str(output_root / "tables" / "territorial_context_nuts3.csv"),
+        "built spatial component + independent vegetation component + explicit spatial relation + method",
+        wui_observation,
+        "building_vegetation_spatial_relation=TRUE AND formal_wui_method implemented AND independent vegetation/wildland input resolved",
+        "R10-D1-FORMAL-WUI-CONTRACT",
+        "SCIENTIFIC_CONSTRUCT_GATE",
+        wui_status,
+        "BUILT_UP_FUEL_TERRITORIAL_PROXY as contextual territorial descriptor only.",
+        "formal WUI, interface WUI, intermix WUI, WUI risk, WUI exposure, WUI causal effect, formal-WUI prioritization",
+        "HOLD_OC07",
+    )
+    add_gate(
+        "WUI_CLAIM_001",
+        "OC-07 generated claim audit",
+        str(output_root / "brief" / "Brief_Politica_IECH_2030.md"),
+        "forbidden formal-WUI claim patterns",
+        f"hits={len(claim_hits)}",
+        "Generated brief and screening matrix must not assert formal WUI/risk/exposure claims.",
+        "R10-D1-CLAIM-CONTRACT",
+        "SCIENTIFIC_CLAIM_GATE",
+        claim_audit_status,
+        "Contextual built-up/fuel proxy wording.",
+        "Formal WUI/risk/exposure/causal claims.",
+        "HOLD_OC07" if claim_hits else "NONE",
+    )
+    write_r10_d1_wui_artifacts(output_root, wui_status, wui_observation, wui_metrics, claim_hits)
+    add_evidence("r10_d1_wui_semantic_audit", output_root / "qa" / "r10_d1_wui_semantic_audit.tsv")
+    add_evidence("r10_d1_wui_gate_audit", output_root / "qa" / "r10_d1_wui_gate_audit.tsv")
+    add_evidence("r10_d1_wui_method_declaration", output_root / "qa" / "r10_d1_wui_method_declaration.md")
+
     if threshold_register.exists():
         add_gate(
             "REG-001",
@@ -1619,6 +1785,11 @@ def main() -> int:
         f"- R10_B_RECURRENCE_DECISION: **{'R10_B_RECURRENCE_PASS' if r10b_pass else 'R10_B_RECURRENCE_NOT_CLOSED'}**",
         f"- R10_C_SCREENING_DECISION: **{'R10_C_SCREENING_INDEPENDENCE_PASS' if r10c_pass else r10c_status}**",
         f"- OC_09: **{'PASS' if r10c_pass else 'HOLD'}**",
+        f"- WUI_FORMAL_001: **{wui_status}**",
+        "- OC_07: **HOLD**",
+        f"- FORMAL_WUI_DECISION: **{FORMAL_WUI_DECISION}**",
+        "- TERRITORIAL_PROXY_STATUS: **AVAILABLE_AS_CONTEXT**",
+        f"- R10_C_CANONICAL_SCORE_DEPENDS_ON_WUI: **{str(R10_C_CANONICAL_SCORE_DEPENDS_ON_WUI).upper()}**",
         "- MODULE_C_FINAL_SCIENTIFIC_GO: PROHIBITED_WHILE_DOWNSTREAM_HOLDS_OPEN",
         f"- indicator_name: {IECH_PROXY_INDICATOR_NAME}",
         f"- indicator_unit: {IECH_PROXY_INDICATOR_UNIT}",
@@ -1640,6 +1811,7 @@ def main() -> int:
         [
             "",
             "## Known downstream scientific holds",
+            "- OC-07 FORMAL_WUI",
             *([] if r10c_pass else ["- R10-C SCREENING_INDEPENDENCE"]),
             "- R10-D FORMAL_WUI",
             "- R10-E AQ_TIER_REVIEW",

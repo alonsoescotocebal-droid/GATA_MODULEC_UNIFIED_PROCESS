@@ -29,6 +29,13 @@ FORBIDDEN_PRIMARY_SOURCE_TOKENS = (
     "\\03_outputs\\oc03_v",
 )
 
+TERRITORIAL_PROXY_TYPE = "BUILT_UP_FUEL_TERRITORIAL_PROXY"
+TERRITORIAL_PROXY_STATUS = "AVAILABLE_AS_CONTEXT"
+FORMAL_WUI_HOLD = "HOLD_FORMAL_WUI"
+FORMAL_WUI_DECISION = "FORMAL_WUI_NOT_SUPPORTED_BY_CURRENT_AUTHORIZED_INPUTS"
+FORMAL_WUI_METHOD = "NOT_IMPLEMENTED"
+FORMAL_WUI_SOURCE_STATUS = "NOT_SUPPORTED_BY_CURRENT_AUTHORIZED_INPUTS"
+
 
 OBJECTIVES: List[Dict[str, object]] = [
     {
@@ -529,21 +536,122 @@ def _check_wrb_quality(output_root: Path) -> Tuple[bool, str]:
     return True, f"WRB quality OK: dominant classes={n_dom}/{n_total}, missing={n_missing}/{n_total}, prevalidation=PASS"
 
 
-def _check_wui_quality(output_root: Path) -> Tuple[bool, str]:
-    p = output_root / "tables" / "territorial_context_nuts3.csv"
-    if not p.exists():
-        return False, "territorial_context_nuts3.csv missing."
-    rows = read_csv_rows(p)
+def _wui_contract_rows(output_root: Path) -> Dict[str, Dict[str, str]]:
+    path = output_root / "qa" / "objective_semantic_contract_audit.tsv"
+    rows = read_csv_rows(path) if path.exists() else []
+    return {str(row.get("contract") or "").strip(): row for row in rows if str(row.get("contract") or "").strip()}
+
+
+def _wui_table_rows(output_root: Path) -> List[Dict[str, str]]:
+    for name in ("territorial_context_nuts3.csv", "territorial_context_municipio.csv"):
+        path = output_root / "tables" / name
+        if path.exists():
+            rows = read_csv_rows(path)
+            if rows:
+                return rows
+    return []
+
+
+def has_wui_semantic_surface(output_root: Path) -> bool:
+    rows = _wui_table_rows(output_root)
+    contracts = _wui_contract_rows(output_root)
+    return bool(
+        rows
+        and (
+            "territorial_indicator_type" in rows[0]
+            or "territorial_indicator_type" in contracts
+        )
+    )
+
+
+def _as_bool(value: object) -> bool:
+    return str(value or "").strip().upper() in {"1", "TRUE", "YES", "PASS"}
+
+
+def read_wui_semantic_status(output_root: Path) -> Dict[str, object]:
+    """Read the explicit proxy/formal-WUI distinction from runtime evidence."""
+    rows = _wui_table_rows(output_root)
+    contracts = _wui_contract_rows(output_root)
+    first = rows[0] if rows else {}
+
+    def observed(key: str, default: str = "") -> str:
+        return str(first.get(key) or contracts.get(key, {}).get("value") or default).strip()
+
+    proxy_values = [safe_float(row.get("wui_proxy")) for row in rows]
+    proxy_available = bool(rows) and any(value is not None for value in proxy_values)
+    indicator_type = observed("territorial_indicator_type", TERRITORIAL_PROXY_TYPE)
+    proxy_status = observed("territorial_proxy_status", TERRITORIAL_PROXY_STATUS if proxy_available else "")
+    formal_claim = observed("formal_wui_claim_status", FORMAL_WUI_HOLD)
+    formal_status = observed("formal_wui_status", formal_claim)
+    method = observed("formal_wui_method", FORMAL_WUI_METHOD)
+    relation = observed("building_vegetation_spatial_relation", "FALSE")
+    independent_vegetation = observed("independent_landcover_input_used", "FALSE")
+    source_status = observed("formal_wui_source_status", FORMAL_WUI_SOURCE_STATUS)
+    formal_available = (
+        formal_claim in {"PASS_FORMAL_WUI", "FORMAL_WUI_AVAILABLE"}
+        and _as_bool(relation)
+        and _as_bool(independent_vegetation)
+        and method not in {"", FORMAL_WUI_METHOD, "NOT_IMPLEMENTED"}
+    )
+    return {
+        "territorial_proxy_available": proxy_available,
+        "formal_wui_available": formal_available,
+        "territorial_indicator_type": indicator_type,
+        "territorial_proxy_status": proxy_status,
+        "formal_wui_claim_status": formal_claim,
+        "formal_wui_status": formal_status,
+        "formal_wui_method": method,
+        "building_vegetation_spatial_relation": int(_as_bool(relation)),
+        "independent_landcover_input_used": int(_as_bool(independent_vegetation)),
+        "formal_wui_source_status": source_status,
+        "current_wui_proxy_fire_history_dependent": int(
+            _as_bool(observed("current_wui_proxy_fire_history_dependent", "TRUE"))
+        ),
+    }
+
+
+def _check_territorial_proxy_quality(output_root: Path) -> Tuple[bool, str]:
+    rows = _wui_table_rows(output_root)
     if not rows:
-        return False, "territorial_context_nuts3.csv empty."
-    n_total = len(rows)
-    n_nonempty = 0
-    for r in rows:
-        if safe_float(r.get("wui_proxy")) is not None:
-            n_nonempty += 1
-    if n_nonempty <= 0:
-        return False, "WUI proxy empty for all units."
-    return True, f"WUI coverage OK: non-empty={n_nonempty}/{n_total}"
+        return False, "territorial context table missing or empty."
+    values = [safe_float(row.get("wui_proxy")) for row in rows]
+    if not any(value is not None for value in values):
+        return False, "territorial proxy has no numeric wui_proxy values."
+    types = {str(row.get("territorial_indicator_type") or "").strip() for row in rows}
+    if types != {TERRITORIAL_PROXY_TYPE}:
+        return False, f"territorial_indicator_type must be {TERRITORIAL_PROXY_TYPE}; observed={sorted(types)}"
+    missing_provenance = [
+        str(row.get("unit_id") or "?")
+        for row in rows
+        if not str(row.get("landcover_source") or "").strip()
+        or "GHSL_BUILT" not in str(row.get("landcover_source") or "")
+        or "fuel_proxy_from" not in str(row.get("landcover_source") or "")
+    ]
+    if missing_provenance:
+        return False, "territorial proxy provenance missing for units: " + ", ".join(missing_provenance[:8])
+    return True, f"Territorial proxy quality PASS: numeric={sum(value is not None for value in values)}/{len(rows)}; context-only."
+
+
+def _check_formal_wui_quality(output_root: Path) -> Tuple[bool, str]:
+    status = read_wui_semantic_status(output_root)
+    if not bool(status["formal_wui_available"]):
+        return (
+            False,
+            f"{FORMAL_WUI_HOLD}; {FORMAL_WUI_DECISION}; "
+            f"{TERRITORIAL_PROXY_TYPE}_RETAINED_AS_CONTEXT",
+        )
+    required = (
+        "building_vegetation_spatial_relation",
+        "independent_landcover_input_used",
+    )
+    if not all(int(status[key]) == 1 for key in required):
+        return False, f"{FORMAL_WUI_HOLD}; formal spatial evidence incomplete."
+    return True, "Formal WUI quality PASS: declared method and independent spatial relation are present."
+
+
+def _check_wui_quality(output_root: Path) -> Tuple[bool, str]:
+    """Compatibility wrapper: quality means proxy available, never formal WUI."""
+    return _check_territorial_proxy_quality(output_root)
 
 
 def _check_causal_quality(output_root: Path) -> Tuple[bool, str]:
@@ -959,6 +1067,14 @@ def _phase3_contract_check(output_root: Path, objective_id: str) -> Tuple[bool, 
         observed = str(by_contract.get(contract, {}).get("value") or "").strip()
         if observed != expected:
             return False, f"{contract}={observed or 'EMPTY'}; expected {expected}."
+    if objective_id == "OC-07":
+        formal_status = str(by_contract.get("formal_wui_claim_status", {}).get("value") or "").strip()
+        if formal_status == FORMAL_WUI_HOLD:
+            return (
+                False,
+                f"{FORMAL_WUI_DECISION}; "
+                f"{TERRITORIAL_PROXY_TYPE}_RETAINED_AS_CONTEXT",
+            )
     return True, "Substantive semantic contract verified."
 
 
@@ -1010,8 +1126,13 @@ def objective_specific_check(obj_id: str, output_root: Path, inputs: Dict[str, o
     if obj_id == "OC-06":
         return _check_r10b_objective(output_root)
     if obj_id == "OC-07":
-        ok, reason = _phase3_contract_check(output_root, obj_id)
-        return (ok, reason) if not ok else (True, reason)
+        proxy_ok, proxy_reason = _check_territorial_proxy_quality(output_root)
+        if not proxy_ok:
+            return False, proxy_reason
+        contract_ok, contract_reason = _phase3_contract_check(output_root, obj_id)
+        if not contract_ok:
+            return False, contract_reason
+        return _check_formal_wui_quality(output_root)
     if obj_id == "OC-08":
         return _check_wrb_quality(output_root)
     if obj_id == "OC-09":

@@ -128,7 +128,16 @@ def _semantic_audits(output_root: Path) -> None:
         ["OC-05", "normalized_IECH_claim_status", "BLOCKED_NORMALIZED_IECH_CLAIM", "BLOCKED_NORMALIZED_IECH_CLAIM", "No normalization or independent exposure layer."],
         ["OC-05", "population_burden_proxy_claim_status", "OPERATIONAL_POPULATION_BURDEN_PROXY", "PASS_WITH_POPULATION_BURDEN_PROXY_SEMANTICS", f"rows={len(iech)}."],
         ["OC-07", "territorial_indicator_type", "BUILT_UP_FUEL_TERRITORIAL_PROXY", "PASS_AS_TERRITORIAL_PROXY", f"rows={len(terr)}; formal WUI not asserted."],
-        ["OC-07", "formal_wui_claim_status", "HOLD_FORMAL_WUI", "HOLD_FORMAL_WUI", "No COS/COSc/CLC building-fuel relation resolved."],
+        ["OC-07", "territorial_proxy_status", "AVAILABLE_AS_CONTEXT", "PASS_AS_TERRITORIAL_PROXY", "Proxy retained as contextual territorial descriptor."],
+        ["OC-07", "territorial_proxy_allowed_use", "CONTEXTUAL_TERRITORIAL_DESCRIPTOR", "PASS_AS_TERRITORIAL_PROXY", "Not a formal WUI, risk, exposure or causal driver."],
+        ["OC-07", "formal_wui_claim_status", "HOLD_FORMAL_WUI", "HOLD_FORMAL_WUI", "No independent vegetation layer or building-vegetation spatial relation resolved."],
+        ["OC-07", "formal_wui_status", "HOLD_FORMAL_WUI", "HOLD_FORMAL_WUI", "Formal WUI method is not implemented in the current authorized input contract."],
+        ["OC-07", "formal_wui_method", "NOT_IMPLEMENTED", "HOLD_FORMAL_WUI", "R10-D1 preserves the proxy and does not implement a new WUI method."],
+        ["OC-07", "building_vegetation_spatial_relation", 0, "HOLD_FORMAL_WUI", "No building-to-vegetation interface or intermix relation is available."],
+        ["OC-07", "independent_landcover_input_used", 0, "HOLD_FORMAL_WUI", "Forest/shrub values remain fire/recurrence-derived proxies."],
+        ["OC-07", "current_wui_proxy_fire_history_dependent", 1, "INFO", "Current forest/shrub proxy is derived from the ICNF/fire-recurrence route."],
+        ["OC-07", "formal_wui_source_status", "NOT_SUPPORTED_BY_CURRENT_AUTHORIZED_INPUTS", "HOLD_FORMAL_WUI", "Suitable formal-WUI spatial inputs are not resolved in the authorized contract."],
+        ["OC-07", "decision", "FORMAL_WUI_NOT_SUPPORTED_BY_CURRENT_AUTHORIZED_INPUTS", "HOLD_FORMAL_WUI", "BUILT_UP_FUEL_TERRITORIAL_PROXY retained as context."],
         ["OC-09", "matrix_type", "TERRITORIAL_SCREENING_ASSOCIATION", "PASS_AS_SCREENING_ASSOCIATION", f"rows={len(matrix)}; no causal identification."],
         ["OC-09", "causal_claim_status", "HOLD_CAUSAL_INFERENCE", "HOLD_CAUSAL_INFERENCE", "Descriptive screening only."],
         ["MUNICIPIO", "smoke_resolution", "REGIONAL_NUTS3_SIGNAL_ALLOCATED_TO_MUNICIPALITY", "PASS_AS_TERRITORIAL_PROXY", f"municipal rows={len(muni)}; MAPPED_FROM_NUTS3."],
@@ -145,6 +154,7 @@ def _semantic_audits(output_root: Path) -> None:
         "- population_smoke_day_burden_proxy is canonical: smoke_days * population_total.",
         "- population_smoke_burden_proxy and smoke_hours_equiv are LEGACY/DEPRECATED and non-canonical.",
         "- normalized IECH, health exposure, causal inference, direct municipal smoke and formal WUI claims remain blocked.",
+        "- OC-07 formal WUI decision: FORMAL_WUI_NOT_SUPPORTED_BY_CURRENT_AUTHORIZED_INPUTS; BUILT_UP_FUEL_TERRITORIAL_PROXY is retained only as contextual territory.",
         "- municipal atmospheric values are regional NUTS3 signals allocated to municipalities.",
         "- scenarios are normative assumptions, not empirically validated projections.",
     ]
@@ -285,11 +295,13 @@ def _feasibility_audits(output_root: Path, inputs: Dict[str, object], muni_layer
     candidates = [row for row in inv_rows if row[2] == 1 and row[7] == "PASS"]
     _write_tsv(qa / "formal_wui_feasibility.tsv", ["metric", "value", "status", "detail"], [
         ["landcover_wui_inputs_found", len(candidates), "PASS", "Inventory limited to authorized data root with absolute path guard."],
-        ["formal_building_fuel_relation", 0, "INFO", "Methodological limitation: no usable COS/COSc/CLC relation resolved."],
-        ["decision", "FORMAL_WUI_NOT_SUPPORTED_BY_AVAILABLE_DATA", "PASS", "BUILT_UP_FUEL_TERRITORIAL_PROXY_RETAINED"],
+        ["formal_building_fuel_relation", 0, "HOLD_FORMAL_WUI", "No independent vegetation layer or building-fuel spatial relation resolved."],
+        ["independent_landcover_input_used", 0, "HOLD_FORMAL_WUI", "Forest/shrub values are fire/recurrence-derived proxies."],
+        ["current_wui_proxy_fire_history_dependent", 1, "INFO", "Current territorial proxy depends on the fire/recurrence route."],
+        ["decision", "FORMAL_WUI_NOT_SUPPORTED_BY_CURRENT_AUTHORIZED_INPUTS", "HOLD_FORMAL_WUI", "BUILT_UP_FUEL_TERRITORIAL_PROXY_RETAINED_AS_CONTEXT"],
     ])
     (qa / "formal_wui_feasibility.md").write_text(
-        "# Formal WUI feasibility\n\nDecision: `FORMAL_WUI_NOT_SUPPORTED_BY_AVAILABLE_DATA`. The existing built-up/fuel territorial proxy is retained and not called formal WUI.\n",
+        "# Formal WUI feasibility\n\nDecision: `FORMAL_WUI_NOT_SUPPORTED_BY_CURRENT_AUTHORIZED_INPUTS`. The existing built-up/fuel territorial proxy is retained as context and is not called formal WUI.\n",
         encoding="utf-8",
     )
 

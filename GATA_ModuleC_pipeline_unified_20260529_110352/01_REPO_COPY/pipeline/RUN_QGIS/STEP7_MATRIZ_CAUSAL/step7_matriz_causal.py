@@ -1834,12 +1834,29 @@ def compute_territorial_context(layer, id_field: str, recurrence_csv: Path, buil
                 f"GHSL_BUILT_2020:{built_zip.name}; fuel_proxy_from:{recurrence_csv.name}",
                 note,
                 missing_flag,
+                "BUILT_UP_FUEL_TERRITORIAL_PROXY",
+                "AVAILABLE_AS_CONTEXT",
+                "HOLD_FORMAL_WUI",
+                "HOLD_FORMAL_WUI",
+                "NOT_IMPLEMENTED",
+                "FALSE",
+                "NOT_SUPPORTED_BY_CURRENT_AUTHORIZED_INPUTS",
+                "FALSE",
+                "TRUE",
+                "LEGACY_OR_CONTEXTUAL_PROXY_NOT_FORMAL_WUI",
             ]
         )
 
     write_csv(
         out_csv,
-        ["unit_id", "built_up_proxy", "forest_proxy", "shrubland_proxy", "wui_proxy", "landcover_source", "territorial_context_note", "territorial_missing_flag"],
+        [
+            "unit_id", "built_up_proxy", "forest_proxy", "shrubland_proxy", "wui_proxy",
+            "landcover_source", "territorial_context_note", "territorial_missing_flag",
+            "territorial_indicator_type", "territorial_proxy_status", "formal_wui_status",
+            "formal_wui_claim_status", "formal_wui_method", "building_vegetation_spatial_relation",
+            "formal_wui_source_status", "independent_landcover_input_used",
+            "current_wui_proxy_fire_history_dependent", "wui_proxy_semantic_status",
+        ],
         rows_out,
         delim=";",
     )

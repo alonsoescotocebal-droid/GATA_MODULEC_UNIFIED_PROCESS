@@ -4767,6 +4767,92 @@ def create_r10c_audit_capsule(output_root: Path, report: Report) -> Path:
     return capsule
 
 
+def create_r10d1_wui_audit_capsule(output_root: Path, report: Report) -> Path:
+    """Create the compact R10-D1 formal-WUI HOLD evidence capsule."""
+    deliver_dir = output_root / "deliverables_step9"
+    ensure_dir(deliver_dir)
+    repo_root = Path(__file__).resolve().parents[1]
+    git_root = repo_root.parent
+    git_cmd = _resolve_git_command()
+    if not git_cmd:
+        raise FileNotFoundError("Git executable not found; set PATH or install Git")
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            [git_cmd, "-C", str(git_root), *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
+        ).stdout.strip()
+
+    head = git("rev-parse", "--short=12", "HEAD") or "unknown"
+    capsule = deliver_dir / f"R10_D1_AUDIT_CAPSULE_{head}.zip"
+    selected = [
+        output_root / "qa" / name
+        for name in (
+            "r10_d1_wui_semantic_audit.tsv",
+            "r10_d1_wui_gate_audit.tsv",
+            "r10_d1_wui_method_declaration.md",
+            "objective_semantic_contract_audit.tsv",
+            "objectives_canon_alignment_report.tsv",
+            "objectives_canon_alignment_report.md",
+            "scientific_validation_gate.tsv",
+            "scientific_claim_gate.tsv",
+            "scientific_threshold_evidence_register.tsv",
+            "formal_wui_feasibility.tsv",
+            "formal_wui_feasibility.md",
+            "r10_c_screening_construct_audit.tsv",
+            "r10_c_screening_independence_audit.tsv",
+            "r10_c_screening_method_declaration.md",
+            "r10_c_git_root_audit.tsv",
+            "r10_c_screening_weight_sensitivity.tsv",
+            "r10_c_smoke_transport_sensitivity_propagation.tsv",
+            "r10_c_recurrence_sensitivity_propagation.tsv",
+        )
+    ] + [
+        output_root / "tables" / name
+        for name in ("territorial_context_nuts3.csv", "territorial_context_municipio.csv")
+    ] + [
+        output_root / "brief" / "causal_matrix" / name
+        for name in ("territorial_screening_matrix_nuts3.csv", "territorial_screening_matrix_municipio.csv")
+    ] + [
+        output_root / "deliverables_step9" / name
+        for name in (
+            "runtime_closure_decision.md",
+            "runtime_scientific_closure_decision.md",
+            "final_manifest.json",
+            "final_manifest_recursive_audit.tsv",
+            "final_sha256_checkpoints.txt",
+        )
+    ]
+    git_state = "\n".join([
+        f"git_toplevel={git_root}",
+        f"branch={git('branch', '--show-current')}",
+        f"head={git('rev-parse', 'HEAD')}",
+        "status_short:",
+        git("status", "--short"),
+        "",
+    ])
+    phase_summary = "\n".join([
+        "# R10-D1 Audit Capsule",
+        "",
+        "Decision: FORMAL_WUI_NOT_SUPPORTED_BY_CURRENT_AUTHORIZED_INPUTS.",
+        "BUILT_UP_FUEL_TERRITORIAL_PROXY is preserved as contextual territory.",
+        "OC-07 is HOLD; R10-C canonical screening remains independent of WUI.",
+        "R10-D2 is required for any formal-WUI input acquisition or method expansion.",
+        "",
+    ])
+    with zipfile.ZipFile(capsule, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("00_git_state.txt", git_state)
+        zf.writestr("00_phase_summary.md", phase_summary)
+        for path in selected:
+            if path.exists() and path.is_file():
+                zf.write(path, arcname=_relative_output_path(path, output_root))
+    report.log(f"R10-D1 WUI audit capsule created: {capsule}")
+    return capsule
+
+
 def resolve_step7_script(gata_root: Path, report: Report) -> Path:
     local_repo_script = Path(__file__).resolve().parent / "RUN_QGIS" / "STEP7_MATRIZ_CAUSAL" / "step7_matriz_causal.py"
     external_root_script = gata_root / "pipeline" / "RUN_QGIS" / "STEP7_MATRIZ_CAUSAL" / "step7_matriz_causal.py"
@@ -4899,6 +4985,27 @@ def run_scientific_gate(output_root: Path, report: Report) -> Path:
     return decision_path
 
 
+def _expected_r10_d1_objective_hold(output_root: Path) -> bool:
+    """Allow the declared OC-07 scientific HOLD, but not execution failures."""
+    report_path = output_root / "qa" / "objectives_canon_alignment_report.tsv"
+    if not report_path.exists():
+        return False
+    _header, rows, _delimiter = read_csv_rows(report_path)
+    if not rows:
+        return False
+    oc07 = next((row for row in rows if str(row.get("objective_id") or "") == "OC-07"), None)
+    if not oc07 or str(oc07.get("status") or "").upper() != "HOLD":
+        return False
+    reason = str(oc07.get("failure_reason") or "")
+    if "FORMAL_WUI_NOT_SUPPORTED_BY_CURRENT_AUTHORIZED_INPUTS" not in reason:
+        return False
+    return not any(
+        str(row.get("status") or "").upper() in {"HOLD", "FAIL", "NO-GO", "BLOCKED"}
+        and str(row.get("objective_id") or "") != "OC-07"
+        for row in rows
+    )
+
+
 def run_objectives_gate(output_root: Path, report: Report, mode: str = "post") -> None:
     objectives_gate = Path(__file__).resolve().parent / "validate_modulec_objectives_canon.py"
     cmd = [
@@ -4920,6 +5027,9 @@ def run_objectives_gate(output_root: Path, report: Report, mode: str = "post") -
         errors="replace",
     )
     if proc.returncode != 0:
+        if mode == "post" and proc.returncode == 2 and _expected_r10_d1_objective_hold(output_root):
+            report.log("Objectives gate completed with expected scientific HOLD: OC-07 formal WUI.")
+            return
         report.fail(
             f"Objectives gate failed (mode={mode}, exit={proc.returncode}). "
             f"stdout={proc.stdout.strip()} stderr={proc.stderr.strip()}"
@@ -5052,6 +5162,28 @@ def assert_global_audit_status_clear(output_root: Path, report: Report) -> None:
     for row in rows:
         blocker_count = safe_float(row.get("active_blocker_count"))
         if blocker_count is not None and blocker_count > 0:
+            scanned_name = Path(str(row.get("file_path") or "")).name
+            if scanned_name in {
+                "r10_d1_wui_semantic_audit.tsv",
+                "r10_d1_wui_gate_audit.tsv",
+                "formal_wui_feasibility.tsv",
+                "formal_wui_feasibility.md",
+            }:
+                # These are declared scientific/objective holds, not runtime failures.
+                continue
+            if scanned_name in {"scientific_validation_gate.tsv", "scientific_claim_gate.tsv"}:
+                scanned_path = Path(str(row.get("file_path") or ""))
+                try:
+                    _header, gate_rows, _delimiter = read_csv_rows(scanned_path)
+                    unexpected = [
+                        item for item in gate_rows
+                        if str(item.get("gate_status") or "").upper().startswith("BLOCKED")
+                        and str(item.get("threshold_id") or "") != "WUI_FORMAL_001"
+                    ]
+                    if not unexpected:
+                        continue
+                except Exception:
+                    pass
             if (
                 Path(str(row.get("file_path") or "")).name == "provenance_runtime_window_audit.tsv"
                 and provenance_blocked_metrics
@@ -5936,6 +6068,9 @@ def collect_final_outputs(output_root: Path, scientific_decision_path: Path, inc
         output_root / "qa" / "brief_claim_scientific_gate_audit.tsv",
         output_root / "qa" / "objective_semantic_contract_audit.tsv",
         output_root / "qa" / "objective_semantic_contract_report.md",
+        output_root / "qa" / "r10_d1_wui_semantic_audit.tsv",
+        output_root / "qa" / "r10_d1_wui_gate_audit.tsv",
+        output_root / "qa" / "r10_d1_wui_method_declaration.md",
         output_root / "qa" / "cartographic_package_gate.tsv",
         output_root / "qa" / "cartographic_layers_inventory.tsv",
         output_root / "qa" / "cartographic_join_audit.tsv",
@@ -6036,6 +6171,12 @@ def collect_final_outputs(output_root: Path, scientific_decision_path: Path, inc
     )
     if capsule_candidates:
         outputs.append(capsule_candidates[-1])
+    d1_capsule_candidates = sorted(
+        (output_root / "deliverables_step9").glob("R10_D1_AUDIT_CAPSULE_*.zip"),
+        key=lambda path: path.stat().st_mtime,
+    )
+    if d1_capsule_candidates:
+        outputs.append(d1_capsule_candidates[-1])
     if include_global_scan:
         outputs.extend(
             [
@@ -6137,6 +6278,7 @@ def complete_post_smoke_runtime(
     run_global_audit_status_scan(output_root, report)
     assert_global_audit_status_clear(output_root, report)
     create_r10c_audit_capsule(output_root, report)
+    create_r10d1_wui_audit_capsule(output_root, report)
     outputs = collect_final_outputs(output_root, scientific_decision_path, include_global_scan=True)
     build_manifest_and_zip(outputs, deliver_dir, report)
 

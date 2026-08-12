@@ -9,6 +9,19 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+try:
+    from .validate_modulec_objectives_canon import (
+        _check_formal_wui_quality,
+        _check_territorial_proxy_quality,
+        has_wui_semantic_surface,
+    )
+except ImportError:  # pragma: no cover - direct script execution
+    from validate_modulec_objectives_canon import (  # type: ignore
+        _check_formal_wui_quality,
+        _check_territorial_proxy_quality,
+        has_wui_semantic_surface,
+    )
+
 
 GO_REQUIRED = [
     Path("qa/oc03c_base_smoke_contract_gate.tsv"),
@@ -325,27 +338,24 @@ def evaluate_output_root(output_root: Path) -> Tuple[str, str, List[str], List[D
             holds.append("HOLD WRB INTEGRATION")
             notes.append(f"could not parse wrb_context_nuts3.csv: {exc}")
 
-    terr_csv = output_root / "tables/territorial_context_nuts3.csv"
-    if not terr_csv.exists():
-        holds.append("HOLD WUI")
+    if has_wui_semantic_surface(output_root):
+        proxy_ok, proxy_detail = _check_territorial_proxy_quality(output_root)
+        if not proxy_ok:
+            holds.append("HOLD WUI TERRITORIAL PROXY")
+            notes.append(proxy_detail)
+        formal_ok, formal_detail = _check_formal_wui_quality(output_root)
+        if not formal_ok:
+            holds.append("HOLD FORMAL WUI")
+            notes.append(formal_detail)
     else:
-        try:
-            terr_rows = read_csv_rows(terr_csv)
-            if not terr_rows:
-                holds.append("HOLD WUI")
-            else:
-                any_wui = False
-                for r in terr_rows:
-                    v = safe_float(r.get("wui_proxy"))
-                    if v is not None and v > 0:
-                        any_wui = True
-                        break
-                if not any_wui:
-                    holds.append("HOLD WUI")
-                    notes.append("territorial_context_nuts3.csv has no positive wui_proxy values")
-        except Exception as exc:
+        # Legacy fixtures without the R10-D1 semantic surface retain the old
+        # coverage check; they are never interpreted as formal WUI evidence.
+        terr_csv = output_root / "tables/territorial_context_nuts3.csv"
+        terr_rows = read_csv_rows(terr_csv) if terr_csv.exists() else []
+        any_proxy = any((safe_float(row.get("wui_proxy")) or 0) > 0 for row in terr_rows)
+        if not terr_rows or not any_proxy:
             holds.append("HOLD WUI")
-            notes.append(f"could not parse territorial_context_nuts3.csv: {exc}")
+            notes.append("territorial proxy missing or has no positive legacy wui_proxy values")
 
     causal_csv = output_root / "brief/causal_matrix/causal_matrix_IECH_NUTS3.csv"
     causal_json = output_root / "brief/causal_matrix/causal_matrix_IECH_NUTS3.json"

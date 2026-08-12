@@ -138,6 +138,9 @@ $requiredRel = @(
   "qa\path_scope_guard_report.tsv",
   "qa\scientific_validation_gate.tsv",
   "qa\scientific_threshold_evidence_register.tsv",
+  "qa\r10_d1_wui_semantic_audit.tsv",
+  "qa\r10_d1_wui_gate_audit.tsv",
+  "qa\r10_d1_wui_method_declaration.md",
   "qa\blocked_claims_register.tsv",
   "qa\causal_matrix_scientific_gate_audit.tsv",
   "qa\brief_claim_scientific_gate_audit.tsv",
@@ -501,6 +504,68 @@ if($newZipHasLegacy){
 }
 Add-StaleAudit "STALE-005" "PASS" "New final ZIP has no _bundle_payload entries."
 $staleAuditRows | Export-Csv -Path $staleAuditPath -Delimiter "`t" -NoTypeInformation -Encoding UTF8
+
+# R10-D1 compact capsule: evidence only, never large rasters or the full bundle.
+$d1Stage = Join-Path $outDir "deliverables_step9\__r10_d1_capsule_stage"
+if(Test-Path $d1Stage){ Remove-Item -Recurse -Force $d1Stage }
+New-Item -ItemType Directory -Force -Path $d1Stage | Out-Null
+$d1Files = @(
+  "qa\r10_d1_wui_semantic_audit.tsv",
+  "qa\r10_d1_wui_gate_audit.tsv",
+  "qa\r10_d1_wui_method_declaration.md",
+  "qa\objectives_canon_alignment_report.tsv",
+  "qa\scientific_validation_gate.tsv",
+  "qa\scientific_threshold_evidence_register.tsv",
+  "qa\formal_wui_feasibility.tsv",
+  "qa\formal_wui_feasibility.md",
+  "qa\r10_c_git_root_audit.tsv",
+  "qa\r10_c_screening_construct_audit.tsv",
+  "qa\r10_c_screening_independence_audit.tsv",
+  "qa\r10_c_screening_method_declaration.md",
+  "qa\r10_c_screening_weight_sensitivity.tsv",
+  "qa\r10_c_smoke_transport_sensitivity_propagation.tsv",
+  "qa\r10_c_recurrence_sensitivity_propagation.tsv",
+  "tables\territorial_context_nuts3.csv",
+  "tables\territorial_context_municipio.csv",
+  "brief\causal_matrix\territorial_screening_matrix_nuts3.csv",
+  "brief\causal_matrix\territorial_screening_matrix_municipio.csv",
+  "deliverables_step9\runtime_closure_decision.md",
+  "deliverables_step9\runtime_scientific_closure_decision.md",
+  "deliverables_step9\final_manifest.json",
+  "deliverables_step9\final_manifest_recursive_audit.tsv",
+  "deliverables_step9\final_sha256_checkpoints.txt"
+)
+foreach($rel in $d1Files){
+  $src = Join-Path $modcOut $rel
+  if(Test-Path $src){
+    $dst = Join-Path $d1Stage $rel
+    $dstParent = Split-Path -Parent $dst
+    if(-not (Test-Path $dstParent)){ New-Item -ItemType Directory -Force -Path $dstParent | Out-Null }
+    Copy-Item -Force $src $dst
+  }
+}
+$d1GitHead = (& git -C "$RepoRoot" rev-parse --short=12 HEAD).Trim()
+$d1GitState = @(
+  "git_toplevel=$((& git -C \"$RepoRoot\" rev-parse --show-toplevel).Trim())",
+  "branch=$((& git -C \"$RepoRoot\" branch --show-current).Trim())",
+  "head=$((& git -C \"$RepoRoot\" rev-parse HEAD).Trim())",
+  "status_short:",
+  ((& git -C \"$RepoRoot\" status --short) -join "`n"),
+  ""
+)
+$d1GitState | Set-Content -LiteralPath (Join-Path $d1Stage "00_git_state.txt") -Encoding UTF8
+@(
+  "# R10-D1 Audit Capsule",
+  "",
+  "Decision: FORMAL_WUI_NOT_SUPPORTED_BY_CURRENT_AUTHORIZED_INPUTS.",
+  "BUILT_UP_FUEL_TERRITORIAL_PROXY is preserved as contextual territory.",
+  "OC-07 is HOLD; R10-C canonical screening remains independent of WUI.",
+  "R10-D2 is required for formal-WUI input acquisition and method predeclaration."
+) | Set-Content -LiteralPath (Join-Path $d1Stage "00_phase_summary.md") -Encoding UTF8
+$d1Capsule = Join-Path $outDir ("deliverables_step9\R10_D1_AUDIT_CAPSULE_" + $d1GitHead + ".zip")
+if(Test-Path $d1Capsule){ Remove-Item -Force $d1Capsule }
+Compress-Archive -Path (Join-Path $d1Stage "*") -DestinationPath $d1Capsule -Force
+Remove-Item -Recurse -Force $d1Stage
 
 Write-Host "OK STEP9_FINAL_MASTER_PACK"
 Write-Host "OUTDIR =" $outDir
