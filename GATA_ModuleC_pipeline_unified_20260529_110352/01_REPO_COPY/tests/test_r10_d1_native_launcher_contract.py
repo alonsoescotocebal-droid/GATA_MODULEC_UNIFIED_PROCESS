@@ -131,6 +131,53 @@ def test_native_stdout_and_stderr_with_zero_exit_is_pass(tmp_path: Path) -> None
     assert stderr_path.read_text(encoding="utf-8") == "stderr warning"
 
 
+def test_native_batch_entrypoint_preserves_streams_and_exit_code(tmp_path: Path) -> None:
+    batch = tmp_path / "fake native batch with spaces.bat"
+    batch.write_text(
+        "@echo off\n"
+        "echo batch stdout\n"
+        "echo batch stderr 1>&2\n"
+        "exit /b 0\n",
+        encoding="ascii",
+    )
+    stdout_path = tmp_path / "batch stdout.txt"
+    stderr_path = tmp_path / "batch stderr.txt"
+    harness = tmp_path / "invoke batch harness.ps1"
+    harness.write_text(
+        ". " + _ps_literal(str(RUNNER)) + "\n"
+        "$exitCode = Invoke-NativeProcess "
+        "-FilePath "
+        + _ps_literal(str(batch))
+        + " -ArgumentList @('argument with spaces') "
+        "-WorkingDirectory "
+        + _ps_literal(str(tmp_path))
+        + " -StdoutPath "
+        + _ps_literal(str(stdout_path))
+        + " -StderrPath "
+        + _ps_literal(str(stderr_path))
+        + "\nexit $exitCode\n",
+        encoding="utf-8",
+    )
+    completed = subprocess.run(
+        [
+            _powershell(),
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(harness),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "batch stdout" in stdout_path.read_text(encoding="utf-8")
+    assert "batch stderr" in stderr_path.read_text(encoding="utf-8")
+
+
 def test_native_stderr_with_nonzero_exit_fails_with_real_exit_code(tmp_path: Path) -> None:
     completed, stdout_path, stderr_path, _ = _run_runner(
         tmp_path, stderr_text="fatal native error", exit_code=17

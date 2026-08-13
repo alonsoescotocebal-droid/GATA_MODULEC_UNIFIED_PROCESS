@@ -40,7 +40,7 @@ function Invoke-NativeProcess {
     $extension = [IO.Path]::GetExtension($FilePath).ToLowerInvariant()
     $commandLine = $null
     if ($extension -in @('.bat', '.cmd')) {
-        $commandLine = Format-NativeProcessCommand -FilePath $FilePath -ArgumentList $ArgumentList
+        $commandLine = 'call ' + (Format-NativeProcessCommand -FilePath $FilePath -ArgumentList $ArgumentList)
         $launchFilePath = if ($env:ComSpec) { $env:ComSpec } else { 'cmd.exe' }
     }
 
