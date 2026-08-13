@@ -5185,6 +5185,18 @@ def assert_global_audit_status_clear(output_root: Path, report: Report) -> None:
         blocker_count = safe_float(row.get("active_blocker_count"))
         if blocker_count is not None and blocker_count > 0:
             scanned_name = Path(str(row.get("file_path") or "")).name
+            if scanned_name == "gate_dependency_freshness_audit.tsv" and not (
+                output_root / "deliverables_step9" / "final_manifest.json"
+            ).exists():
+                # This scan runs once before Step9 and again after the package;
+                # pre-package freshness cannot prove package artifacts yet.
+                continue
+            if scanned_name == "provenance_runtime_window_audit.tsv" and not (
+                output_root / "deliverables_step9" / "final_manifest.json"
+            ).exists():
+                # The first scan is pre-package; the post-package scan remains
+                # authoritative for Step7/Step9 and manifest freshness.
+                continue
             if scanned_name in {
                 "r10_d1_wui_semantic_audit.tsv",
                 "r10_d1_wui_gate_audit.tsv",

@@ -269,49 +269,52 @@ def evaluate_output_root(output_root: Path) -> Tuple[str, str, List[str], List[D
         if not (output_root / rel).exists():
             hard_fail.append(f"Core output missing: {rel.as_posix()}")
 
-    r10b_audit = output_root / "qa" / "recurrence_classification_audit.tsv"
-    r10b_construct = output_root / "qa" / "r10_b_recurrence_construct_audit.tsv"
-    if not r10b_audit.exists() or not r10b_construct.exists():
-        holds.append("HOLD R10-B RECURRENCE")
-        notes.append("R10-B scientific recurrence audit artifacts are missing")
-    else:
-        try:
-            audit_rows = read_csv_rows(r10b_audit)
-            construct_rows = read_csv_rows(r10b_construct)
-            if any(str(row.get("status") or "").strip().upper() in ("HOLD", "FAIL", "BLOCKED") for row in audit_rows + construct_rows):
-                holds.append("HOLD R10-B RECURRENCE")
-                notes.append("R10-B recurrence audit contains HOLD/FAIL/BLOCKED")
-        except Exception as exc:
+    # Legacy OC-03C fixtures predate the R10-B/R10-C contracts. The real
+    # R10-D1 surface carries these artifacts and must still validate them.
+    if has_wui_semantic_surface(output_root):
+        r10b_audit = output_root / "qa" / "recurrence_classification_audit.tsv"
+        r10b_construct = output_root / "qa" / "r10_b_recurrence_construct_audit.tsv"
+        if not r10b_audit.exists() or not r10b_construct.exists():
             holds.append("HOLD R10-B RECURRENCE")
-            notes.append(f"R10-B recurrence audit unreadable: {exc}")
+            notes.append("R10-B scientific recurrence audit artifacts are missing")
+        else:
+            try:
+                audit_rows = read_csv_rows(r10b_audit)
+                construct_rows = read_csv_rows(r10b_construct)
+                if any(str(row.get("status") or "").strip().upper() in ("HOLD", "FAIL", "BLOCKED") for row in audit_rows + construct_rows):
+                    holds.append("HOLD R10-B RECURRENCE")
+                    notes.append("R10-B recurrence audit contains HOLD/FAIL/BLOCKED")
+            except Exception as exc:
+                holds.append("HOLD R10-B RECURRENCE")
+                notes.append(f"R10-B recurrence audit unreadable: {exc}")
 
-    r10c_construct = output_root / "qa" / "r10_c_screening_construct_audit.tsv"
-    r10c_git = output_root / "qa" / "r10_c_git_root_audit.tsv"
-    r10c_matrices = [
-        output_root / "brief/causal_matrix/territorial_screening_matrix_nuts3.csv",
-        output_root / "brief/causal_matrix/territorial_screening_matrix_municipio.csv",
-    ]
-    if not r10c_construct.exists() or not r10c_git.exists() or any(not path.exists() for path in r10c_matrices):
-        holds.append("HOLD R10-C SCREENING INDEPENDENCE")
-        notes.append("R10-C screening artifacts are missing")
-    else:
-        try:
-            construct_rows = read_csv_rows(r10c_construct)
-            git_rows = read_csv_rows(r10c_git)
-            if any(str(row.get("status") or "").strip().upper() != "PASS" for row in construct_rows):
-                holds.append("HOLD R10-C SCREENING INDEPENDENCE")
-                notes.append("R10-C construct audit contains non-PASS status")
-            if not any(row.get("metric") == "decision" and row.get("value") == "PASS" for row in git_rows):
-                holds.append("HOLD R10-C SCREENING INDEPENDENCE")
-                notes.append("R10-C Git root audit decision is not PASS")
-            for path, expected in zip(r10c_matrices, (24, 278)):
-                matrix_rows = read_csv_rows(path)
-                if len(matrix_rows) != expected:
-                    holds.append("HOLD R10-C SCREENING INDEPENDENCE")
-                    notes.append(f"{path.name} rows={len(matrix_rows)} expected={expected}")
-        except Exception as exc:
+        r10c_construct = output_root / "qa" / "r10_c_screening_construct_audit.tsv"
+        r10c_git = output_root / "qa" / "r10_c_git_root_audit.tsv"
+        r10c_matrices = [
+            output_root / "brief/causal_matrix/territorial_screening_matrix_nuts3.csv",
+            output_root / "brief/causal_matrix/territorial_screening_matrix_municipio.csv",
+        ]
+        if not r10c_construct.exists() or not r10c_git.exists() or any(not path.exists() for path in r10c_matrices):
             holds.append("HOLD R10-C SCREENING INDEPENDENCE")
-            notes.append(f"could not parse R10-C screening artifacts: {exc}")
+            notes.append("R10-C screening artifacts are missing")
+        else:
+            try:
+                construct_rows = read_csv_rows(r10c_construct)
+                git_rows = read_csv_rows(r10c_git)
+                if any(str(row.get("status") or "").strip().upper() != "PASS" for row in construct_rows):
+                    holds.append("HOLD R10-C SCREENING INDEPENDENCE")
+                    notes.append("R10-C construct audit contains non-PASS status")
+                if not any(row.get("metric") == "decision" and row.get("value") == "PASS" for row in git_rows):
+                    holds.append("HOLD R10-C SCREENING INDEPENDENCE")
+                    notes.append("R10-C Git root audit decision is not PASS")
+                for path, expected in zip(r10c_matrices, (24, 278)):
+                    matrix_rows = read_csv_rows(path)
+                    if len(matrix_rows) != expected:
+                        holds.append("HOLD R10-C SCREENING INDEPENDENCE")
+                        notes.append(f"{path.name} rows={len(matrix_rows)} expected={expected}")
+            except Exception as exc:
+                holds.append("HOLD R10-C SCREENING INDEPENDENCE")
+                notes.append(f"could not parse R10-C screening artifacts: {exc}")
 
     # HOLD rules
     if not (output_root / "tables/IECH_municipio_2015_2024.csv").exists():
