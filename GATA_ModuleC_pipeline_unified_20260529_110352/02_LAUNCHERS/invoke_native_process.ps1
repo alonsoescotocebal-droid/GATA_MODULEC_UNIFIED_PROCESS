@@ -40,8 +40,19 @@ function Invoke-NativeProcess {
     $extension = [IO.Path]::GetExtension($FilePath).ToLowerInvariant()
     $commandLine = $null
     if ($extension -in @('.bat', '.cmd')) {
-        $commandLine = 'call ' + (Format-NativeProcessCommand -FilePath $FilePath -ArgumentList $ArgumentList)
-        $launchFilePath = if ($env:ComSpec) { $env:ComSpec } else { 'cmd.exe' }
+        $bridgePath = Join-Path $PSScriptRoot 'native_process_bridge.py'
+        if (-not (Test-Path -LiteralPath $bridgePath)) { throw "NATIVE_PROCESS_BRIDGE_MISSING: $bridgePath" }
+        $bridgePython = (Get-Command python.exe -ErrorAction Stop).Source
+        $encodedArguments = [Convert]::ToBase64String(
+            [Text.Encoding]::UTF8.GetBytes((ConvertTo-Json -Compress @($ArgumentList)))
+        )
+        $launchFilePath = $bridgePython
+        $launchArguments = @(
+            $bridgePath,
+            '--file-path', $FilePath,
+            '--working-directory', $WorkingDirectory,
+            '--args-json-b64', $encodedArguments
+        )
     }
 
     $startInfo = New-Object System.Diagnostics.ProcessStartInfo

@@ -117,6 +117,8 @@ def test_launcher_contract_uses_exit_code_and_separate_native_streams() -> None:
         "RedirectStandardError",
         "ReadToEndAsync",
         "ExitCode",
+        "native_process_bridge.py",
+        "ConvertTo-Json",
     ):
         assert token in runner_text
 
