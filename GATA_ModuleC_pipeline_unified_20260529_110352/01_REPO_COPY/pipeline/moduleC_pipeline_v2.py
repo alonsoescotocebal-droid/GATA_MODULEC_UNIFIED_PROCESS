@@ -5006,6 +5006,28 @@ def _expected_r10_d1_objective_hold(output_root: Path) -> bool:
     )
 
 
+def _expected_r10_d1_qa_summary_hold(output_root: Path) -> bool:
+    """Recognize the final QA summary for the declared R10-D1 scientific HOLD."""
+    checks_path = output_root / "qa" / "QA_checks.csv"
+    if not checks_path.exists():
+        return False
+    _header, rows, _delimiter = read_csv_rows(checks_path)
+    summary = next(
+        (row for row in rows if str(row.get("check_id") or "") == "SUMMARY:decision"),
+        None,
+    )
+    if not summary or str(summary.get("status") or "").upper() != "HOLD":
+        return False
+    detail = str(summary.get("detail") or "").upper()
+    required_holds = {"HOLD FORMAL WUI", "HOLD OBJECTIVES CANON", "HOLD SCIENTIFIC GATE"}
+    if not required_holds.issubset(set(part.strip() for part in detail.split(";"))):
+        return False
+    return not any(
+        str(row.get("status") or "").upper() in {"FAIL", "NO-GO", "BLOCKED"}
+        for row in rows
+    )
+
+
 def run_objectives_gate(output_root: Path, report: Report, mode: str = "post") -> None:
     objectives_gate = Path(__file__).resolve().parent / "validate_modulec_objectives_canon.py"
     cmd = [
@@ -5170,6 +5192,12 @@ def assert_global_audit_status_clear(output_root: Path, report: Report) -> None:
                 "formal_wui_feasibility.md",
             }:
                 # These are declared scientific/objective holds, not runtime failures.
+                continue
+            if scanned_name == "objectives_canon_alignment_report.tsv" and _expected_r10_d1_objective_hold(output_root):
+                # OC-07 is intentionally held while formal WUI evidence is unavailable.
+                continue
+            if scanned_name == "QA_checks.csv" and _expected_r10_d1_qa_summary_hold(output_root):
+                # The summary propagates the same declared scientific HOLD.
                 continue
             if scanned_name in {"scientific_validation_gate.tsv", "scientific_claim_gate.tsv"}:
                 scanned_path = Path(str(row.get("file_path") or ""))
