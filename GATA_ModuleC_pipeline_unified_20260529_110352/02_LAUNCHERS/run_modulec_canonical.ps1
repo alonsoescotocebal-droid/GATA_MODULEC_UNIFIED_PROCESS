@@ -94,7 +94,10 @@ if ($Mode -eq 'Full') {
     finally {
         Pop-Location
     }
-    [IO.File]::WriteAllText((Join-Path $provenanceDir 'launcher_exit_code.txt'), "$scientificExit`n")
+    $exitCodePath = Join-Path $provenanceDir 'launcher_exit_code.txt'
+    if ($scientificExit -ne 0 -or -not (Test-Path -LiteralPath $exitCodePath)) {
+        [IO.File]::WriteAllText($exitCodePath, "$scientificExit`n")
+    }
     [IO.File]::WriteAllText((Join-Path $logsDir 'launcher_stdout.txt'), "mode=Full`n$command`n")
     if ($scientificExit -ne 0) { throw "CANONICAL_FULL_RUNTIME_FAILED: exit=$scientificExit" }
     exit 0

@@ -47,3 +47,9 @@ def test_full_records_command_roots_and_process_logs() -> None:
     ):
         assert token in text
     assert "exit 0" in text
+
+
+def test_full_does_not_rewrite_success_exit_after_scientific_packaging() -> None:
+    text = LAUNCHER.read_text(encoding="utf-8")
+    assert "$exitCodePath = Join-Path $provenanceDir 'launcher_exit_code.txt'" in text
+    assert "if ($scientificExit -ne 0 -or -not (Test-Path -LiteralPath $exitCodePath))" in text
