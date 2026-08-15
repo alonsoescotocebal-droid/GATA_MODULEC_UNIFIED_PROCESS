@@ -169,7 +169,15 @@ def _intersection_segments(ciae_layer: Any, admin_layer: Any, id_field: str, nam
             "OUTPUT": str(output_path),
         },
     )
-    layer = result["OUTPUT"]
+    output = result["OUTPUT"]
+    if hasattr(output, "fields"):
+        layer = output
+    else:
+        from qgis.core import QgsVectorLayer  # type: ignore
+
+        layer = QgsVectorLayer(str(output), "ciae_intersection", "ogr")
+        if not layer.isValid():
+            raise RuntimeError(f"CIAE intersection output is not a valid vector layer: {output}")
     rows: list[dict[str, Any]] = []
     fields = {field.name() for field in layer.fields()}
     resolved_id = id_field if id_field in fields else f"admin_{id_field}"
