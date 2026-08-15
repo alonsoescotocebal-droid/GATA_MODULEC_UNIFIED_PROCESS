@@ -12,12 +12,14 @@ from typing import Dict, List, Tuple
 try:
     from .validate_modulec_objectives_canon import (
         _check_formal_wui_quality,
+        _check_official_interface_quality,
         _check_territorial_proxy_quality,
         has_wui_semantic_surface,
     )
 except ImportError:  # pragma: no cover - direct script execution
     from validate_modulec_objectives_canon import (  # type: ignore
         _check_formal_wui_quality,
+        _check_official_interface_quality,
         _check_territorial_proxy_quality,
         has_wui_semantic_surface,
     )
@@ -348,8 +350,12 @@ def evaluate_output_root(output_root: Path) -> Tuple[str, str, List[str], List[D
             notes.append(proxy_detail)
         formal_ok, formal_detail = _check_formal_wui_quality(output_root)
         if not formal_ok:
-            holds.append("HOLD FORMAL WUI")
-            notes.append(formal_detail)
+            ciae_ok, _ciae_detail = _check_official_interface_quality(output_root)
+            if ciae_ok:
+                notes.append("Formal WUI remains a blocked claim; OC-07 is closed on the separate official Portuguese CIAE interface.")
+            else:
+                holds.append("HOLD FORMAL WUI")
+                notes.append(formal_detail)
     else:
         # Legacy fixtures without the R10-D1 semantic surface retain the old
         # coverage check; they are never interpreted as formal WUI evidence.

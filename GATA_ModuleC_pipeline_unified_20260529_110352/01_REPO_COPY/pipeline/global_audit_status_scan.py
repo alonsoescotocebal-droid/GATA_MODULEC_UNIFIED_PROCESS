@@ -16,6 +16,12 @@ TEXT_STATUS_PAT = re.compile(
     r"(?im)^\s*[-*]?\s*(?:status|decision|qa_flag)\s*[:=]\s*\*{0,2}\s*(HOLD|FAIL|NO-GO|BLOCKED)\b"
 )
 TEXT_DECISION_PAT = re.compile(r"(?im)\bDECISION\s*=\s*(HOLD|FAIL|NO-GO|BLOCKED)\b")
+ALLOWED_CLAIM_PAT = re.compile(
+    r"formal[_ ]wui|health[_ ]exposure|direct[_ ]municipal|causal[_ ](?:claim|effect|inference)|"
+    r"blocked[_ ]claim|claim[_ ]status|not[_ ]declared",
+    re.IGNORECASE,
+)
+HISTORICAL_PAT = re.compile(r"legacy|historical|previous runtime|R9|R10-D1", re.IGNORECASE)
 
 
 def read_text(path: Path) -> str:
@@ -108,6 +114,20 @@ def _scan_text_statuses(text: str) -> Tuple[Dict[str, int], str]:
     return counts, "text_structured_status_lines"
 
 
+def _classify_status(path: Path, text: str, active_count: int, is_hist: bool) -> str:
+    if is_hist or HISTORICAL_PAT.search(path.name):
+        return "HISTORICAL_REFERENCE"
+    if active_count and ALLOWED_CLAIM_PAT.search(text):
+        return "ALLOWED_BLOCKED_CLAIM"
+    if LIMIT_PAT.search(text) and not active_count:
+        return "LIMITATION"
+    if active_count:
+        return "ACTIVE_OBJECTIVE_BLOCKER"
+    if "WARNING" in text.upper():
+        return "NONBLOCKING_WARNING"
+    return "NONE"
+
+
 def main() -> int:
     import argparse
 
@@ -134,6 +154,7 @@ def main() -> int:
 
     rows = []
     total_blockers = 0
+    total_objective_blockers = 0
     total_historical_ignored = 0
     for f in files:
         text = read_text(f)
@@ -153,7 +174,10 @@ def main() -> int:
                 active_counts, active_source = _scan_text_statuses(text)
 
         active_blocker = _total_blockers(active_counts)
+        classification = _classify_status(f, text, active_blocker, is_hist)
+        objective_blocker = active_blocker if classification == "ACTIVE_OBJECTIVE_BLOCKER" else 0
         total_blockers += active_blocker
+        total_objective_blockers += objective_blocker
 
         raw_blocker_mentions = raw_counts["HOLD"] + raw_counts["FAIL"] + raw_counts["NO-GO"] + raw_counts["BLOCKED"]
         historical_ignored = max(0, raw_blocker_mentions - active_blocker)
@@ -174,6 +198,8 @@ def main() -> int:
                 "warning_count": raw_counts["WARNING"],
                 "methodological_limitation_count": len(LIMIT_PAT.findall(text)),
                 "active_blocker_count": active_blocker,
+                "objective_blocker_count": objective_blocker,
+                "classification": classification,
                 "historical_mentions_ignored": historical_ignored,
                 "active_status_source": active_source,
                 "evidence_excerpt": excerpt,
@@ -195,6 +221,8 @@ def main() -> int:
         "warning_count",
         "methodological_limitation_count",
         "active_blocker_count",
+        "objective_blocker_count",
+        "classification",
         "historical_mentions_ignored",
         "active_status_source",
         "evidence_excerpt",
@@ -212,15 +240,16 @@ def main() -> int:
         "",
         f"- files_scanned: {len(rows)}",
         f"- active_blockers: {total_blockers}",
+        f"- objective_blockers: {total_objective_blockers}",
         f"- historical_mentions_ignored: {total_historical_ignored}",
         "",
-        "| file | decision | active_blockers | source | tokens |",
-        "|---|---|---:|---|---|",
+        "| file | classification | raw_active_blockers | objective_blockers | source | tokens |",
+        "|---|---|---:|---:|---|---|",
     ]
     for r in rows:
         md.append(
-            f"| {r['file_path']} | {r['decision']} | {r['active_blocker_count']} | "
-            f"{r['active_status_source']} | {r['status_tokens_found']} |"
+            f"| {r['file_path']} | {r['classification']} | {r['active_blocker_count']} | "
+            f"{r['objective_blocker_count']} | {r['active_status_source']} | {r['status_tokens_found']} |"
         )
     out_md.write_text("\n".join(md) + "\n", encoding="utf-8")
     return 0

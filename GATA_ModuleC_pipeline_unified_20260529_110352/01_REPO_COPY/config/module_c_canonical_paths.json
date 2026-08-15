@@ -14,5 +14,12 @@
         "D:\\Mestrado\\GATA_2025_2026\\Prueba_aislada\\ISO_GATA_20260121_130505\\Incendios_Nueva version",
         "D:\\Mestrado\\GATA_2025_2026\\Prueba_aislada\\ISO_GATA_20260121_130505\\Complementariedad de analisis\\Module C\\Datos_RECOVERY_ERA5_2015_2024_R10A2"
     ],
-    "OUTPUT_ROOT_ALLOWED_PREFIX":  "D:\\GATA_MODULEC_UNIFIED_PROCESS\\GATA_ModuleC_pipeline_unified_20260529_110352\\03_RUNTIMES"
+    "OUTPUT_ROOT_ALLOWED_PREFIX":  "D:\\GATA_MODULEC_UNIFIED_PROCESS\\GATA_ModuleC_pipeline_unified_20260529_110352\\03_RUNTIMES",
+    "CIAE_INTERFACE_ZIP_PATH":  "D:\\GATA_MODULEC_UNIFIED_PROCESS\\GATA_ModuleC_pipeline_unified_20260529_110352\\03_RUNTIMES\\R10_D2_INPUT_ACQUISITION_20260814_E577BD5\\inputs\\Interface_E2018.zip",
+    "CIAE_INTERFACE_ZIP_BYTES":  327597406,
+    "CIAE_INTERFACE_ZIP_SHA256":  "e4a0821d2e81683cd78d65c41b26a0b8989ce315eeff2841dc57ed48f31a0bcb",
+    "CIAE_INTERFACE_PROVIDER":  "DGT",
+    "CIAE_INTERFACE_DATASET":  "Carta de Interface de Areas Edificadas structural 2018",
+    "CIAE_INTERFACE_YEAR":  2018,
+    "CIAE_INTERFACE_SOURCE_URL":  "https://geo2.dgterritorio.gov.pt/aeur/Interface_E2018.zip"
 }

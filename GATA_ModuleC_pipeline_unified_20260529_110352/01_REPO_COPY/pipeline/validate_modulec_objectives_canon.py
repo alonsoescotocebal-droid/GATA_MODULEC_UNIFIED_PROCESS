@@ -135,7 +135,7 @@ OBJECTIVES: List[Dict[str, object]] = [
         "objective_id": "OC-07",
         "objective_name": "WUI / territorio",
         "required_database": "GHSL built + proxies combustible",
-        "required_output": ["tables/territorial_context_nuts3.csv", "tables/territorial_context_municipio.csv", "qa/territorial_variables_audit.tsv", "qa/formal_wui_feasibility.tsv", "qa/landcover_wui_input_inventory.tsv"],
+        "required_output": ["tables/territorial_context_nuts3.csv", "tables/territorial_context_municipio.csv", "tables/official_portuguese_built_area_interface_nuts3.csv", "tables/official_portuguese_built_area_interface_municipio.csv", "qa/territorial_variables_audit.tsv", "qa/formal_wui_feasibility.tsv", "qa/landcover_wui_input_inventory.tsv", "qa/r10_d3_ciae_source_identity.tsv", "qa/r10_d3_ciae_schema_audit.tsv", "qa/r10_d3_ciae_geometry_audit.tsv", "qa/r10_d3_ciae_class_semantics.tsv", "qa/r10_d3_ciae_nuts3_overlay_audit.tsv", "qa/r10_d3_ciae_municipio_overlay_audit.tsv", "qa/r10_d3_interface_construct_audit.tsv", "qa/r10_d3_oc07_gate.tsv", "qa/r10_d3_method_declaration.md"],
         "producer_script": "step7_matriz_causal.py",
         "validation_rule": "Contexto territorial existe y WUI no estÃ¡ totalmente vacÃ­o.",
     },
@@ -649,6 +649,32 @@ def _check_formal_wui_quality(output_root: Path) -> Tuple[bool, str]:
     return True, "Formal WUI quality PASS: declared method and independent spatial relation are present."
 
 
+def _check_official_interface_quality(output_root: Path) -> Tuple[bool, str]:
+    """Validate the separate OC-07 CIAE construct while retaining formal-WUI HOLD."""
+    gate = output_root / "qa" / "r10_d3_oc07_gate.tsv"
+    nuts = output_root / "tables" / "official_portuguese_built_area_interface_nuts3.csv"
+    muni = output_root / "tables" / "official_portuguese_built_area_interface_municipio.csv"
+    if not gate.exists() or not nuts.exists() or not muni.exists():
+        return False, "Official CIAE interface evidence is missing; OC-07 cannot close on the separate construct."
+    rows = read_csv_rows(gate)
+    failures = [row for row in rows if str(row.get("status") or "").upper() not in {"PASS", "INFO"}]
+    objective = next((row for row in rows if row.get("metric") == "objective_status"), {})
+    formal = next((row for row in rows if row.get("metric") == "formal_international_wui_claim"), {})
+    if failures or objective.get("value") != "PASS_OFFICIAL_PORTUGUESE_BUILT_AREA_INTERFACE":
+        return False, f"CIAE OC-07 gate failed: failures={len(failures)} objective={objective.get('value', '')}"
+    if formal.get("value") != "BLOCKED_CLAIM_NOT_OBJECTIVE_FAILURE":
+        return False, "CIAE gate does not preserve the formal-WUI claim block."
+    table_rows = read_csv_rows(nuts) + read_csv_rows(muni)
+    if not table_rows:
+        return False, "CIAE interface tables are empty."
+    required = {"direct_interface_measure", "indirect_interface_measure", "null_interface_measure", "direct_plus_indirect_interface_fraction", "source_sha256", "source_crs", "method"}
+    if not required.issubset(table_rows[0]):
+        return False, "CIAE interface table schema is incomplete."
+    if any(not str(row.get("qa_flag") or "").upper().startswith("PASS") for row in table_rows):
+        return False, "CIAE interface table contains non-PASS rows."
+    return True, f"Official CIAE interface quality PASS: rows={len(table_rows)}; formal WUI claim remains blocked."
+
+
 def _check_wui_quality(output_root: Path) -> Tuple[bool, str]:
     """Compatibility wrapper: quality means proxy available, never formal WUI."""
     return _check_territorial_proxy_quality(output_root)
@@ -1070,11 +1096,10 @@ def _phase3_contract_check(output_root: Path, objective_id: str) -> Tuple[bool, 
     if objective_id == "OC-07":
         formal_status = str(by_contract.get("formal_wui_claim_status", {}).get("value") or "").strip()
         if formal_status == FORMAL_WUI_HOLD:
-            return (
-                False,
-                f"{FORMAL_WUI_DECISION}; "
-                f"{TERRITORIAL_PROXY_TYPE}_RETAINED_AS_CONTEXT",
-            )
+            official_ok, official_reason = _check_official_interface_quality(output_root)
+            if official_ok:
+                return True, "OC-07 closes on the separately evidenced official Portuguese interface; formal WUI claim remains HOLD."
+            return False, f"{FORMAL_WUI_DECISION}; {official_reason}; {TERRITORIAL_PROXY_TYPE}_RETAINED_AS_CONTEXT"
     return True, "Substantive semantic contract verified."
 
 
@@ -1132,7 +1157,7 @@ def objective_specific_check(obj_id: str, output_root: Path, inputs: Dict[str, o
         contract_ok, contract_reason = _phase3_contract_check(output_root, obj_id)
         if not contract_ok:
             return False, contract_reason
-        return _check_formal_wui_quality(output_root)
+        return _check_official_interface_quality(output_root)
     if obj_id == "OC-08":
         return _check_wrb_quality(output_root)
     if obj_id == "OC-09":

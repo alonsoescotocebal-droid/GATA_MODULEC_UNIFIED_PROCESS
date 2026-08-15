@@ -119,6 +119,8 @@ def _semantic_audits(output_root: Path) -> None:
     matrix = _rows(output_root / "brief" / "causal_matrix" / "causal_matrix_IECH_NUTS3.csv")
     scen = _rows(output_root / "tables" / "IECH_scenarios_2026_2030.csv")
     muni = _rows(output_root / "tables" / "IECH_municipio_2015_2024.csv")
+    ciae_nuts = _rows(output_root / "tables" / "official_portuguese_built_area_interface_nuts3.csv")
+    ciae_muni = _rows(output_root / "tables" / "official_portuguese_built_area_interface_municipio.csv")
     semantic_rows = [
         ["OC-05", "indicator_name", "population_smoke_day_burden_proxy", "PASS_WITH_POPULATION_BURDEN_PROXY_SEMANTICS", "Canonical classified smoke-day burden proxy; not normalized IECH."],
         ["OC-05", "indicator_unit", "classified smoke-proxy person-days", "PASS_WITH_POPULATION_BURDEN_PROXY_SEMANTICS", "smoke_days * population_total."],
@@ -146,6 +148,18 @@ def _semantic_audits(output_root: Path) -> None:
         ["OC-11", "brief_claim_status", "PASS_WITH_EXPLICIT_PROXY_SEMANTICS", "PASS", "Brief claims are bounded to proxy/screening."],
         ["OC-11", "legal_economic_integration_status", "LEGAL_ECONOMIC_CONTEXT_NOT_CODED_IN_CURRENT_CANON", "INFO", "No authorized canonical source was found in the current canon."],
     ]
+    if ciae_nuts and ciae_muni:
+        semantic_rows.extend([
+            ["OC-07", "official_interface_indicator_type", "OFFICIAL_PORTUGUESE_BUILT_AREA_INTERFACE", "PASS", f"NUTS3 rows={len(ciae_nuts)}; municipal rows={len(ciae_muni)}."],
+            ["OC-07", "official_interface_measure", "CLIPPED_LINE_LENGTH_METRES", "PASS", "CIAE classes aggregated as direct/indirect/null line measures without numeric class weighting."],
+            ["OC-07", "official_interface_source", "DGT_CIAE_2018_EPSG3763", "PASS", "Exact controlled D2 source identity is recorded in r10_d3_ciae_source_identity.tsv."],
+            ["OC-07", "formal_international_wui_claim", "BLOCKED_CLAIM_NOT_OBJECTIVE_FAILURE", "PASS", "Official Portuguese interface construct does not assert formal international WUI."],
+            ["OC-07", "claim_vs_objective_separation", "PASS", "PASS", "Formal WUI remains a blocked claim while the CIAE objective is evaluated independently."],
+        ])
+    semantic_rows.extend([
+        ["OC-10", "scenario_claim_boundary", "S1_NOT_VALIDATED_FORECAST_NOT_OPTIMIZED_TARGETING_NOT_CAUSAL_EFFECT", "PASS", "S1 is a normative 20 percent scenario only."],
+        ["MUNICIPIO", "direct_municipal_smoke_claim", "BLOCKED_CLAIM", "INFO", "Only regional NUTS3 signal allocation is claimed; existing municipal resolution HOLD remains unchanged."],
+    ])
     _write_tsv(qa / "objective_semantic_contract_audit.tsv", ["objective_id", "contract", "value", "status", "detail"], semantic_rows)
     report = [
         "# Phase 3 Objective Semantic Contract",
@@ -158,10 +172,13 @@ def _semantic_audits(output_root: Path) -> None:
         "- municipal atmospheric values are regional NUTS3 signals allocated to municipalities.",
         "- scenarios are normative assumptions, not empirically validated projections.",
     ]
+    if ciae_nuts and ciae_muni:
+        report.append("- OC-07 official Portuguese interface: OFFICIAL_PORTUGUESE_BUILT_AREA_INTERFACE; formal international WUI remains a blocked claim.")
     (qa / "objective_semantic_contract_report.md").write_text("\n".join(report) + "\n", encoding="utf-8")
     _write_tsv(qa / "municipal_resolution_gate.tsv", ["metric", "value", "status", "detail"], [
         ["smoke_resolution", "REGIONAL_NUTS3_SIGNAL_ALLOCATED_TO_MUNICIPALITY", "PASS_AS_TERRITORIAL_PROXY", "MAPPED_FROM_NUTS3"],
         ["direct_municipal_smoke", 0, "HOLD_MUNICIPAL_INDEPENDENT_SMOKE", "GFAS effective signal is NUTS3/unit-level in current route."],
+        ["claim_vs_objective_effect", "NONE", "PASS", "The direct municipal atmospheric claim remains blocked; the declared regional allocation is not an OC objective failure."],
     ])
     _write_tsv(qa / "matrix_semantic_gate.tsv", ["metric", "value", "status", "detail"], [
         ["matrix_type", "TERRITORIAL_SCREENING_ASSOCIATION_MATRIX", "PASS_AS_SCREENING_ASSOCIATION", "No causal inference claim."],
@@ -453,6 +470,7 @@ def build_thematic_packages(output_root: Path, nuts_layer, muni_layer, muni_fiel
         ("nuts3_recurrence_2015_2024", tables / "recurrence_unit_2015_2024.csv"),
         ("nuts3_wrb_context", tables / "wrb_context_nuts3.csv"),
         ("nuts3_territorial_proxy", tables / "territorial_context_nuts3.csv"),
+        ("nuts3_official_portuguese_interface", tables / "official_portuguese_built_area_interface_nuts3.csv"),
         ("nuts3_scenarios_2026_2030", tables / "IECH_scenarios_unit_2026_2030_mean.csv"),
         ("nuts3_policy_priority", output_root / "brief" / "causal_matrix" / "causal_matrix_IECH_NUTS3.csv"),
     ]
@@ -461,6 +479,7 @@ def build_thematic_packages(output_root: Path, nuts_layer, muni_layer, muni_fiel
         ("municipio_recurrence_2015_2024", tables / "recurrence_municipio_2015_2024.csv"),
         ("municipio_wrb_context", tables / "wrb_context_municipio.csv"),
         ("municipio_territorial_proxy", tables / "territorial_context_municipio.csv"),
+        ("municipio_official_portuguese_interface", tables / "official_portuguese_built_area_interface_municipio.csv"),
         ("municipio_scenarios_2026_2030", tables / "IECH_scenarios_municipio_2026_2030_mean.csv"),
     ]
     inventories = []
@@ -480,11 +499,29 @@ def build_thematic_packages(output_root: Path, nuts_layer, muni_layer, muni_fiel
     _write_tsv(output_root / "qa" / "cartographic_join_audit.tsv", ["layer", "source_rows", "unique_keys", "status", "detail"], joins)
     _write_tsv(output_root / "qa" / "cartographic_package_gate.tsv", ["metric", "value", "status", "detail"], [
         ["gpkg", str(gpkg), "PASS", "Thematic GeoPackage written."],
-        ["nuts3_layers", 7, "PASS", "Portugal continental NUTS3 thematic layers."],
-        ["municipio_layers", 5, "PASS", "Municipal layers carry regional-signal assignment note."],
+        ["nuts3_layers", 8, "PASS", "Portugal continental NUTS3 thematic layers, including official CIAE interface."],
+        ["municipio_layers", 6, "PASS", "Municipal layers carry regional-signal assignment note and official CIAE interface."],
         ["crs", nuts_layer.crs().authid(), "PASS", "Documented CRS."],
         ["foreign_country_features", 0, "PASS", "Source layer filtered to Portugal continental NUTS3."],
         ["island_features_excluded", "PT200,PT300", "PASS", "Azores and Madeira are outside Continente scope."],
+    ])
+    _write_tsv(output_root / "qa" / "r10_wrb_metadata_audit.tsv", ["file", "field_or_phrase", "old_value", "new_value", "scientific_effect", "numeric_recalculation_required", "status"], [
+        ["docs/canon/SCIENTIFIC_THRESHOLD_DECLARATION_REGISTER_MODULE_C.md", "WRB source metadata", "No active fourth-edition or 2022-edition claim", "SRC-SOILGRIDS-2021 retained", "Metadata clarification only", "FALSE", "PASS"],
+    ])
+    _write_tsv(output_root / "qa" / "r10_legal_claim_disposition.tsv", ["claim_area", "status", "authorized_source", "generated_claim", "score_effect", "detail"], [
+        ["legal_economic_context_2026", "C_CONTEXT_NOT_CODED", "NONE_IN_CURRENT_CANON", "NONE", "NONE", "No legal source was fetched or used; no legal claim is generated."],
+    ])
+    _write_tsv(output_root / "qa" / "r10_f_s1_scenario_disposition.tsv", ["metric", "value", "status", "objective_failure", "detail"], [
+        ["scenario_type", "NORMATIVE_ASSUMPTION", "PASS_NORMATIVE_SCENARIO", "FALSE", "S1 is a documented approximate 20 percent reduction scenario."],
+        ["validated_forecast", "FALSE", "PASS", "FALSE", "S1 is not an empirically validated forecast."],
+        ["optimized_targeting", "FALSE", "PASS", "FALSE", "No top-quintile or optimized targeting claim is made."],
+        ["causal_policy_effect", "FALSE", "PASS", "FALSE", "S1 is not a causal intervention effect."],
+    ])
+    _write_tsv(output_root / "qa" / "claim_vs_objective_disposition.tsv", ["claim_id", "claim_status", "objective_failure", "final_decision_effect", "reason", "evidence"], [
+        ["FORMAL_WUI", "BLOCKED_CLAIM", "FALSE", "NONE", "Independent vegetation relation and formal method remain unsupported; the scientific HOLD is retained.", "r10_d1_wui_semantic_audit.tsv"],
+        ["DIRECT_MUNICIPAL_SMOKE", "BLOCKED_CLAIM", "FALSE", "NONE", "Municipal smoke is a regional NUTS3 allocation; the existing resolution HOLD is retained.", "municipal_resolution_gate.tsv"],
+        ["HEALTH_EXPOSURE", "BLOCKED_CLAIM", "FALSE", "NONE", "Proxy route does not measure health exposure.", "portuguese_aq_claim_disposition.md"],
+        ["CAUSAL_EFFECT", "BLOCKED_CLAIM", "FALSE", "NONE", "Matrix is territorial screening association.", "matrix_semantic_gate.tsv"],
     ])
 
 
@@ -512,7 +549,7 @@ def _rewrite_brief_and_matrix_names(output_root: Path) -> None:
             "- La matriz es `TERRITORIAL_SCREENING_ASSOCIATION_MATRIX`, no inferencia causal.\n"
             "- El humo municipal es una asignacion de la senal NUTS3 (`MAPPED_FROM_NUTS3`), no una senal atmosferica municipal independiente.\n"
             "- S1 2026-2030 es un escenario normativo, no una proyeccion empiricamente validada.\n"
-            "- El indicador territorial es `BUILT_UP_FUEL_TERRITORIAL_PROXY`; la WUI formal queda en HOLD.\n"
+            "- El indicador territorial conserva `BUILT_UP_FUEL_TERRITORIAL_PROXY` como contexto y agrega `OFFICIAL_PORTUGUESE_BUILT_AREA_INTERFACE` de CIAE 2018; la WUI formal internacional sigue bloqueada como claim.\n"
         )
         brief.write_text(text, encoding="utf-8")
     matrix_dir = output_root / "brief" / "causal_matrix"
@@ -529,7 +566,12 @@ def _rewrite_brief_and_matrix_names(output_root: Path) -> None:
     )
 
 
-def run_phase3_closure(output_root: Path, nuts_layer, muni_layer, muni_field: str, fire_paths: Sequence[Path], inputs: Dict[str, object]) -> None:
+def run_phase3_closure(output_root: Path, nuts_layer, muni_layer, muni_field: str, fire_paths: Sequence[Path], inputs: Dict[str, object], processing=None) -> None:
+    from ciae_interface import integrate_ciae_interface
+    if processing is None:
+        import processing as processing_module  # type: ignore
+        processing = processing_module
+    integrate_ciae_interface(output_root, nuts_layer, muni_layer, muni_field, inputs, processing)
     _semantic_audits(output_root)
     _feasibility_audits(output_root, inputs, muni_layer=muni_layer)
     build_thematic_packages(output_root, nuts_layer, muni_layer, muni_field, fire_paths, inputs)

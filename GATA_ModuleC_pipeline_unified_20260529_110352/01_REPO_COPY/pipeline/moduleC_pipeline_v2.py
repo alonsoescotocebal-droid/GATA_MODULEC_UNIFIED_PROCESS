@@ -549,6 +549,43 @@ def _build_inputs_from_master_catalog(report: Report) -> Dict[str, object]:
     return inputs
 
 
+def _augment_authorized_ciae_input(inputs: Dict[str, object], report: Report) -> Dict[str, object]:
+    """Attach the exact D2 CIAE source without broadening the input catalog."""
+    repo_root = _repo_root_from_script()
+    config_path = repo_root / "config" / "module_c_canonical_paths.json"
+    payload = json.loads(config_path.read_text(encoding="utf-8-sig"))
+    zip_path = Path(str(payload.get("CIAE_INTERFACE_ZIP_PATH") or "").strip())
+    if not zip_path.is_file():
+        report.fail(f"CIAE controlled source ZIP missing: {zip_path}")
+    actual_bytes = zip_path.stat().st_size
+    actual_sha = _sha256_path(zip_path)
+    expected_bytes = int(payload.get("CIAE_INTERFACE_ZIP_BYTES") or 0)
+    expected_sha = str(payload.get("CIAE_INTERFACE_ZIP_SHA256") or "").strip().lower()
+    if expected_bytes and actual_bytes != expected_bytes:
+        report.fail(f"CIAE controlled source byte mismatch: {actual_bytes} != {expected_bytes}")
+    if expected_sha and actual_sha.lower() != expected_sha:
+        report.fail(f"CIAE controlled source SHA mismatch: {actual_sha} != {expected_sha}")
+    merged = dict(inputs) if isinstance(inputs, dict) else {}
+    paths = dict(merged.get("paths", {})) if isinstance(merged.get("paths", {}), dict) else {}
+    paths["ciae_interface_zip"] = str(zip_path)
+    merged["paths"] = paths
+    meta = dict(merged.get("meta", {})) if isinstance(merged.get("meta", {}), dict) else {}
+    meta.update(
+        {
+            "ciae_interface_zip": str(zip_path),
+            "ciae_interface_zip_bytes": actual_bytes,
+            "ciae_interface_zip_sha256": actual_sha,
+            "ciae_interface_provider": str(payload.get("CIAE_INTERFACE_PROVIDER") or "DGT"),
+            "ciae_interface_dataset": str(payload.get("CIAE_INTERFACE_DATASET") or ""),
+            "ciae_interface_year": int(payload.get("CIAE_INTERFACE_YEAR") or 2018),
+            "ciae_interface_source_url": str(payload.get("CIAE_INTERFACE_SOURCE_URL") or ""),
+        }
+    )
+    merged["meta"] = meta
+    report.log(f"CIAE controlled input attached: {zip_path} sha256={actual_sha}")
+    return merged
+
+
 def load_inputs(inputs_path: Path, report: Report) -> Dict[str, object]:
     if not inputs_path.exists():
         generated = _build_inputs_from_master_catalog(report)
@@ -557,7 +594,7 @@ def load_inputs(inputs_path: Path, report: Report) -> Dict[str, object]:
         report.log(f"inputs_resolved.json created at: {inputs_path}")
     with inputs_path.open("r", encoding="utf-8-sig") as f:
         inputs = json.load(f)
-    return inputs
+    return _augment_authorized_ciae_input(inputs, report)
 
 
 def _find_objectives_canon_path() -> Path:
@@ -654,6 +691,11 @@ def _collect_missing_inputs(inputs: Dict[str, object]) -> List[str]:
         find_wrb_annual_burned_area_paths(paths)
     except FileNotFoundError as exc:
         missing.append(f"wrb_source_route -> {exc}")
+    ciae_raw = str(paths.get("ciae_interface_zip") or "").strip()
+    if not ciae_raw:
+        missing.append("ciae_interface_zip -> <empty>")
+    elif not Path(ciae_raw).is_file():
+        missing.append(f"ciae_interface_zip -> {ciae_raw}")
     return missing
 
 
@@ -4630,6 +4672,114 @@ def build_manifest_and_zip(outputs: List[Path], out_dir: Path, report: Report) -
     return manifest_path, sha_path, zip_path
 
 
+def create_r10_final_audit_capsule(output_root: Path, report: Report) -> Path:
+    """Create the permanent compact R10 closure capsule from current outputs."""
+    deliver_dir = output_root / "deliverables_step9"
+    ensure_dir(deliver_dir)
+    repo_root = Path(__file__).resolve().parents[1]
+    git_root = repo_root.parent
+    git_cmd = _resolve_git_command()
+    if not git_cmd:
+        report.fail("Git executable not found for the final audit capsule.")
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            [git_cmd, "-C", str(git_root), *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
+        ).stdout.strip()
+
+    final_sha = git("rev-parse", "HEAD")
+    sha12 = final_sha[:12]
+    capsule = deliver_dir / f"R10_FINAL_AUDIT_CAPSULE_{sha12}.zip"
+    sidecar = deliver_dir / f"R10_FINAL_AUDIT_CAPSULE_{sha12}.sha256"
+    metadata = deliver_dir / f"R10_FINAL_AUDIT_CAPSULE_{sha12}_metadata.tsv"
+    selected = [
+        "qa/path_scope_guard_report.tsv", "qa/source_runtime_provenance.tsv", "qa/smoke_route_audit.tsv",
+        "qa/r10_a2_transport_contract_audit.tsv", "qa/r10_a2c_multi_receptor_aggregation_audit.tsv",
+        "qa/r10_b_recurrence_construct_audit.tsv", "qa/r10_c_screening_construct_audit.tsv",
+        "qa/r10_c_screening_independence_audit.tsv", "qa/r10_d3_ciae_source_identity.tsv",
+        "qa/r10_d3_ciae_schema_audit.tsv", "qa/r10_d3_ciae_geometry_audit.tsv",
+        "qa/r10_d3_ciae_class_semantics.tsv", "qa/r10_d3_ciae_nuts3_overlay_audit.tsv",
+        "qa/r10_d3_ciae_municipio_overlay_audit.tsv", "qa/r10_d3_interface_construct_audit.tsv",
+        "qa/r10_d3_oc07_gate.tsv", "qa/r10_wrb_metadata_audit.tsv", "qa/r10_legal_claim_disposition.tsv",
+        "qa/r10_f_s1_scenario_disposition.tsv",
+        "qa/claim_vs_objective_disposition.tsv", "qa/brief_claim_scientific_gate_audit.tsv",
+        "qa/cartographic_package_gate.tsv", "qa/objectives_canon_alignment_report.tsv",
+        "qa/scientific_validation_gate.tsv", "qa/scientific_claim_gate.tsv",
+        "qa/global_audit_status_scan.tsv", "qa/scenario_audit.tsv", "qa/municipal_resolution_gate.tsv",
+        "deliverables_step9/runtime_scientific_closure_decision.md", "deliverables_step9/runtime_closure_decision.md",
+        "deliverables_step9/final_manifest_recursive_audit.tsv", "deliverables_step9/final_sha256_checkpoints.txt",
+        "provenance/launcher_command.txt", "provenance/launcher_roots.tsv", "provenance/launcher_exit_code.txt",
+        "logs/pytest_command.txt", "qa/pytest_result_summary.tsv",
+    ]
+    forbidden_suffixes = {".gpkg", ".grib", ".zip", ".tif", ".tiff", ".shp", ".dbf", ".parquet"}
+    members: list[tuple[Path, str]] = []
+    for rel in selected:
+        path = output_root / rel
+        if not path.is_file() or path.suffix.lower() in forbidden_suffixes or path.stat().st_size > 10 * 1024 * 1024:
+            continue
+        members.append((path, rel.replace("\\", "/")))
+
+    git_state = "\n".join([
+        f"git_toplevel={git_root}", f"branch={git('branch', '--show-current')}",
+        f"base_sha=e577bd5ea238385c9a791a79df9071aef766d85a",
+        f"final_sha={final_sha}", f"git_clean={not bool(git('status', '--short'))}",
+        f"runtime_root={output_root}", f"runtime_id={output_root.name}",
+        "resume=false", "network=false_for_runtime", "installations=false",
+    ])
+    readme = "\n".join([
+        "# R10 Final Audit Capsule", "", f"final_correction_sha={final_sha}",
+        "This compact capsule contains auditable summaries and hashes only.",
+        "The official CIAE interface is contextual and does not assert formal international WUI.",
+        "Formal WUI, health exposure, direct municipal atmospheric smoke and causal-effect claims remain blocked.",
+        "Large raw scientific payloads are deliberately excluded; their controlled paths and hashes remain in runtime manifests.", "",
+    ])
+    manifest_rows = [["member", "bytes", "sha256"]]
+    for path, rel in members:
+        manifest_rows.append([rel, path.stat().st_size, _sha256_path(path)])
+    manifest_text = "\n".join("\t".join(str(value) for value in row) for row in manifest_rows) + "\n"
+    with zipfile.ZipFile(capsule, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("README_capsule.md", readme)
+        archive.writestr("provenance/git_state.txt", git_state + "\n")
+        archive.writestr("audit_capsule_manifest.tsv", manifest_text)
+        for path, rel in members:
+            archive.write(path, arcname=rel)
+    capsule_sha = _sha256_path(capsule)
+    sidecar.write_text(f"{capsule_sha}  {capsule.name}\n", encoding="utf-8")
+    metadata.write_text(
+        "metric\tvalue\n" +
+        f"final_sha\t{final_sha}\n" +
+        f"capsule\t{capsule}\n" +
+        f"capsule_bytes\t{capsule.stat().st_size}\n" +
+        f"capsule_sha256\t{capsule_sha}\n" +
+        f"member_count\t{len(manifest_rows) - 1}\n",
+        encoding="utf-8",
+    )
+    forbidden_members = [name for name in zipfile.ZipFile(capsule).namelist() if Path(name).suffix.lower() in forbidden_suffixes]
+    with zipfile.ZipFile(capsule, "r") as archive:
+        names = set(archive.namelist())
+        internal_manifest_ok = "audit_capsule_manifest.tsv" in names and all(name in names for name, _bytes, _sha in manifest_rows[1:])
+        readable = True
+    write_tsv(
+        output_root / "qa" / "audit_capsule_gate.tsv",
+        ["metric", "value", "status", "detail"],
+        [
+            ["capsule_exists", int(capsule.is_file()), "PASS" if capsule.is_file() else "FAIL", str(capsule)],
+            ["capsule_readable", int(readable), "PASS" if readable else "FAIL", "ZIP opened successfully."],
+            ["expected_members_present", int(internal_manifest_ok), "PASS" if internal_manifest_ok else "FAIL", "Internal manifest members are present."],
+            ["forbidden_massive_payload", len(forbidden_members), "PASS" if not forbidden_members else "FAIL", "Raw datasets and full packages are excluded."],
+            ["internal_manifest_valid", int(internal_manifest_ok), "PASS" if internal_manifest_ok else "FAIL", "Internal member manifest is valid."],
+            ["external_sha_sidecar_matches", int(sidecar.read_text(encoding="utf-8").startswith(capsule_sha)), "PASS" if sidecar.read_text(encoding="utf-8").startswith(capsule_sha) else "FAIL", str(sidecar)],
+            ["AUDIT_CAPSULE_GATE", "PASS" if internal_manifest_ok and not forbidden_members else "FAIL", "PASS" if internal_manifest_ok and not forbidden_members else "FAIL", "Compact capsule contract."],
+        ],
+    )
+    report.log(f"R10 final audit capsule created: {capsule}")
+    return capsule
+
+
 def create_r10b_audit_capsule(output_root: Path, report: Report) -> Path:
     """Create a compact evidence capsule without copying large GIS rasters."""
     deliver_dir = output_root / "deliverables_step9"
@@ -6111,6 +6261,20 @@ def collect_final_outputs(output_root: Path, scientific_decision_path: Path, inc
         output_root / "qa" / "r10_d1_wui_semantic_audit.tsv",
         output_root / "qa" / "r10_d1_wui_gate_audit.tsv",
         output_root / "qa" / "r10_d1_wui_method_declaration.md",
+        output_root / "qa" / "r10_d3_ciae_source_identity.tsv",
+        output_root / "qa" / "r10_d3_ciae_schema_audit.tsv",
+        output_root / "qa" / "r10_d3_ciae_geometry_audit.tsv",
+        output_root / "qa" / "r10_d3_ciae_class_semantics.tsv",
+        output_root / "qa" / "r10_d3_ciae_nuts3_overlay_audit.tsv",
+        output_root / "qa" / "r10_d3_ciae_municipio_overlay_audit.tsv",
+        output_root / "qa" / "r10_d3_interface_construct_audit.tsv",
+        output_root / "qa" / "r10_d3_oc07_gate.tsv",
+        output_root / "qa" / "r10_d3_method_declaration.md",
+        output_root / "qa" / "r10_wrb_metadata_audit.tsv",
+        output_root / "qa" / "r10_legal_claim_disposition.tsv",
+        output_root / "qa" / "r10_f_s1_scenario_disposition.tsv",
+        output_root / "qa" / "claim_vs_objective_disposition.tsv",
+        output_root / "qa" / "audit_capsule_gate.tsv",
         output_root / "qa" / "cartographic_package_gate.tsv",
         output_root / "qa" / "cartographic_layers_inventory.tsv",
         output_root / "qa" / "cartographic_join_audit.tsv",
@@ -6192,6 +6356,8 @@ def collect_final_outputs(output_root: Path, scientific_decision_path: Path, inc
         output_root / "tables" / "smoke_proxy_aq_concordance_by_unit.csv",
         output_root / "tables" / "wrb_context_nuts3.csv",
         output_root / "tables" / "territorial_context_nuts3.csv",
+        output_root / "tables" / "official_portuguese_built_area_interface_nuts3.csv",
+        output_root / "tables" / "official_portuguese_built_area_interface_municipio.csv",
         output_root / "brief" / "Brief_Politica_IECH_2030.md",
         output_root / "brief" / "causal_matrix" / "causal_matrix_IECH_NUTS3.csv",
         output_root / "brief" / "causal_matrix" / "territorial_screening_matrix_nuts3.csv",
@@ -6217,6 +6383,21 @@ def collect_final_outputs(output_root: Path, scientific_decision_path: Path, inc
     )
     if d1_capsule_candidates:
         outputs.append(d1_capsule_candidates[-1])
+    final_capsule_candidates = sorted(
+        (output_root / "deliverables_step9").glob("R10_FINAL_AUDIT_CAPSULE_*.zip"),
+        key=lambda path: path.stat().st_mtime,
+    )
+    if final_capsule_candidates:
+        outputs.append(final_capsule_candidates[-1])
+        sidecar = final_capsule_candidates[-1].with_suffix(".sha256")
+        metadata = final_capsule_candidates[-1].with_name(final_capsule_candidates[-1].stem + "_metadata.tsv")
+        if sidecar.exists():
+            outputs.append(sidecar)
+        if metadata.exists():
+            outputs.append(metadata)
+    audit_capsule_gate = output_root / "qa" / "audit_capsule_gate.tsv"
+    if audit_capsule_gate.exists():
+        outputs.append(audit_capsule_gate)
     if include_global_scan:
         outputs.extend(
             [
@@ -6319,6 +6500,7 @@ def complete_post_smoke_runtime(
     assert_global_audit_status_clear(output_root, report)
     create_r10c_audit_capsule(output_root, report)
     create_r10d1_wui_audit_capsule(output_root, report)
+    create_r10_final_audit_capsule(output_root, report)
     outputs = collect_final_outputs(output_root, scientific_decision_path, include_global_scan=True)
     build_manifest_and_zip(outputs, deliver_dir, report)
 

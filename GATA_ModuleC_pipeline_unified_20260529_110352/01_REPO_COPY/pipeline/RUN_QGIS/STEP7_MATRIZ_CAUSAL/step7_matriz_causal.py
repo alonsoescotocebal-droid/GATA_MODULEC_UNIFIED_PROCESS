@@ -3239,6 +3239,7 @@ def main() -> int:
             muni_field=muni_field,
             fire_paths=fire_paths,
             inputs=inputs,
+            processing=processing,
         )
         log_line(run_log, "Phase 3 semantic, feasibility and thematic packages generated")
 

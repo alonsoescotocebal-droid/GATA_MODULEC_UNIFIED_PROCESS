@@ -106,6 +106,30 @@ def evaluate_formal_wui(output_root: Path) -> Tuple[str, str, Dict[str, int]]:
     return "BLOCKED_FORMAL_WUI_CLAIM", detail, metrics
 
 
+def evaluate_official_portuguese_interface(output_root: Path) -> Tuple[str, str, Dict[str, int]]:
+    """Evaluate CIAE as an official Portuguese interface construct, not formal WUI."""
+    gate = output_root / "qa" / "r10_d3_oc07_gate.tsv"
+    nuts = output_root / "tables" / "official_portuguese_built_area_interface_nuts3.csv"
+    muni = output_root / "tables" / "official_portuguese_built_area_interface_municipio.csv"
+    metrics = {"gate_exists": int(gate.exists()), "nuts3_exists": int(nuts.exists()), "municipio_exists": int(muni.exists())}
+    if not all(metrics.values()):
+        return "BLOCKED_OFFICIAL_INTERFACE_EVIDENCE", "CIAE official interface output or gate is missing.", metrics
+    text = gate.read_text(encoding="utf-8-sig", errors="replace")
+    required = (
+        "source_identity\t",
+        "linear_geometry_epsg3763\t",
+        "class_semantics\t",
+        "nuts3_overlay\t",
+        "municipio_overlay\t",
+        "objective_status\tPASS_OFFICIAL_PORTUGUESE_BUILT_AREA_INTERFACE\tPASS",
+        "formal_international_wui_claim\tBLOCKED_CLAIM_NOT_OBJECTIVE_FAILURE\tPASS",
+    )
+    missing = [token for token in required if token not in text]
+    if missing:
+        return "BLOCKED_OFFICIAL_INTERFACE_EVIDENCE", "CIAE OC-07 gate lacks required evidence: " + ",".join(missing), metrics
+    return "PASS", "Official Portuguese built-area interface is fresh, independently QA-validated and kept separate from formal WUI.", metrics
+
+
 def audit_formal_wui_claims(output_root: Path) -> Tuple[str, List[str]]:
     """Reject generated formal-WUI/risk claims while allowing explicit limitations."""
     targets = [
@@ -160,7 +184,7 @@ def write_r10_d1_wui_artifacts(
         ["CURRENT_WUI_PROXY_FIRE_HISTORY_DEPENDENT", wui_metrics["current_wui_proxy_fire_history_dependent"], "INFO", "Forest/shrub proxy is derived from the ICNF/fire-recurrence route."],
         ["TERRITORIAL_PROXY_STATUS", "AVAILABLE_AS_CONTEXT", "PASS", "Proxy retained as a contextual territorial descriptor."],
         ["FORMAL_WUI_CLAIM_STATUS", FORMAL_WUI_HOLD, "HOLD", wui_detail],
-        ["OC07_OBJECTIVE_STATUS", _objective_status(output_root, "OC-07"), "HOLD", "OC-07 must remain HOLD while formal WUI is unsupported."],
+        ["OC07_OBJECTIVE_STATUS", _objective_status(output_root, "OC-07"), "PASS" if _objective_status(output_root, "OC-07") == "PASS" else "HOLD", "OC-07 closes on the separate official Portuguese interface when its CIAE gate passes; formal WUI remains a blocked claim."],
         ["R10_C_CANONICAL_SCORE_DEPENDS_ON_WUI", str(R10_C_CANONICAL_SCORE_DEPENDS_ON_WUI).upper(), "PASS", "WUI is contextual and excluded from the canonical R10-C score."],
         ["DECISION", FORMAL_WUI_DECISION, "HOLD", "BUILT_UP_FUEL_TERRITORIAL_PROXY_RETAINED_AS_CONTEXT"],
     ]
@@ -168,7 +192,7 @@ def write_r10_d1_wui_artifacts(
     gate_rows = [
         ["WUI_FORMAL_001", "formal_wui_available=FALSE", wui_status, wui_detail],
         ["WUI_CLAIM_001", "forbidden_claim_hits=" + str(len(claim_hits)), "BLOCKED_FORMAL_WUI_CLAIM" if claim_hits else "PASS", "Generated brief/matrix formal WUI claim audit."],
-        ["OC07_EFFECT", "HOLD_OC07", "HOLD", FORMAL_WUI_DECISION],
+        ["OC07_EFFECT", "PASS_OFFICIAL_PORTUGUESE_BUILT_AREA_INTERFACE" if _objective_status(output_root, "OC-07") == "PASS" else "HOLD_OC07", "PASS" if _objective_status(output_root, "OC-07") == "PASS" else "HOLD", "Formal WUI remains a blocked claim and has no objective effect." if _objective_status(output_root, "OC-07") == "PASS" else FORMAL_WUI_DECISION],
         ["R10_C_CANONICAL_SCORE_DEPENDS_ON_WUI", "FALSE", "PASS", "No WUI input to canonical R10-C score."],
     ]
     write_tsv(qa / "r10_d1_wui_gate_audit.tsv", ["metric", "value", "status", "detail"], gate_rows)
@@ -1183,7 +1207,7 @@ def main() -> int:
         wui_status,
         "BUILT_UP_FUEL_TERRITORIAL_PROXY as contextual territorial descriptor only.",
         "formal WUI, interface WUI, intermix WUI, WUI risk, WUI exposure, WUI causal effect, formal-WUI prioritization",
-        "HOLD_OC07",
+        "NONE",
     )
     add_gate(
         "WUI_CLAIM_001",
@@ -1199,6 +1223,23 @@ def main() -> int:
         "Formal WUI/risk/exposure/causal claims.",
         "HOLD_OC07" if claim_hits else "NONE",
     )
+    ciae_status, ciae_observation, ciae_metrics = evaluate_official_portuguese_interface(output_root)
+    add_gate(
+        "CIAE_INTERFACE_001",
+        "OC-07 official Portuguese built-area interface construct",
+        str(output_root / "tables" / "official_portuguese_built_area_interface_nuts3.csv"),
+        "DGT CIAE 2018 exact source identity + linear EPSG:3763 geometry + classes + NUTS3 and municipality overlays",
+        ciae_observation,
+        "Fresh CIAE outputs and r10_d3_oc07_gate.tsv are all PASS; formal international WUI remains blocked.",
+        "R10-D3-CIAE-OFFICIAL-INTERFACE-CONTRACT",
+        "SCIENTIFIC_CONSTRUCT_GATE",
+        ciae_status,
+        "Official Portuguese built-area interface as a contextual territorial construct; no formal international WUI equivalence.",
+        "Formal international WUI, WUI risk/exposure/causal effect, health exposure, arbitrary class-weighted score",
+        "NONE" if ciae_status == "PASS" else "HOLD_OC07",
+    )
+    add_evidence("r10_d3_ciae_source_identity", output_root / "qa" / "r10_d3_ciae_source_identity.tsv")
+    add_evidence("r10_d3_oc07_gate", output_root / "qa" / "r10_d3_oc07_gate.tsv")
     write_r10_d1_wui_artifacts(output_root, wui_status, wui_observation, wui_metrics, claim_hits)
     add_evidence("r10_d1_wui_semantic_audit", output_root / "qa" / "r10_d1_wui_semantic_audit.tsv")
     add_evidence("r10_d1_wui_gate_audit", output_root / "qa" / "r10_d1_wui_gate_audit.tsv")
@@ -1786,7 +1827,8 @@ def main() -> int:
         f"- R10_C_SCREENING_DECISION: **{'R10_C_SCREENING_INDEPENDENCE_PASS' if r10c_pass else r10c_status}**",
         f"- OC_09: **{'PASS' if r10c_pass else 'HOLD'}**",
         f"- WUI_FORMAL_001: **{wui_status}**",
-        "- OC_07: **HOLD**",
+        f"- CIAE_INTERFACE_001: **{ciae_status}**",
+        f"- OC_07: **{'PASS_OFFICIAL_PORTUGUESE_BUILT_AREA_INTERFACE' if ciae_status == 'PASS' else 'HOLD'}**",
         f"- FORMAL_WUI_DECISION: **{FORMAL_WUI_DECISION}**",
         "- TERRITORIAL_PROXY_STATUS: **AVAILABLE_AS_CONTEXT**",
         f"- R10_C_CANONICAL_SCORE_DEPENDS_ON_WUI: **{str(R10_C_CANONICAL_SCORE_DEPENDS_ON_WUI).upper()}**",

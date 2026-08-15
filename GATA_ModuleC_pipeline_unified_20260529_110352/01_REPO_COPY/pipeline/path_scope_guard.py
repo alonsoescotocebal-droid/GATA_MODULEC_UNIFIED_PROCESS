@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime as dt
+import hashlib
 import json
 import os
 import shutil
@@ -32,6 +33,7 @@ STATE_BLOCKED_OUTPUT_ROOT_PARENT_MISSING = "BLOCKED_OUTPUT_ROOT_PARENT_MISSING"
 STATE_BLOCKED_OUTPUT_ROOT_INSIDE_REPO = "BLOCKED_OUTPUT_ROOT_INSIDE_REPO"
 STATE_BLOCKED_CODE_WRITE_OUTSIDE_GITHUB_REPO = "BLOCKED_CODE_WRITE_OUTSIDE_GITHUB_REPO"
 STATE_BLOCKED_HEAD_SHA_MISMATCH = "BLOCKED_HEAD_SHA_MISMATCH"
+STATE_BLOCKED_CIAE_SOURCE_IDENTITY = "BLOCKED_CIAE_SOURCE_IDENTITY"
 
 
 def now_iso() -> str:
@@ -120,6 +122,17 @@ def load_config(config_path: Path) -> Dict[str, str]:
     if missing:
         raise RuntimeError("Missing keys in canonical path config: " + ", ".join(missing))
     cfg = {k: str(payload[k]).strip() for k in required}
+    for optional in (
+        "CIAE_INTERFACE_ZIP_PATH",
+        "CIAE_INTERFACE_ZIP_BYTES",
+        "CIAE_INTERFACE_ZIP_SHA256",
+        "CIAE_INTERFACE_PROVIDER",
+        "CIAE_INTERFACE_DATASET",
+        "CIAE_INTERFACE_YEAR",
+        "CIAE_INTERFACE_SOURCE_URL",
+    ):
+        if optional in payload:
+            cfg[optional] = str(payload[optional]).strip()
     extra_prefixes = payload.get("DATA_ROOT_ALLOWED_PREFIXES")
     if isinstance(extra_prefixes, list):
         cfg["DATA_ROOT_ALLOWED_PREFIXES"] = json.dumps([str(p).strip() for p in extra_prefixes if str(p).strip()])
@@ -498,6 +511,28 @@ def main() -> int:
                 extra.append((check_id, STATE_BLOCKED_INPUT_PATH_OUTSIDE_ALLOWED_ROOT, str(Path(raw)), str(expected_path), "Explicit root does not match canonical allowlist."))
         for check_id, status, observed, expected, detail in extra:
             rows.append({"timestamp": now_iso(), "check_id": check_id, "status": status, "observed": observed, "expected": expected, "detail": detail})
+        ciae_path = str(cfg.get("CIAE_INTERFACE_ZIP_PATH") or "").strip()
+        if ciae_path:
+            ciae = Path(ciae_path)
+            expected_bytes = int(cfg.get("CIAE_INTERFACE_ZIP_BYTES") or 0)
+            expected_sha = str(cfg.get("CIAE_INTERFACE_ZIP_SHA256") or "").strip().lower()
+            observed = f"path={ciae}"
+            ciae_status = "PASS"
+            detail = "Exact controlled CIAE D2 source exists."
+            if not ciae.is_file():
+                ciae_status = STATE_BLOCKED_CIAE_SOURCE_IDENTITY
+                detail = "Controlled CIAE source ZIP is missing."
+            else:
+                actual_bytes = ciae.stat().st_size
+                actual_sha = hashlib.sha256(ciae.read_bytes()).hexdigest().lower()
+                observed = f"path={ciae};bytes={actual_bytes};sha256={actual_sha}"
+                if expected_bytes and actual_bytes != expected_bytes:
+                    ciae_status = STATE_BLOCKED_CIAE_SOURCE_IDENTITY
+                    detail = "Controlled CIAE source byte identity mismatch."
+                elif expected_sha and actual_sha != expected_sha:
+                    ciae_status = STATE_BLOCKED_CIAE_SOURCE_IDENTITY
+                    detail = "Controlled CIAE source SHA-256 identity mismatch."
+            rows.append({"timestamp": now_iso(), "check_id": "P012_ciae_interface_source", "status": ciae_status, "observed": observed, "expected": f"path={ciae};bytes={expected_bytes};sha256={expected_sha}", "detail": detail})
         if any(str(row.get("status", "")).startswith("BLOCKED_") for row in rows):
             overall = STATE_BLOCKED_PATH_DESYNC
         write_report(output_root, rows)
