@@ -100,6 +100,11 @@ def test_final_audit_capsule_is_compact_and_self_manifested(tmp_path: Path) -> N
     root = tmp_path / "runtime"
     (root / "qa").mkdir(parents=True)
     (root / "qa" / "path_scope_guard_report.tsv").write_text("metric\tstatus\npath\tPASS\n", encoding="utf-8")
+    deliver = root / "deliverables_step9"
+    deliver.mkdir(parents=True)
+    (deliver / "final_manifest.json").write_text("[]", encoding="utf-8")
+    (deliver / "final_manifest_recursive_audit.tsv").write_text("relative_path\tbytes\tsha256\n", encoding="utf-8")
+    (deliver / "final_sha256_checkpoints.txt").write_text("STEP9_FINAL_MASTER_PACK checkpoint\n", encoding="utf-8")
     capsule = create_r10_final_audit_capsule(root, Report(root / "qa" / "report.txt"))
     assert capsule.name.startswith("R10_FINAL_AUDIT_CAPSULE_")
     assert capsule.suffix == ".zip"

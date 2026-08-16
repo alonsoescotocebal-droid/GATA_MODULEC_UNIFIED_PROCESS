@@ -4711,10 +4711,19 @@ def create_r10_final_audit_capsule(output_root: Path, report: Report) -> Path:
         "qa/scientific_validation_gate.tsv", "qa/scientific_claim_gate.tsv",
         "qa/global_audit_status_scan.tsv", "qa/scenario_audit.tsv", "qa/municipal_resolution_gate.tsv",
         "deliverables_step9/runtime_scientific_closure_decision.md", "deliverables_step9/runtime_closure_decision.md",
-        "deliverables_step9/final_manifest_recursive_audit.tsv", "deliverables_step9/final_sha256_checkpoints.txt",
+        "deliverables_step9/final_manifest.json", "deliverables_step9/final_manifest_recursive_audit.tsv",
+        "deliverables_step9/final_sha256_checkpoints.txt",
         "provenance/launcher_command.txt", "provenance/launcher_roots.tsv", "provenance/launcher_exit_code.txt",
         "logs/pytest_command.txt", "qa/pytest_result_summary.tsv",
     ]
+    required_payload = [
+        output_root / "deliverables_step9" / "final_manifest.json",
+        output_root / "deliverables_step9" / "final_manifest_recursive_audit.tsv",
+        output_root / "deliverables_step9" / "final_sha256_checkpoints.txt",
+    ]
+    missing_payload = [str(path) for path in required_payload if not path.is_file()]
+    if missing_payload:
+        report.fail("R10 final audit capsule requires completed payload packaging: " + "; ".join(missing_payload))
     forbidden_suffixes = {".gpkg", ".grib", ".zip", ".tif", ".tiff", ".shp", ".dbf", ".parquet"}
     members: list[tuple[Path, str]] = []
     for rel in selected:
@@ -4778,6 +4787,43 @@ def create_r10_final_audit_capsule(output_root: Path, report: Report) -> Path:
     )
     report.log(f"R10 final audit capsule created: {capsule}")
     return capsule
+
+
+def validate_audit_capsule_gate(output_root: Path, report: Report) -> None:
+    """Validate the post-packaging gate without feeding it back into payload hashes."""
+    gate_path = output_root / "qa" / "audit_capsule_gate.tsv"
+    if not gate_path.is_file():
+        report.fail(f"Audit capsule gate missing after capsule generation: {gate_path}")
+    try:
+        with gate_path.open("r", encoding="utf-8", newline="") as handle:
+            rows = {row.get("metric", ""): row for row in csv.DictReader(handle, delimiter="\t")}
+    except Exception as exc:
+        report.fail(f"Audit capsule gate unreadable: {exc}")
+        return
+
+    required_metrics = {
+        "capsule_exists",
+        "capsule_readable",
+        "expected_members_present",
+        "forbidden_massive_payload",
+        "internal_manifest_valid",
+        "external_sha_sidecar_matches",
+        "AUDIT_CAPSULE_GATE",
+    }
+    missing = sorted(required_metrics - set(rows))
+    if missing:
+        report.fail("Audit capsule gate missing metrics: " + ", ".join(missing))
+    failed = [
+        metric for metric in sorted(required_metrics)
+        if str(rows[metric].get("status", "")).upper() != "PASS"
+    ]
+    if failed:
+        report.fail("Audit capsule gate has non-PASS metrics: " + ", ".join(failed))
+    if rows["AUDIT_CAPSULE_GATE"].get("value") != "PASS":
+        report.fail("AUDIT_CAPSULE_GATE value is not PASS.")
+    if rows["forbidden_massive_payload"].get("value") != "0":
+        report.fail("Audit capsule contains forbidden massive payload members.")
+    report.log("AUDIT_CAPSULE_GATE PASS; post-packaging closure control validated.")
 
 
 def create_r10b_audit_capsule(output_root: Path, report: Report) -> Path:
@@ -6274,7 +6320,6 @@ def collect_final_outputs(output_root: Path, scientific_decision_path: Path, inc
         output_root / "qa" / "r10_legal_claim_disposition.tsv",
         output_root / "qa" / "r10_f_s1_scenario_disposition.tsv",
         output_root / "qa" / "claim_vs_objective_disposition.tsv",
-        output_root / "qa" / "audit_capsule_gate.tsv",
         output_root / "qa" / "cartographic_package_gate.tsv",
         output_root / "qa" / "cartographic_layers_inventory.tsv",
         output_root / "qa" / "cartographic_join_audit.tsv",
@@ -6493,16 +6538,15 @@ def complete_post_smoke_runtime(
     write_source_runtime_provenance(output_root)
     outputs = collect_final_outputs(output_root, scientific_decision_path, include_global_scan=True)
     build_manifest_and_zip(outputs, deliver_dir, report)
-    # Refresh the closure window after the first package exists, then rebuild
-    # once so the final manifest/ZIP contain the stable provenance surface.
+    report.log("SCIENTIFIC_PAYLOAD_MANIFEST PASS; payload hashes finalized before audit envelope.")
     write_source_runtime_provenance(output_root)
     run_global_audit_status_scan(output_root, report)
     assert_global_audit_status_clear(output_root, report)
     create_r10c_audit_capsule(output_root, report)
     create_r10d1_wui_audit_capsule(output_root, report)
     create_r10_final_audit_capsule(output_root, report)
-    outputs = collect_final_outputs(output_root, scientific_decision_path, include_global_scan=True)
-    build_manifest_and_zip(outputs, deliver_dir, report)
+    validate_audit_capsule_gate(output_root, report)
+    report.log("AUDIT_ENVELOPE_CLOSURE PASS; payload manifest remains independent of post-packaging controls.")
 
 
 def main() -> int:

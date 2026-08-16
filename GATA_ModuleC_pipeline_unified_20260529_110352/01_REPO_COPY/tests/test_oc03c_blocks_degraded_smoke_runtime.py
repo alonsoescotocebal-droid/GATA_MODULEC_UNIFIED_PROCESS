@@ -81,10 +81,21 @@ def test_complete_post_smoke_runtime_blocks_portuguese_aq_after_base_smoke_regre
 
     monkeypatch.setattr(mod, 'run_scientific_gate', fake_scientific_gate)
     monkeypatch.setattr(mod, 'run_phase3_phase2_scientific_comparison', lambda _output_root, _report: None)
+    monkeypatch.setattr(mod, 'run_global_audit_status_scan', lambda _output_root, _report: None)
+    monkeypatch.setattr(mod, 'assert_global_audit_status_clear', lambda _output_root, _report: None)
     monkeypatch.setattr(mod, 'run_qa_gate', lambda _tables_dir, _brief_path, _report: ('GO', 'stubbed', []))
 
     def fake_build_manifest(outputs, _out_dir, _report):
         manifest_outputs.extend(path.as_posix() for path in outputs)
+        deliver_dir = output_root / 'deliverables_step9'
+        deliver_dir.mkdir(parents=True, exist_ok=True)
+        (deliver_dir / 'final_manifest.json').write_text('[]', encoding='utf-8')
+        (deliver_dir / 'final_manifest_recursive_audit.tsv').write_text(
+            'relative_path\tbytes\tsha256\n', encoding='utf-8'
+        )
+        (deliver_dir / 'final_sha256_checkpoints.txt').write_text(
+            'STEP9_FINAL_MASTER_PACK checkpoint\n', encoding='utf-8'
+        )
         return output_root / 'deliverables_step9' / 'final_manifest.json', output_root / 'deliverables_step9' / 'final_sha256_checkpoints.txt', output_root / 'deliverables_step9' / 'ModuleC_ALL_FINAL_deliverables.zip'
 
     monkeypatch.setattr(mod, 'build_manifest_and_zip', fake_build_manifest)
