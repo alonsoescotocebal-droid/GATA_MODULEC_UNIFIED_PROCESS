@@ -4785,7 +4785,6 @@ def create_r10_final_audit_capsule(output_root: Path, report: Report) -> Path:
             ["AUDIT_CAPSULE_GATE", "PASS" if internal_manifest_ok and not forbidden_members else "FAIL", "PASS" if internal_manifest_ok and not forbidden_members else "FAIL", "Compact capsule contract."],
         ],
     )
-    report.log(f"R10 final audit capsule created: {capsule}")
     return capsule
 
 
@@ -4823,7 +4822,6 @@ def validate_audit_capsule_gate(output_root: Path, report: Report) -> None:
         report.fail("AUDIT_CAPSULE_GATE value is not PASS.")
     if rows["forbidden_massive_payload"].get("value") != "0":
         report.fail("Audit capsule contains forbidden massive payload members.")
-    report.log("AUDIT_CAPSULE_GATE PASS; post-packaging closure control validated.")
 
 
 def create_r10b_audit_capsule(output_root: Path, report: Report) -> Path:
@@ -4959,7 +4957,6 @@ def create_r10c_audit_capsule(output_root: Path, report: Report) -> Path:
         for path in selected:
             if path.exists() and path.is_file():
                 zf.write(path, arcname=_relative_output_path(path, output_root))
-    report.log(f"R10-C audit capsule created: {capsule}")
     return capsule
 
 
@@ -5045,7 +5042,6 @@ def create_r10d1_wui_audit_capsule(output_root: Path, report: Report) -> Path:
         for path in selected:
             if path.exists() and path.is_file():
                 zf.write(path, arcname=_relative_output_path(path, output_root))
-    report.log(f"R10-D1 WUI audit capsule created: {capsule}")
     return capsule
 
 
@@ -6440,9 +6436,7 @@ def collect_final_outputs(output_root: Path, scientific_decision_path: Path, inc
             outputs.append(sidecar)
         if metadata.exists():
             outputs.append(metadata)
-    audit_capsule_gate = output_root / "qa" / "audit_capsule_gate.tsv"
-    if audit_capsule_gate.exists():
-        outputs.append(audit_capsule_gate)
+    # The capsule gate is a post-packaging envelope control, not payload input.
     if include_global_scan:
         outputs.extend(
             [
@@ -6538,15 +6532,10 @@ def complete_post_smoke_runtime(
     write_source_runtime_provenance(output_root)
     outputs = collect_final_outputs(output_root, scientific_decision_path, include_global_scan=True)
     build_manifest_and_zip(outputs, deliver_dir, report)
-    report.log("SCIENTIFIC_PAYLOAD_MANIFEST PASS; payload hashes finalized before audit envelope.")
-    write_source_runtime_provenance(output_root)
-    run_global_audit_status_scan(output_root, report)
-    assert_global_audit_status_clear(output_root, report)
     create_r10c_audit_capsule(output_root, report)
     create_r10d1_wui_audit_capsule(output_root, report)
     create_r10_final_audit_capsule(output_root, report)
     validate_audit_capsule_gate(output_root, report)
-    report.log("AUDIT_ENVELOPE_CLOSURE PASS; payload manifest remains independent of post-packaging controls.")
 
 
 def main() -> int:

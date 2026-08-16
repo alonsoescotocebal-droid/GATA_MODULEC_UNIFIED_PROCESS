@@ -56,6 +56,19 @@ def test_payload_collection_excludes_post_packaging_gate(tmp_path: Path) -> None
     assert (root / "qa" / "audit_capsule_gate.tsv").as_posix() not in outputs
 
 
+def test_payload_collection_excludes_stale_post_packaging_gate(tmp_path: Path) -> None:
+    mod = _load_pipeline_module()
+    root = tmp_path / "runtime"
+    gate = root / "qa" / "audit_capsule_gate.tsv"
+    gate.parent.mkdir(parents=True)
+    gate.write_text("metric\tvalue\tstatus\tdetail\nAUDIT_CAPSULE_GATE\tPASS\tPASS\t\n", encoding="utf-8")
+    decision = root / "deliverables_step9" / "runtime_scientific_closure_decision.md"
+
+    outputs = {path.as_posix() for path in mod.collect_final_outputs(root, decision)}
+
+    assert gate.as_posix() not in outputs
+
+
 def test_payload_manifest_builds_without_capsule_gate(tmp_path: Path) -> None:
     mod = _load_pipeline_module()
     root, artifact, report = _payload_root(tmp_path)
@@ -88,6 +101,32 @@ def test_capsule_is_created_after_payload_and_writes_gate(tmp_path: Path) -> Non
     assert capsule.is_file()
     assert (root / "qa" / "audit_capsule_gate.tsv").is_file()
     assert hashlib.sha256((root / "deliverables_step9" / "final_manifest.json").read_bytes()).hexdigest() == manifest_before
+
+
+def test_audit_envelope_does_not_mutate_payload_manifest_members(tmp_path: Path) -> None:
+    mod = _load_pipeline_module()
+    root, artifact, _report = _payload_root(tmp_path)
+    report_path = root / "qa" / "report_auditoria_v2.txt"
+    report_path.write_text("frozen payload report\n", encoding="utf-8")
+    report = mod.Report(report_path)
+    manifest, _sha, _package = mod.build_manifest_and_zip(
+        [artifact, report_path], root / "deliverables_step9", report
+    )
+    manifest_before = manifest.read_bytes()
+    report_before = report_path.read_bytes()
+
+    mod.create_r10c_audit_capsule(root, report)
+    mod.create_r10d1_wui_audit_capsule(root, report)
+    mod.create_r10_final_audit_capsule(root, report)
+    mod.validate_audit_capsule_gate(root, report)
+
+    assert manifest.read_bytes() == manifest_before
+    assert report_path.read_bytes() == report_before
+    for row in json.loads(manifest.read_text(encoding="utf-8")):
+        path = Path(row["path"])
+        assert path.is_file()
+        assert path.stat().st_size == row["bytes"]
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == row["sha256"]
 
 
 def test_final_closure_fails_when_gate_is_missing(tmp_path: Path) -> None:
@@ -147,4 +186,20 @@ def test_payload_manifest_is_not_rebuilt_after_audit_envelope() -> None:
     section = text[text.index("def complete_post_smoke_runtime("):text.index("def main()")]
 
     assert section.count("build_manifest_and_zip(outputs, deliver_dir, report)") == 1
-    assert "AUDIT_ENVELOPE_CLOSURE PASS" in section
+    build_index = section.index("build_manifest_and_zip(outputs, deliver_dir, report)")
+    post_packaging = section[build_index:]
+    assert "create_r10_final_audit_capsule(output_root, report)" in post_packaging
+    assert "validate_audit_capsule_gate(output_root, report)" in post_packaging
+    assert "write_source_runtime_provenance(output_root)" not in post_packaging
+    assert "run_global_audit_status_scan(output_root, report)" not in post_packaging
+
+
+def test_post_packaging_controls_are_not_regenerated_after_payload_manifest() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    text = (repo_root / "pipeline" / "moduleC_pipeline_v2.py").read_text(encoding="utf-8")
+    section = text[text.index("def complete_post_smoke_runtime("):text.index("def main()")]
+    build_index = section.index("build_manifest_and_zip(outputs, deliver_dir, report)")
+    post_packaging = section[build_index:]
+
+    assert "write_source_runtime_provenance(output_root)" not in post_packaging
+    assert "run_global_audit_status_scan(output_root, report)" not in post_packaging
